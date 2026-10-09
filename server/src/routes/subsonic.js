@@ -65,6 +65,35 @@ const ALBUM_SQL = `
   LEFT JOIN tracks t ON t.album_id = al.id`;
 const ALBUM_GROUP = `GROUP BY al.id, al.title, al.year, al.genre, al.cover_path, al.created_at, a.id, a.name`;
 
+const GENRES_SQL = `
+  SELECT
+    g.genre AS value,
+    COALESCE(t.song_count, 0)::int AS "songCount",
+    COALESCE(al.album_count, 0)::int AS "albumCount"
+  FROM (
+    SELECT DISTINCT genre FROM (
+      SELECT genre FROM tracks WHERE genre IS NOT NULL AND TRIM(genre) != ''
+      UNION
+      SELECT genre FROM albums WHERE genre IS NOT NULL AND TRIM(genre) != ''
+    ) s
+  ) g
+  LEFT JOIN (
+    SELECT genre, COUNT(*)::int AS song_count
+    FROM tracks
+    WHERE genre IS NOT NULL AND TRIM(genre) != ''
+    GROUP BY genre
+  ) t ON t.genre = g.genre
+  LEFT JOIN (
+    SELECT genre, COUNT(DISTINCT id)::int AS album_count
+    FROM (
+      SELECT genre, id FROM albums WHERE genre IS NOT NULL AND TRIM(genre) != ''
+      UNION
+      SELECT t.genre, t.album_id AS id FROM tracks t WHERE t.genre IS NOT NULL AND TRIM(t.genre) != '' AND t.album_id IS NOT NULL
+    ) a_union
+    GROUP BY genre
+  ) al ON al.genre = g.genre
+  ORDER BY g.genre ASC`;
+
 function coverFileFromPath(coverPath) {
   if (!coverPath) return null;
   const file = path.join(COVERS_DIR, path.basename(coverPath));
@@ -257,6 +286,101 @@ export default async function subsonicRoutes(fastify) {
     const { rows } = await query(`${SONG_SELECT} WHERE t.id = $1`, [id]);
     if (!rows[0]) return notFound(reply, req, 'Song');
     return sendOk(reply, req, { song: formatSong(rows[0]) });
+  });
+
+  const handleAlbumList = async (req, reply, params, listKey = 'albumList2') => {
+    if (!params.type) {
+      return missing(reply, req, 'type');
+    }
+
+    const type = String(params.type).trim();
+    let size = parseInt(params.size, 10);
+    if (Number.isNaN(size) || size < 1) size = 10;
+    if (size > 500) size = 500;
+
+    let offset = parseInt(params.offset, 10);
+    if (Number.isNaN(offset) || offset < 0) offset = 0;
+
+    const normType = type.toLowerCase();
+    if (normType === 'starred') {
+      return sendOk(reply, req, { [listKey]: { album: [] } });
+    }
+
+    const whereClauses = [];
+    const queryParams = [];
+    let pIdx = 1;
+
+    if (params.genre || normType === 'bygenre') {
+      const genre = params.genre || '';
+      if (genre) {
+        whereClauses.push(`(al.genre ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM tracks gt WHERE gt.album_id = al.id AND gt.genre ILIKE $${pIdx}))`);
+        queryParams.push(genre);
+        pIdx++;
+      }
+    }
+
+    if (params.fromYear) {
+      const fromYear = parseInt(params.fromYear, 10);
+      if (!Number.isNaN(fromYear)) {
+        whereClauses.push(`al.year >= $${pIdx++}`);
+        queryParams.push(fromYear);
+      }
+    }
+
+    if (params.toYear) {
+      const toYear = parseInt(params.toYear, 10);
+      if (!Number.isNaN(toYear)) {
+        whereClauses.push(`al.year <= $${pIdx++}`);
+        queryParams.push(toYear);
+      }
+    }
+
+    let orderBy;
+    if (normType === 'alphabeticalbyname') {
+      orderBy = 'ORDER BY al.title ASC';
+    } else if (normType === 'alphabeticalbyartist') {
+      orderBy = 'ORDER BY a.name ASC NULLS LAST, al.title ASC';
+    } else if (normType === 'random') {
+      orderBy = 'ORDER BY RANDOM()';
+    } else if (normType === 'byyear') {
+      orderBy = 'ORDER BY al.year DESC NULLS LAST, al.title ASC';
+    } else if (normType === 'bygenre') {
+      orderBy = 'ORDER BY al.title ASC';
+    } else if (normType === 'recent' || normType === 'newest' || normType === 'frequent') {
+      orderBy = 'ORDER BY al.created_at DESC NULLS LAST, al.id DESC';
+    } else {
+      // Default fallback for unknown type
+      orderBy = 'ORDER BY al.created_at DESC NULLS LAST, al.id DESC';
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const sql = `
+      ${ALBUM_SQL}
+      ${whereSql}
+      ${ALBUM_GROUP}
+      ${orderBy}
+      LIMIT $${pIdx++} OFFSET $${pIdx++}
+    `;
+    queryParams.push(size, offset);
+
+    const { rows } = await query(sql, queryParams);
+    return sendOk(reply, req, {
+      [listKey]: {
+        album: rows.map(formatAlbum),
+      },
+    });
+  };
+
+  endpoint('getAlbumList2', (req, reply, params) => handleAlbumList(req, reply, params, 'albumList2'));
+  endpoint('getAlbumList', (req, reply, params) => handleAlbumList(req, reply, params, 'albumList'));
+
+  endpoint('getGenres', async (req, reply) => {
+    const { rows } = await query(GENRES_SQL);
+    return sendOk(reply, req, {
+      genres: {
+        genre: rows,
+      },
+    });
   });
 
   // ---- Media retrieval ----
