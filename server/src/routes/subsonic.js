@@ -147,6 +147,41 @@ export default async function subsonicRoutes(fastify) {
     sendOk(reply, req, { openSubsonicExtensions: [] })
   );
 
+  // ---- User management ----
+
+  endpoint('getUser', async (req, reply, params) => {
+    const me = req.subsonicUser;
+    const username = params.username || me.username;
+
+    if (username !== me.username && !me.is_admin) {
+      return sendError(reply, req, ErrorCode.NOT_AUTHORIZED, 'User is not authorized for the given operation.');
+    }
+
+    const { rows } = await query('SELECT username, is_admin FROM users WHERE username = $1', [username]);
+    const user = rows[0];
+    if (!user) return notFound(reply, req, 'User');
+
+    return sendOk(reply, req, {
+      user: {
+        username: user.username,
+        email: `${user.username}@tunecloud.local`,
+        scrobblingEnabled: true,
+        adminRole: !!user.is_admin,
+        settingsRole: true,
+        downloadRole: true,
+        uploadRole: true,
+        playlistRole: true,
+        coverArtRole: true,
+        commentRole: true,
+        podcastRole: true,
+        streamRole: true,
+        jukeboxRole: true,
+        shareRole: true,
+        folder: [MUSIC_FOLDER_ID],
+      },
+    });
+  });
+
   // ---- Browsing ----
 
   endpoint('getMusicFolders', async (req, reply) =>
