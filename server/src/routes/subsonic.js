@@ -383,6 +383,34 @@ export default async function subsonicRoutes(fastify) {
     });
   });
 
+  endpoint('getSongsByGenre', async (req, reply, params) => {
+    if (!params.genre || String(params.genre).trim() === '') {
+      return missing(reply, req, 'genre');
+    }
+
+    const genre = String(params.genre).trim();
+    let count = parseInt(params.count ?? params.size, 10);
+    if (Number.isNaN(count) || count < 1) count = 50;
+    if (count > 500) count = 500;
+
+    let offset = parseInt(params.offset, 10);
+    if (Number.isNaN(offset) || offset < 0) offset = 0;
+
+    const sql = `
+      ${SONG_SELECT}
+      WHERE (t.genre ILIKE $1 OR al.genre ILIKE $1)
+      ORDER BY a.name ASC NULLS LAST, al.title ASC NULLS LAST, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const { rows } = await query(sql, [genre, count, offset]);
+    return sendOk(reply, req, {
+      songsByGenre: {
+        song: rows.map(formatSong),
+      },
+    });
+  });
+
   // ---- Media retrieval ----
 
   const streamHandler = async (req, reply, params) => {
