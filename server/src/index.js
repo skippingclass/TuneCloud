@@ -6,7 +6,7 @@ import fs from 'fs';
 import { initDb, query } from './db.js';
 import { initCoversDir } from './cover.js';
 import { setupCustomMetrics } from './metrics.js';
-import { hashPassword } from './auth.js';
+import { hashPassword, verifyPassword, encryptSubsonicSecret, decryptSubsonicSecret } from './auth.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
@@ -20,7 +20,7 @@ async function seedAdmin() {
     console.log('ADMIN_PASSWORD not set — skipping admin user creation. Register via /api/auth/register');
     return;
   }
-  const { rows } = await query('SELECT id, is_admin FROM users WHERE username = $1', [username]);
+  const { rows } = await query('SELECT id, is_admin, password_hash, subsonic_secret FROM users WHERE username = $1', [username]);
   if (rows.length > 0) {
     if (!rows[0].is_admin) {
       await query('UPDATE users SET is_admin = true WHERE id = $1', [rows[0].id]);
@@ -28,10 +28,20 @@ async function seedAdmin() {
     } else {
       console.log(`Admin user "${username}" already exists`);
     }
+    if (
+      decryptSubsonicSecret(rows[0].subsonic_secret) !== password &&
+      await verifyPassword(password, rows[0].password_hash)
+    ) {
+      await query('UPDATE users SET subsonic_secret = $1 WHERE id = $2', [encryptSubsonicSecret(password), rows[0].id]);
+      console.log(`Subsonic secret updated for "${username}"`);
+    }
     return;
   }
   const hash = await hashPassword(password);
-  await query('INSERT INTO users (username, password_hash, is_admin) VALUES ($1, $2, true)', [username, hash]);
+  await query(
+    'INSERT INTO users (username, password_hash, is_admin, subsonic_secret) VALUES ($1, $2, true, $3)',
+    [username, hash, encryptSubsonicSecret(password)]
+  );
   console.log(`Admin user "${username}" created`);
 }
 
@@ -67,6 +77,7 @@ async function main() {
   const { default: cover } = await import('./routes/cover.js');
   const { default: spotify } = await import('./routes/spotify.js');
   const { default: auth } = await import('./routes/auth.js');
+  const { default: subsonic } = await import('./routes/subsonic.js');
 
   browse(app);
   stream(app);
@@ -76,10 +87,11 @@ async function main() {
   cover(app);
   spotify(app);
   auth(app);
+  subsonic(app);
 
   if (fs.existsSync(clientDist)) {
     app.setNotFoundHandler(async (req, reply) => {
-      if (!req.url.startsWith('/api/')) {
+      if (!req.url.startsWith('/api/') && !req.url.startsWith('/rest/')) {
         return reply.sendFile('index.html');
       }
       return reply.status(404).send({ error: 'Not found' });

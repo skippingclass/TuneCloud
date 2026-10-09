@@ -1,5 +1,5 @@
 import { query } from '../db.js';
-import { hashPassword, verifyPassword, signToken, requireAdmin } from '../auth.js';
+import { hashPassword, verifyPassword, signToken, requireAdmin, encryptSubsonicSecret, decryptSubsonicSecret } from '../auth.js';
 
 export default async function authRoutes(fastify) {
   fastify.post('/api/auth/register', { preHandler: requireAdmin }, async (req, reply) => {
@@ -18,8 +18,8 @@ export default async function authRoutes(fastify) {
 
     const passwordHash = await hashPassword(password);
     await query(
-      'INSERT INTO users (username, password_hash) VALUES ($1, $2)',
-      [username, passwordHash]
+      'INSERT INTO users (username, password_hash, subsonic_secret) VALUES ($1, $2, $3)',
+      [username, passwordHash, encryptSubsonicSecret(password)]
     );
 
     return { success: true, username };
@@ -40,6 +40,11 @@ export default async function authRoutes(fastify) {
     const valid = await verifyPassword(password, user.password_hash);
     if (!valid) {
       return reply.status(401).send({ error: 'Invalid username or password' });
+    }
+
+    // Backfill (or refresh after JWT_SECRET rotation) the Subsonic secret.
+    if (decryptSubsonicSecret(user.subsonic_secret) !== password) {
+      await query('UPDATE users SET subsonic_secret = $1 WHERE id = $2', [encryptSubsonicSecret(password), user.id]);
     }
 
     const token = signToken(user);
