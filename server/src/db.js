@@ -1,19 +1,16 @@
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
 import pg from 'pg';
 import 'dotenv/config';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import { runMigrations } from './migrations/runner.js';
 
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
+  max: 20,
+  idleTimeoutMillis: 30000,
 });
 
 export async function initDb() {
-  const schema = fs.readFileSync(join(__dirname, 'schema.sql'), 'utf8');
-  await pool.query(schema);
-  console.log('Database schema applied');
+  await runMigrations(pool);
+  console.log('Database migrations up to date');
 }
 
 export async function query(text, params) {

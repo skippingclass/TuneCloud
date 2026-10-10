@@ -1,79 +1,136 @@
-import fs from 'fs';
+import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
 import pkg from 'music-metadata';
 const { parseFile } = pkg;
-import { query } from './db.js';
-import { extractCoverFromTrack, extractAllMissingCovers } from './cover.js';
+import { query, getClient } from './db.js';
+import { extractAllMissingCovers } from './cover.js';
 
-const AUDIO_EXTENSIONS = ['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus'];
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
+const BATCH_SIZE = 300;
+const PARSE_CONCURRENCY = 12;
+const DELETE_CHUNK = 500;
+const PG_INT_MAX = 2147483647;
 
 function isAudioFile(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  return AUDIO_EXTENSIONS.includes(ext);
-}
-
-async function ensureArtist(name) {
-  if (!name || name.trim() === '') name = 'Unknown';
-  name = name.trim();
-  const { rows } = await query(
-    `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
-    [name]
-  );
-  return rows[0].id;
-}
-
-async function ensureAlbum(title, artistId, year, genre) {
-  if (!title || title.trim() === '') title = 'Unknown';
-  title = title.trim();
-  const { rows } = await query(
-    `INSERT INTO albums (title, artist_id, year, genre)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (title, artist_id) DO UPDATE SET year = COALESCE(EXCLUDED.year, albums.year), genre = COALESCE(EXCLUDED.genre, albums.genre)
-     RETURNING id`,
-    [title, artistId, year || null, genre || null]
-  );
-  return rows[0].id;
+  return AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function toInt(v) {
   if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.round(n) : null;
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && Math.abs(n) <= PG_INT_MAX ? n : null;
 }
 
-function mainArtist(name) {
-  if (!name) return name;
-  const m = name.match(/^(.+?)\s*(?:feat\.|ft\.|featuring|vs\.?|&|,\s)/i);
-  return m ? m[1].trim() : name.trim();
+function cleanStr(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
 }
 
-async function upsertTrack(filePath, metadata) {
-  const stats = fs.statSync(filePath);
-  const fileName = path.basename(filePath);
-  const ext = path.extname(filePath).toLowerCase().replace('.', '');
-  const format = ext;
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
-  const common = metadata.common || {};
-  const formatInfo = metadata.format || {};
+const albumKey = (title, artistId) => `${title}\u0000${artistId ?? ''}`;
 
-  const artistId = common.artist
-    ? await ensureArtist(mainArtist(common.artist))
-    : null;
+/**
+ * Upserts a batch of parsed tracks (artists -> albums -> tracks) with one
+ * round-trip per table. Must run inside a transaction on `client`.
+ * Returns the ids of albums referenced by the batch.
+ */
+async function flushTrackBatch(client, items) {
+  const touchedAlbumIds = new Set();
+  if (items.length === 0) return touchedAlbumIds;
 
-  const albumArtistName = common.albumartist || mainArtist(common.artist);
-  const albumArtistId = albumArtistName
-    ? await ensureArtist(albumArtistName)
-    : artistId;
+  // 1. Artists
+  const artistNames = [...new Set(items.flatMap((i) => [i.artistName, i.albumArtistName]).filter(Boolean))];
+  const artistMap = new Map();
+  if (artistNames.length > 0) {
+    const { rows } = await client.query(
+      `INSERT INTO artists (name)
+       SELECT n FROM unnest($1::text[]) AS n
+       ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+       RETURNING id, name`,
+      [artistNames]
+    );
+    for (const r of rows) artistMap.set(r.name, r.id);
+  }
 
-  const albumId = common.album
-    ? await ensureAlbum(common.album, albumArtistId, common.year, common.genre?.join?.(', ') || common.genre)
-    : null;
+  // 2. Albums (deduplicated in JS: ON CONFLICT can't touch the same row twice per statement)
+  const resolveIds = (i) => {
+    const artistId = i.artistName ? artistMap.get(i.artistName) ?? null : null;
+    const albumArtistId = i.albumArtistName ? artistMap.get(i.albumArtistName) ?? artistId : artistId;
+    return { artistId, albumArtistId };
+  };
 
-  await query(
-    `INSERT INTO tracks (file_path, file_name, file_size, duration, title, artist_id, album_id, track_number, disc_number, genre, year, bitrate, sample_rate, format, cover_path)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+  const albums = new Map();
+  for (const i of items) {
+    if (!i.albumTitle) continue;
+    const { albumArtistId } = resolveIds(i);
+    const key = albumKey(i.albumTitle, albumArtistId);
+    if (!albums.has(key)) {
+      albums.set(key, { title: i.albumTitle, artistId: albumArtistId, year: i.year, genre: i.genre, folderPath: i.folderPath });
+    }
+  }
+
+  const albumMap = new Map();
+  if (albums.size > 0) {
+    const list = [...albums.values()];
+    const { rows } = await client.query(
+      `INSERT INTO albums (title, artist_id, year, genre, folder_path)
+       SELECT * FROM unnest($1::text[], $2::int[], $3::int[], $4::text[], $5::text[])
+       ON CONFLICT (title, artist_id) DO UPDATE SET
+         year = COALESCE(EXCLUDED.year, albums.year),
+         genre = COALESCE(EXCLUDED.genre, albums.genre),
+         folder_path = COALESCE(EXCLUDED.folder_path, albums.folder_path)
+       RETURNING id, title, artist_id`,
+      [
+        list.map((a) => a.title),
+        list.map((a) => a.artistId),
+        list.map((a) => a.year),
+        list.map((a) => a.genre),
+        list.map((a) => a.folderPath),
+      ]
+    );
+    for (const r of rows) albumMap.set(albumKey(r.title, r.artist_id), r.id);
+  }
+
+  // 3. Tracks
+  const cols = Array.from({ length: 15 }, () => []);
+  for (const i of items) {
+    const { artistId, albumArtistId } = resolveIds(i);
+    const albumId = i.albumTitle ? albumMap.get(albumKey(i.albumTitle, albumArtistId)) ?? null : null;
+    if (albumId) touchedAlbumIds.add(albumId);
+    [
+      i.filePath, i.fileName, i.fileSize, i.duration, i.title,
+      artistId, albumId, i.trackNumber, i.discNumber, i.genre,
+      i.year, i.bitrate, i.sampleRate, i.format, i.mtime,
+    ].forEach((v, idx) => cols[idx].push(v));
+  }
+
+  await client.query(
+    `INSERT INTO tracks (
+       file_path, file_name, file_size, duration, title,
+       artist_id, album_id, track_number, disc_number, genre,
+       year, bitrate, sample_rate, format, mtime
+     )
+     SELECT * FROM unnest(
+       $1::text[], $2::text[], $3::bigint[], $4::real[], $5::text[],
+       $6::int[], $7::int[], $8::int[], $9::int[], $10::text[],
+       $11::int[], $12::int[], $13::int[], $14::text[], $15::timestamptz[]
+     )
      ON CONFLICT (file_path) DO UPDATE SET
+       file_name = EXCLUDED.file_name,
        file_size = EXCLUDED.file_size,
        duration = EXCLUDED.duration,
        title = COALESCE(EXCLUDED.title, tracks.title),
@@ -86,160 +143,212 @@ async function upsertTrack(filePath, metadata) {
        bitrate = EXCLUDED.bitrate,
        sample_rate = EXCLUDED.sample_rate,
        format = EXCLUDED.format,
+       mtime = EXCLUDED.mtime,
        updated_at = NOW()`,
-    [
-      filePath,
-      fileName,
-      stats.size,
-      formatInfo.duration || 0,
-      common.title || fileName.replace(/\.[^.]+$/, ''),
-      artistId,
-      albumId,
-      toInt(common.track?.no),
-      toInt(common.disk?.no) || 1,
-      common.genre?.join?.(', ') || common.genre || null,
-      toInt(common.year),
-      toInt(formatInfo.bitrate),
-      toInt(formatInfo.sampleRate),
-      format,
-      null,
-    ]
+    cols
   );
 
-  if (albumId) {
-    await extractCoverFromTrack(null, filePath, albumId);
+  return touchedAlbumIds;
+}
+
+async function inTransaction(client, fn) {
+  await client.query('BEGIN');
+  try {
+    const result = await fn();
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
   }
 }
 
-async function upsertTrackBasic(filePath) {
-  const stats = fs.statSync(filePath);
-  const fileName = path.basename(filePath);
-  const ext = path.extname(filePath).toLowerCase().replace('.', '');
+/**
+ * Writes a batch in one transaction; if that fails (e.g. one bad row),
+ * falls back to per-track transactions so a single file can't abort the scan.
+ */
+async function writeBatch(client, items, touchedAlbumIds) {
   try {
-    await query(
-      `INSERT INTO tracks (file_path, file_name, file_size, duration, title, format)
-       VALUES ($1,$2,$3,0,$4,$5)
-       ON CONFLICT (file_path) DO UPDATE SET
-         file_size = EXCLUDED.file_size,
-         title = COALESCE(tracks.title, EXCLUDED.title),
-         format = EXCLUDED.format`,
-      [filePath, fileName, stats.size, fileName.replace(/\.[^.]+$/, ''), ext]
-    );
-  } catch {}
-}
-
-async function mergeDuplicateAlbums() {
-  const { rows: dups } = await query(
-    `SELECT title FROM albums GROUP BY title HAVING count(*) > 1`
-  );
-  let merged = 0;
-
-  for (const { title } of dups) {
-    const { rows: albums } = await query(
-      `SELECT al.id, al.artist_id, a.name as artist_name,
-              (SELECT count(*) FROM tracks t WHERE t.album_id = al.id) as track_count
-       FROM albums al
-       LEFT JOIN artists a ON al.artist_id = a.id
-       WHERE al.title = $1
-       ORDER BY track_count DESC`,
-      [title]
-    );
-    if (albums.length <= 1) continue;
-
-    const mainIdx = albums.findIndex((a) => !/(?:feat\.|ft\.|featuring|vs\.?|&|,\s)/i.test(a.artist_name));
-    const keep = mainIdx >= 0 ? albums[mainIdx] : albums[0];
-
-    for (const a of albums) {
-      if (a.id === keep.id) continue;
-      await query('UPDATE tracks SET album_id = $1 WHERE album_id = $2', [keep.id, a.id]);
-      await query('DELETE FROM albums WHERE id = $1', [a.id]);
-      merged++;
+    const ids = await inTransaction(client, () => flushTrackBatch(client, items));
+    ids.forEach((id) => touchedAlbumIds.add(id));
+    return items.length;
+  } catch (err) {
+    console.error(`Batch write failed (${err.message}), retrying per track`);
+  }
+  let written = 0;
+  for (const item of items) {
+    try {
+      const ids = await inTransaction(client, () => flushTrackBatch(client, [item]));
+      ids.forEach((id) => touchedAlbumIds.add(id));
+      written++;
+    } catch (err) {
+      console.error(`Could not write ${item.filePath}: ${err.message}`);
     }
   }
-
-  await query(`DELETE FROM artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL)`);
-  return merged;
+  return written;
 }
 
-async function mergeDuplicateArtists() {
-  const { rows: artists } = await query('SELECT id, name FROM artists ORDER BY length(name) ASC');
-  let merged = 0;
+/** Parses tags into a flat record. Never throws: unreadable tags fall back to a basic entry. */
+async function parseTrackFile({ path: filePath, size, mtime }) {
+  const fileName = path.basename(filePath);
+  const base = {
+    filePath,
+    fileName,
+    fileSize: size,
+    duration: 0,
+    title: fileName.replace(/\.[^.]+$/, ''),
+    artistName: null,
+    albumArtistName: null,
+    albumTitle: null,
+    trackNumber: null,
+    discNumber: 1,
+    genre: null,
+    year: null,
+    bitrate: null,
+    sampleRate: null,
+    format: path.extname(filePath).toLowerCase().slice(1),
+    folderPath: path.dirname(filePath),
+    mtime,
+  };
 
-  for (const artist of artists) {
-    const mainName = mainArtist(artist.name);
-    if (mainName === artist.name) continue;
+  try {
+    const meta = await parseFile(filePath, { skipCovers: true });
+    const common = meta.common || {};
+    const format = meta.format || {};
+    const artistName = cleanStr(common.artist);
+    const genre = Array.isArray(common.genre)
+      ? cleanStr(common.genre.map(cleanStr).filter(Boolean).join(', '))
+      : cleanStr(common.genre);
 
-    const mainId = await ensureArtist(mainName);
-
-    await query('UPDATE tracks SET artist_id = $1 WHERE artist_id = $2', [mainId, artist.id]);
-    await query('UPDATE albums SET artist_id = $1 WHERE artist_id = $2', [mainId, artist.id]);
-    await query('DELETE FROM artists WHERE id = $1', [artist.id]);
-    merged++;
+    return {
+      ...base,
+      duration: Number.isFinite(format.duration) ? format.duration : 0,
+      title: cleanStr(common.title) || base.title,
+      artistName,
+      albumArtistName: cleanStr(common.albumartist) || artistName,
+      albumTitle: cleanStr(common.album),
+      trackNumber: toInt(common.track?.no),
+      discNumber: toInt(common.disk?.no) || 1,
+      genre,
+      year: toInt(common.year),
+      bitrate: toInt(format.bitrate),
+      sampleRate: toInt(format.sampleRate),
+    };
+  } catch (err) {
+    console.error(`Failed to parse metadata for ${filePath}: ${err.message}`);
+    return base;
   }
-
-  return merged;
 }
 
-export async function scanDirectory(musicDir) {
-  const pattern = path.join(musicDir, '**/*.*').replace(/\\/g, '/');
-  const files = await glob(pattern, { nocase: true });
+/** Lists audio files with size/mtime in a single directory walk (stat follows symlinks). */
+async function listAudioFiles(musicDir) {
+  const pattern = path.join(musicDir, '**/*').replace(/\\/g, '/');
+  const entries = await glob(pattern, { withFileTypes: true, stat: true, nodir: true, nocase: true });
 
-  const audioFiles = files.filter(isAudioFile);
-  console.log(`Found ${audioFiles.length} audio files`);
-
-  const scannedPaths = [];
-  let processed = 0;
-  for (const file of audioFiles) {
-    try {
-      const metadata = await parseFile(file, { skipCovers: true });
-      await upsertTrack(file, metadata);
-      processed++;
-    } catch (err) {
-      console.error(`Failed to parse metadata for ${file}: ${err.message}`);
+  const files = [];
+  for (const e of entries) {
+    if (!isAudioFile(e.name)) continue;
+    let { size, mtime } = e;
+    if (e.isSymbolicLink() || !mtime) {
       try {
-        await upsertTrackBasic(file);
-        processed++;
-        console.log(`  Inserted basic entry for ${file}`);
-      } catch (e2) {
-        console.error(`  Could not insert basic entry: ${e2.message}`);
+        ({ size, mtime } = await fs.stat(e.fullpath()));
+      } catch {
+        continue; // dangling symlink
       }
     }
-    scannedPaths.push(file);
-    if (processed % 100 === 0) {
-      console.log(`Processed ${processed}/${audioFiles.length}`);
+    files.push({ path: e.fullpath(), size, mtime });
+  }
+  return files;
+}
+
+async function removeOrphans(client) {
+  await client.query(
+    `DELETE FROM albums al WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id)`
+  );
+  await client.query(
+    `DELETE FROM artists a
+     WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id)
+       AND NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id)`
+  );
+}
+
+/**
+ * Scans musicDir. Incremental by default: only files whose mtime differs from
+ * the stored one (or that are new) are parsed. `full: true` re-parses everything.
+ */
+export async function scanDirectory(musicDir, { full = false } = {}) {
+  const root = path.resolve(musicDir);
+  const startedAt = Date.now();
+
+  const files = await listAudioFiles(root);
+  console.log(`Found ${files.length} audio files (${full ? 'full' : 'incremental'} scan)`);
+
+  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+  const { rows: known } = await query(
+    'SELECT id, file_path, mtime FROM tracks WHERE starts_with(file_path, $1)',
+    [prefix]
+  );
+  const knownByPath = new Map(known.map((r) => [r.file_path, r]));
+
+  const onDisk = new Set();
+  const toProcess = [];
+  for (const f of files) {
+    onDisk.add(f.path);
+    const k = knownByPath.get(f.path);
+    if (full || !k || !k.mtime || k.mtime.getTime() !== f.mtime.getTime()) toProcess.push(f);
+  }
+  const unchanged = files.length - toProcess.length;
+  console.log(`Unchanged: ${unchanged}, to process: ${toProcess.length}`);
+
+  const staleIds = known.filter((r) => !onDisk.has(r.file_path)).map((r) => r.id);
+  const touchedAlbumIds = new Set();
+  let processed = 0;
+  let removed = 0;
+
+  const client = await getClient();
+  try {
+    for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
+      const parsed = await mapLimit(toProcess.slice(i, i + BATCH_SIZE), PARSE_CONCURRENCY, parseTrackFile);
+      processed += await writeBatch(client, parsed, touchedAlbumIds);
+      console.log(`Processed ${processed}/${toProcess.length}`);
     }
+
+    for (let i = 0; i < staleIds.length; i += DELETE_CHUNK) {
+      const res = await client.query('DELETE FROM tracks WHERE id = ANY($1::int[])', [staleIds.slice(i, i + DELETE_CHUNK)]);
+      removed += res.rowCount;
+    }
+    if (removed > 0) console.log(`Removed ${removed} stale track(s) from DB`);
+
+    // Re-tagged tracks may have moved to another album/artist, so always clean up.
+    await removeOrphans(client);
+  } finally {
+    client.release();
   }
 
-  const deleted = await query(
-    `DELETE FROM tracks WHERE file_path LIKE $1 AND file_path != ALL($2)`,
-    [`${musicDir}%`, scannedPaths]
-  );
-  const removed = deleted.rowCount;
-  if (removed > 0) console.log(`Removed ${removed} stale track(s) from DB`);
-
-  await query(`DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)`);
-  await query(`DELETE FROM artists WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL) AND id NOT IN (SELECT DISTINCT artist_id FROM albums WHERE artist_id IS NOT NULL)`);
-
-  const covers = await extractAllMissingCovers();
+  const covers = await extractAllMissingCovers(full ? null : [...touchedAlbumIds]);
   console.log(`Covers extracted: ${covers.extracted}/${covers.total}`);
 
-  const merged = await mergeDuplicateAlbums();
-  console.log(`Albums merged: ${merged}`);
-
-  const artistsMerged = await mergeDuplicateArtists();
-  console.log(`Artists merged: ${artistsMerged}`);
-
-  console.log(`Scan complete. Processed ${processed} files.`);
-  return { total: audioFiles.length, processed, covers: covers.extracted, removed, merged, artistsMerged };
+  const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
+  console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
+  return { total: files.length, processed, unchanged, removed, covers: covers.extracted, durationSeconds };
 }
 
 export async function scanSingleFile(filePath) {
   try {
-    const metadata = await parseFile(filePath, { skipCovers: true });
-    await upsertTrack(filePath, metadata);
-    return true;
+    const { size, mtime } = await fs.stat(filePath);
+    const item = await parseTrackFile({ path: filePath, size, mtime });
+    const touched = new Set();
+    const client = await getClient();
+    let written;
+    try {
+      written = await writeBatch(client, [item], touched);
+    } finally {
+      client.release();
+    }
+    if (written > 0) await extractAllMissingCovers([...touched]);
+    return written > 0;
   } catch (err) {
     console.error(`Failed to process ${filePath}: ${err.message}`);
-    try { await upsertTrackBasic(filePath); return true; } catch { return false; }
+    return false;
   }
 }
