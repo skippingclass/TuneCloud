@@ -16,7 +16,11 @@ function serveCover(reply, filename) {
   const ext = path.extname(safe).toLowerCase();
   const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
   reply.hijack();
-  reply.raw.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'max-age=86400' });
+  reply.raw.writeHead(200, {
+    'Content-Type': mime,
+    'Cache-Control': 'max-age=86400',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+  });
   fs.createReadStream(filepath).pipe(reply.raw);
 }
 

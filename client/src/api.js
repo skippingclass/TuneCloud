@@ -46,7 +46,10 @@ export const api = {
   album: (id) => fetchJson(`/albums/${id}`),
   artists: () => fetchJson('/artists'),
   search: (q) => fetchJson(`/search?q=${encodeURIComponent(q)}`),
-  streamUrl: (id) => `${BASE}/stream/${id}`,
+  streamUrl: (id) => {
+    const t = getAuthToken();
+    return t ? `${BASE}/stream/${id}?token=${encodeURIComponent(t)}` : `${BASE}/stream/${id}`;
+  },
   coverUrl: (path) => path ? (path.startsWith('/api/') ? path : `${BASE}${path}`) : null,
   albumCover: (id) => `${BASE}/cover/album/${id}`,
   scan: () => fetchJson('/scan', { method: 'POST', body: JSON.stringify({}) }),

@@ -1,5 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import fastifyMetrics from 'fastify-metrics';
 import fs from 'fs';
@@ -46,15 +48,45 @@ async function seedAdmin() {
 }
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'change-me-in-production') {
+      throw new Error('FATAL: JWT_SECRET must be set to a strong secret in production mode!');
+    }
+  }
+
   await initDb();
   await initCoversDir();
   await seedAdmin();
 
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    trustProxy: true,
+  });
+
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  });
+
+  const corsOrigin = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
+    : true;
 
   await app.register(cors, {
-    origin: true,
+    origin: corsOrigin,
     credentials: true,
+  });
+
+  await app.register(rateLimit, {
+    max: 300,
+    timeWindow: '1 minute',
+    allowList: (req) => {
+      return (
+        req.url === '/metrics' ||
+        req.url.startsWith('/metrics') ||
+        req.url.startsWith('/api/stream/')
+      );
+    },
   });
 
   await app.register(fastifyMetrics, { endpoint: '/metrics' });

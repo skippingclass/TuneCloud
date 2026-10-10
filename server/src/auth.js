@@ -53,12 +53,21 @@ export function verifyToken(token) {
 }
 
 export async function requireAuth(req, reply) {
+  let token = null;
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
+  if (header && header.startsWith('Bearer ')) {
+    token = header.slice(7);
+  } else if (req.query?.token) {
+    token = String(req.query.token);
+  } else if (req.query?.jwt) {
+    token = String(req.query.jwt);
+  }
+
+  if (!token) {
     return reply.status(401).send({ error: 'Missing or invalid token' });
   }
   try {
-    const payload = verifyToken(header.slice(7));
+    const payload = verifyToken(token);
     req.user = payload;
   } catch {
     return reply.status(401).send({ error: 'Invalid or expired token' });
@@ -66,12 +75,21 @@ export async function requireAuth(req, reply) {
 }
 
 export async function requireAdmin(req, reply) {
+  let token = null;
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
+  if (header && header.startsWith('Bearer ')) {
+    token = header.slice(7);
+  } else if (req.query?.token) {
+    token = String(req.query.token);
+  } else if (req.query?.jwt) {
+    token = String(req.query.jwt);
+  }
+
+  if (!token) {
     return reply.status(401).send({ error: 'Missing or invalid token' });
   }
   try {
-    const payload = verifyToken(header.slice(7));
+    const payload = verifyToken(token);
     req.user = payload;
     if (!payload.is_admin) {
       return reply.status(403).send({ error: 'Admin access required' });

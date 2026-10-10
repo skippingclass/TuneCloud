@@ -1,25 +1,34 @@
 import { query } from '../db.js';
+import { requireAuth } from '../auth.js';
 import fs from 'fs';
 import path from 'path';
 
 export default async function browseRoutes(fastify) {
-  fastify.get('/api/browse/dirs', async (req, reply) => {
+  fastify.get('/api/browse/dirs', { preHandler: requireAuth }, async (req, reply) => {
     const { dir } = req.query;
     const musicDir = process.env.MUSIC_DIR;
 
-    let targetDir = musicDir;
+    if (!musicDir) {
+      return reply.status(500).send({ error: 'MUSIC_DIR is not configured' });
+    }
+
+    const resolvedMusicDir = path.resolve(musicDir);
+    let targetDir = resolvedMusicDir;
+
     if (dir) {
-      targetDir = path.resolve(musicDir, dir);
-      if (!targetDir.startsWith(musicDir)) {
+      targetDir = path.resolve(resolvedMusicDir, dir);
+      const rel = path.relative(resolvedMusicDir, targetDir);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
         return reply.status(403).send({ error: 'Access denied' });
       }
     }
 
-    if (!fs.existsSync(targetDir)) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
+    } catch {
       return reply.status(404).send({ error: 'Directory not found' });
     }
-
-    const entries = fs.readdirSync(targetDir, { withFileTypes: true });
     const result = [];
 
     for (const entry of entries) {
@@ -62,7 +71,7 @@ export default async function browseRoutes(fastify) {
     return result;
   });
 
-  fastify.get('/api/browse/tree', async (req, reply) => {
+  fastify.get('/api/browse/tree', { preHandler: requireAuth }, async (req, reply) => {
     const musicDir = process.env.MUSIC_DIR;
     const { rows } = await query(
       `SELECT t.id, t.file_path, t.file_name, t.duration, t.title, t.track_number,
