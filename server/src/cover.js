@@ -1,4 +1,5 @@
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import pkg from 'music-metadata';
@@ -7,82 +8,100 @@ import { query } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COVERS_DIR = path.resolve(__dirname, '../covers');
-const COVER_NAMES = ['cover.jpg', 'cover.png', 'folder.jpg', 'front.jpg', 'Cover.jpg'];
+const COVER_NAMES = [
+  'cover.jpg', 'cover.jpeg', 'cover.png', 'Cover.jpg', 'Cover.png',
+  'folder.jpg', 'folder.png', 'Folder.jpg', 'Folder.png',
+  'front.jpg', 'front.png', 'Front.jpg',
+  'album.jpg', 'album.png', 'Album.jpg',
+  'artwork.jpg', 'Artwork.jpg',
+];
+const COVER_CONCURRENCY = 4;
 
-export async function initCoversDir() {
-  if (!fs.existsSync(COVERS_DIR)) {
-    fs.mkdirSync(COVERS_DIR, { recursive: true });
+async function fileExists(filePath) {
+  try {
+    await fsp.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-function saveCoverBuffer(buffer, format, albumId) {
+export async function initCoversDir() {
+  await fsp.mkdir(COVERS_DIR, { recursive: true });
+}
+
+async function saveCoverBuffer(buffer, format, albumId) {
   const ext = format?.split('/')[1] || 'jpg';
   const filename = `album_${albumId}.${ext}`;
-  const filepath = path.join(COVERS_DIR, filename);
-  fs.writeFileSync(filepath, buffer);
+  await fsp.writeFile(path.join(COVERS_DIR, filename), buffer);
   return `/api/cover/${filename}`;
 }
 
-export async function extractAlbumCover(albumId, trackDir) {
-  const { rows } = await query('SELECT cover_path FROM albums WHERE id = $1', [albumId]);
-  if (rows.length === 0) return null;
-  if (rows[0].cover_path) return rows[0].cover_path;
+async function setAlbumCover(albumId, url) {
+  await query('UPDATE albums SET cover_path = $1 WHERE id = $2', [url, albumId]);
+  return url;
+}
 
+export async function extractAlbumCover(albumId, trackDir) {
   for (const name of COVER_NAMES) {
     const coverFile = path.join(trackDir, name);
-    if (fs.existsSync(coverFile)) {
-      const buf = fs.readFileSync(coverFile);
-      const format = name.endsWith('.png') ? 'image/png' : 'image/jpeg';
-      const url = saveCoverBuffer(buf, format, albumId);
-      await query('UPDATE albums SET cover_path = $1 WHERE id = $2', [url, albumId]);
-      return url;
+    if (await fileExists(coverFile)) {
+      const buf = await fsp.readFile(coverFile);
+      const format = name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      return setAlbumCover(albumId, await saveCoverBuffer(buf, format, albumId));
     }
   }
-
   return null;
 }
 
-export async function extractCoverFromTrack(trackId, filePath, albumId) {
+// Embedded picture first, then well-known image files in the track's folder.
+export async function extractCoverFromTrack(filePath, albumId) {
   if (!albumId) return null;
-
-  const { rows } = await query('SELECT cover_path FROM albums WHERE id = $1', [albumId]);
-  if (rows.length === 0 || rows[0].cover_path) return rows[0].cover_path;
-
   try {
     const meta = await parseFile(filePath, { skipCovers: false });
-    const pictures = meta.common.picture;
-    if (pictures && pictures.length > 0) {
-      const pic = pictures[0];
-      const url = saveCoverBuffer(pic.data, pic.format, albumId);
-      await query('UPDATE albums SET cover_path = $1 WHERE id = $2', [url, albumId]);
-      return url;
+    const pic = meta.common?.picture?.[0];
+    if (pic) {
+      return setAlbumCover(albumId, await saveCoverBuffer(pic.data, pic.format, albumId));
     }
   } catch {}
-
-  const trackDir = path.dirname(filePath);
-  return extractAlbumCover(albumId, trackDir);
+  return extractAlbumCover(albumId, path.dirname(filePath));
 }
 
-export async function extractAllMissingCovers() {
+/**
+ * Extracts covers for albums that have none, reading exactly one file per album.
+ * @param {number[]|null} albumIds restrict to these albums (null = all albums without a cover)
+ */
+export async function extractAllMissingCovers(albumIds = null) {
+  if (albumIds && albumIds.length === 0) return { total: 0, extracted: 0 };
+
   const { rows: albums } = await query(
-    `SELECT al.id, al.title, al.artist_id, MIN(t.file_path) as sample_path
+    `SELECT al.id, MIN(t.file_path) AS sample_path
      FROM albums al
-     LEFT JOIN tracks t ON t.album_id = al.id
+     JOIN tracks t ON t.album_id = al.id
      WHERE al.cover_path IS NULL
-     GROUP BY al.id, al.title, al.artist_id`
+       AND ($1::int[] IS NULL OR al.id = ANY($1::int[]))
+     GROUP BY al.id`,
+    [albumIds]
   );
 
-  let done = 0;
-  for (const album of albums) {
-    if (!album.sample_path) continue;
-    const url = await extractCoverFromTrack(null, album.sample_path, album.id);
-    if (url) done++;
-  }
-  return { total: albums.length, extracted: done };
+  let extracted = 0;
+  let next = 0;
+  const worker = async () => {
+    while (next < albums.length) {
+      const album = albums[next++];
+      try {
+        if (await extractCoverFromTrack(album.sample_path, album.id)) extracted++;
+      } catch (err) {
+        console.error(`Cover extraction failed for album ${album.id}: ${err.message}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(COVER_CONCURRENCY, albums.length) }, worker));
+
+  return { total: albums.length, extracted };
 }
 
 export function coverUrl(filename) {
   const filepath = path.join(COVERS_DIR, path.basename(filename));
-  if (fs.existsSync(filepath)) return filepath;
-  return null;
+  return fs.existsSync(filepath) ? filepath : null;
 }
