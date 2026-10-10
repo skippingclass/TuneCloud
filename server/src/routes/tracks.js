@@ -5,8 +5,11 @@ import path from 'path';
 import jwt from 'jsonwebtoken';
 
 export default async function trackRoutes(fastify) {
-  fastify.get('/api/tracks', async (req, reply) => {
+  fastify.get('/api/tracks', { preHandler: requireAuth }, async (req, reply) => {
     const { limit = 50, offset = 0, sort = 'title', order = 'asc' } = req.query;
+
+    const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), 200);
+    const safeOffset = Math.max(0, parseInt(offset, 10) || 0);
 
     const dir = order === 'desc' ? 'DESC' : 'ASC';
     const sortMap = {
@@ -28,7 +31,7 @@ export default async function trackRoutes(fastify) {
        LEFT JOIN albums al ON t.album_id = al.id
        ORDER BY ${orderClause}
        LIMIT $1 OFFSET $2`,
-      [limit, offset]
+      [safeLimit, safeOffset]
     );
 
     const countResult = await query('SELECT COUNT(*) FROM tracks');
@@ -37,7 +40,7 @@ export default async function trackRoutes(fastify) {
     return { tracks: rows, total };
   });
 
-  fastify.get('/api/tracks/:id', async (req, reply) => {
+  fastify.get('/api/tracks/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
       `SELECT t.*, a.name as artist, al.title as album
@@ -55,7 +58,7 @@ export default async function trackRoutes(fastify) {
     return rows[0];
   });
 
-  fastify.get('/api/albums', async (req, reply) => {
+  fastify.get('/api/albums', { preHandler: requireAuth }, async (req, reply) => {
     const { rows } = await query(
       `SELECT al.*, a.name as artist,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
@@ -67,7 +70,7 @@ export default async function trackRoutes(fastify) {
     return rows;
   });
 
-  fastify.get('/api/albums/:id', async (req, reply) => {
+  fastify.get('/api/albums/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
       `SELECT t.*, a.name as artist, al.title as album, al.cover_path
@@ -81,7 +84,7 @@ export default async function trackRoutes(fastify) {
     return rows;
   });
 
-  fastify.get('/api/artists', async (req, reply) => {
+  fastify.get('/api/artists', { preHandler: requireAuth }, async (req, reply) => {
     const { rows } = await query(
       `SELECT a.*,
               (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
@@ -92,11 +95,13 @@ export default async function trackRoutes(fastify) {
     return rows;
   });
 
-  fastify.get('/api/search', async (req, reply) => {
+  fastify.get('/api/search', { preHandler: requireAuth }, async (req, reply) => {
     const { q, limit = 30 } = req.query;
-    if (!q || q.trim() === '') return { tracks: [], albums: [], artists: [] };
+    const cleanQ = String(q || '').trim().slice(0, 100);
+    if (!cleanQ) return { tracks: [], albums: [], artists: [] };
 
-    const searchTerm = `%${q.trim()}%`;
+    const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 30), 100);
+    const searchTerm = `%${cleanQ}%`;
 
     const tracks = await query(
       `SELECT t.id, t.title, t.file_name, t.duration, t.track_number, t.format,
@@ -106,7 +111,7 @@ export default async function trackRoutes(fastify) {
        LEFT JOIN albums al ON t.album_id = al.id
        WHERE t.title ILIKE $1 OR a.name ILIKE $1 OR al.title ILIKE $1
        LIMIT $2`,
-      [searchTerm, limit]
+      [searchTerm, safeLimit]
     );
 
     const albums = await query(
@@ -115,7 +120,7 @@ export default async function trackRoutes(fastify) {
        LEFT JOIN artists a ON al.artist_id = a.id
        WHERE al.title ILIKE $1
        LIMIT $2`,
-      [searchTerm, limit]
+      [searchTerm, safeLimit]
     );
 
     const artists = await query(
@@ -125,7 +130,7 @@ export default async function trackRoutes(fastify) {
        FROM artists a
        WHERE a.name ILIKE $1
        LIMIT $2`,
-      [searchTerm, limit]
+      [searchTerm, safeLimit]
     );
 
     return {
@@ -209,7 +214,7 @@ export default async function trackRoutes(fastify) {
   });
 
   // ---- Genres ----
-  fastify.get('/api/genres', async () => {
+  fastify.get('/api/genres', { preHandler: requireAuth }, async () => {
     const { rows } = await query(
       `SELECT genre as name, COUNT(*)::int as track_count
        FROM tracks
@@ -222,17 +227,10 @@ export default async function trackRoutes(fastify) {
   });
 
   // ---- Scrobble ----
-  fastify.post('/api/scrobble/:id', async (req) => {
+  fastify.post('/api/scrobble/:id', { preHandler: requireAuth }, async (req) => {
     const trackId = parseInt(req.params.id, 10);
     if (!Number.isFinite(trackId)) return { success: false };
-    const authHeader = req.headers.authorization;
-    let userId = null;
-    if (authHeader?.startsWith('Bearer ')) {
-      try {
-        const payload = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET || 'change-me-in-production');
-        userId = payload.id;
-      } catch {}
-    }
+    const userId = req.user?.id || null;
     await query('UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1', [trackId]);
     if (userId) {
       await query('INSERT INTO play_history (user_id, track_id) VALUES ($1, $2)', [userId, trackId]);
@@ -241,11 +239,11 @@ export default async function trackRoutes(fastify) {
   });
 
   // ---- Lyrics (Local .lrc + LRCLIB fallback) ----
-  fastify.get('/api/lyrics', async (req, reply) => {
+  fastify.get('/api/lyrics', { preHandler: requireAuth }, async (req, reply) => {
     const { id, title, artist } = req.query;
     let trackPath = null;
-    let trackTitle = title;
-    let trackArtist = artist;
+    let trackTitle = typeof title === 'string' ? title.slice(0, 200) : null;
+    let trackArtist = typeof artist === 'string' ? artist.slice(0, 200) : null;
 
     if (id) {
       const { rows } = await query(

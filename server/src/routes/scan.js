@@ -1,6 +1,6 @@
 import { scanDirectory, scanSingleFile } from '../scanner.js';
 import { extractAllMissingCovers } from '../cover.js';
-import { requireAdmin } from '../auth.js';
+import { requireAdmin, requireAuth } from '../auth.js';
 import { recordScan } from '../metrics.js';
 import { query } from '../db.js';
 import fs from 'fs';
@@ -117,7 +117,7 @@ export default async function scanRoutes(fastify) {
   });
 
   // Cheap: no filesystem walk. File totals come from the last completed scan.
-  fastify.get('/api/scan/status', async () => {
+  fastify.get('/api/scan/status', { preHandler: requireAuth }, async () => {
     const { rows } = await query('SELECT COUNT(*)::int AS count FROM tracks');
     const indexed = rows[0].count;
     const totalFiles = lastResult ? lastResult.total : null;

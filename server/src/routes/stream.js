@@ -1,9 +1,10 @@
 import fs from 'fs';
 import { query } from '../db.js';
 import { sendAudioFile } from '../streaming.js';
+import { requireAuth } from '../auth.js';
 
 export default async function streamRoutes(fastify) {
-  fastify.get('/api/stream/:id', async (req, reply) => {
+  fastify.get('/api/stream/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query('SELECT file_path, format FROM tracks WHERE id = $1', [id]);
 

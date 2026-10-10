@@ -3,7 +3,7 @@ import NodeID3 from 'node-id3';
 import pkg from 'music-metadata';
 const { parseFile } = pkg;
 import { query } from '../db.js';
-import { requireAuth } from '../auth.js';
+import { requireAuth, requireAdmin } from '../auth.js';
 
 const MP3_EXTS = ['.mp3'];
 const TAG_EXTS = ['.mp3', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.wav'];
@@ -62,7 +62,7 @@ async function readTags(filePath) {
 }
 
 export default async function tagRoutes(fastify) {
-  fastify.put('/api/tags/:id', { preHandler: requireAuth }, async (req, reply) => {
+  fastify.put('/api/tags/:id', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query('SELECT file_path FROM tracks WHERE id = $1', [id]);
 
@@ -130,7 +130,7 @@ export default async function tagRoutes(fastify) {
     return { success: true };
   });
 
-  fastify.get('/api/tags/:id', async (req, reply) => {
+  fastify.get('/api/tags/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query('SELECT file_path FROM tracks WHERE id = $1', [id]);
 
