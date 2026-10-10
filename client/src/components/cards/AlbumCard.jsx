@@ -9,7 +9,7 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function AlbumCard({ album, onClick, onPlay }) {
+export function AlbumCard({ album, onClick, onPlay, onArtistClick }) {
   const { isAlbumStarred, toggleFavoriteAlbum } = useFavorites();
   const starred = isAlbumStarred(album.id);
 
@@ -74,7 +74,18 @@ export function AlbumCard({ album, onClick, onPlay }) {
         <h3 className="text-sm font-semibold truncate text-surface-100 group-hover:text-accent transition-colors">
           {album.title}
         </h3>
-        <p className="text-xs text-surface-400 truncate mt-0.5">
+        <p
+          onClick={(e) => {
+            if (album.artist && onArtistClick) {
+              e.stopPropagation();
+              onArtistClick({ name: album.artist });
+            }
+          }}
+          className={`text-xs text-surface-400 truncate mt-0.5 ${
+            album.artist && onArtistClick ? 'hover:underline hover:text-white cursor-pointer' : ''
+          }`}
+          title={album.artist ? `Go to artist: ${album.artist}` : ''}
+        >
           {album.artist || 'Unknown Artist'}
         </p>
         <div className="flex items-center justify-between text-[11px] text-surface-500 mt-2 font-medium">

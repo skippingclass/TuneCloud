@@ -170,6 +170,7 @@ export function FavoritesView({
               key={album.id}
               album={album}
               onClick={onAlbumClick}
+              onArtistClick={onGoToArtist}
             />
           ))}
         </div>

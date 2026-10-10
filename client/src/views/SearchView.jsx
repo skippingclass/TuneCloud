@@ -93,6 +93,7 @@ export function SearchView({
                     key={album.id}
                     album={album}
                     onClick={onAlbumClick}
+                    onArtistClick={onArtistClick}
                   />
                 ))}
               </div>

@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Download, Maximize2, Minimize2, ExternalLink } from 'lucide-react';
+import { X, ExternalLink } from 'lucide-react';
 import { api } from '../../api.js';
 
 export function CoverModal({ coverPath, title, artist, year, onClose }) {
-  const [zoomed, setZoomed] = useState(false);
-
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') onClose?.();
@@ -48,14 +46,6 @@ export function CoverModal({ coverPath, title, artist, year, onClose }) {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setZoomed((z) => !z)}
-              className="p-2 text-surface-300 hover:text-white glass-panel rounded-xl hover:bg-white/[0.08] transition-colors"
-              title={zoomed ? 'Fit to Screen' : 'Actual Size'}
-            >
-              {zoomed ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-            </button>
-
             <a
               href={url}
               target="_blank"
@@ -78,20 +68,11 @@ export function CoverModal({ coverPath, title, artist, year, onClose }) {
         </div>
 
         {/* Artwork Image */}
-        <div
-          className={`overflow-auto flex items-center justify-center rounded-2xl sm:rounded-3xl shadow-glass-lg ring-1 ring-white/[0.12] bg-surface-950/80 transition-all duration-300 ${
-            zoomed ? 'max-h-[80vh] w-full' : 'max-h-[75vh] w-auto'
-          }`}
-        >
+        <div className="flex items-center justify-center rounded-2xl sm:rounded-3xl shadow-glass-lg ring-1 ring-white/[0.12] bg-surface-950/80 overflow-hidden max-h-[80vh] max-w-full">
           <img
             src={url}
             alt={title || 'Cover'}
-            onClick={() => setZoomed((z) => !z)}
-            className={`cursor-zoom-in transition-all duration-300 object-contain rounded-2xl sm:rounded-3xl ${
-              zoomed
-                ? 'max-h-none max-w-none w-auto h-auto cursor-zoom-out'
-                : 'max-h-[75vh] max-w-full h-auto w-auto'
-            }`}
+            className="max-h-[80vh] max-w-full object-contain rounded-2xl sm:rounded-3xl"
             draggable="false"
           />
         </div>

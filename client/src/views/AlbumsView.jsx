@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { AlbumCard } from '../components/cards/AlbumCard.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 
-export function AlbumsView({ onAlbumClick }) {
+export function AlbumsView({ onAlbumClick, onArtistClick }) {
   const [albums, setAlbums] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -111,6 +111,7 @@ export function AlbumsView({ onAlbumClick }) {
               key={album.id}
               album={album}
               onClick={onAlbumClick}
+              onArtistClick={onArtistClick}
               onPlay={handlePlayAlbum}
             />
           ))}
