@@ -28,6 +28,84 @@ function cleanStr(v) {
   return s === '' ? null : s;
 }
 
+function extractLeadingArtist(name) {
+  if (!name) return null;
+  const m = name.match(/^(.+?)\s*(?:feat\.|ft\.|featuring|vs\.?|&|,\s)/i);
+  return m ? m[1].trim() : name.trim();
+}
+
+/**
+ * Normalizes folder path for multi-disc releases (e.g. CD1, Disc 2)
+ * so they merge into the same album folder.
+ */
+function normalizeAlbumFolder(fp) {
+  if (!fp) return '';
+  const base = path.basename(fp);
+  if (/^(cd|disc|disk)\s*\d+$/i.test(base)) {
+    return path.dirname(fp);
+  }
+  return fp;
+}
+
+/**
+ * Infers the album artist and compilation flag across a group of tracks from the same folder.
+ */
+function inferAlbumArtist(tracks) {
+  // 1. Any track has an explicit albumartist tag?
+  for (const t of tracks) {
+    if (t.albumArtistName) return { name: t.albumArtistName, compilation: false };
+  }
+
+  // 2. Count frequency of exact artist names
+  const counts = new Map();
+  for (const t of tracks) {
+    if (t.artistName) {
+      counts.set(t.artistName, (counts.get(t.artistName) || 0) + 1);
+    }
+  }
+
+  if (counts.size === 0) return { name: 'Unknown', compilation: false };
+  if (counts.size === 1) return { name: [...counts.keys()][0], compilation: false };
+
+  // Find most frequent artist
+  let bestArtist = null;
+  let maxCount = 0;
+  for (const [artist, count] of counts.entries()) {
+    if (count > maxCount) {
+      maxCount = count;
+      bestArtist = artist;
+    }
+  }
+
+  // If dominant artist covers at least 40% of the tracks or appears multiple times, use it
+  if (bestArtist && (maxCount >= Math.ceil(tracks.length * 0.4) || maxCount >= 2)) {
+    return { name: bestArtist, compilation: false };
+  }
+
+  // 3. Check leading artist prefix (e.g. "Sqwore, glaive" -> "Sqwore")
+  const leadingCounts = new Map();
+  for (const t of tracks) {
+    const lead = extractLeadingArtist(t.artistName);
+    if (lead) {
+      leadingCounts.set(lead, (leadingCounts.get(lead) || 0) + 1);
+    }
+  }
+  let bestLead = null;
+  let maxLeadCount = 0;
+  for (const [lead, count] of leadingCounts.entries()) {
+    if (count > maxLeadCount) {
+      maxLeadCount = count;
+      bestLead = lead;
+    }
+  }
+  if (bestLead && maxLeadCount >= Math.ceil(tracks.length * 0.5)) {
+    return { name: bestLead, compilation: false };
+  }
+
+  // 4. Truly diverse artists -> compilation
+  return { name: 'Various Artists', compilation: true };
+}
+
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
   let next = 0;
@@ -41,8 +119,6 @@ async function mapLimit(items, limit, fn) {
   return results;
 }
 
-const albumKey = (title, artistId) => `${title}\u0000${artistId ?? ''}`;
-
 /**
  * Upserts a batch of parsed tracks (artists -> albums -> tracks) with one
  * round-trip per table. Must run inside a transaction on `client`.
@@ -52,68 +128,132 @@ async function flushTrackBatch(client, items) {
   const touchedAlbumIds = new Set();
   if (items.length === 0) return touchedAlbumIds;
 
-  // 1. Artists
-  const artistNames = [...new Set(items.flatMap((i) => [i.artistName, i.albumArtistName]).filter(Boolean))];
+  // 1. Group items by album: (normalizedFolder, albumTitle)
+  const albumGroups = new Map();
+  for (const item of items) {
+    const title = item.albumTitle || path.basename(normalizeAlbumFolder(item.folderPath));
+    const normFolder = normalizeAlbumFolder(item.folderPath);
+    const key = `${normFolder}\u0000${title}`;
+    if (!albumGroups.has(key)) {
+      albumGroups.set(key, { normFolder, title, tracks: [] });
+    }
+    albumGroups.get(key).tracks.push(item);
+  }
+
+  // Determine album artist and compilation flag for each album group
+  const albumMetaList = [];
+  for (const [groupKey, group] of albumGroups.entries()) {
+    const inferred = inferAlbumArtist(group.tracks);
+    const sample = group.tracks[0];
+    albumMetaList.push({
+      groupKey,
+      normFolder: group.normFolder,
+      title: group.title,
+      albumArtistName: inferred.name,
+      compilation: inferred.compilation,
+      year: sample.year,
+      genre: sample.genre,
+    });
+  }
+
+  // 2. Artists: collect all track artists + all inferred album artists
+  const allArtistNames = [
+    ...new Set([
+      ...items.map((i) => i.artistName).filter(Boolean),
+      ...albumMetaList.map((a) => a.albumArtistName).filter(Boolean),
+    ]),
+  ];
+
   const artistMap = new Map();
-  if (artistNames.length > 0) {
+  if (allArtistNames.length > 0) {
     const { rows } = await client.query(
       `INSERT INTO artists (name)
        SELECT n FROM unnest($1::text[]) AS n
        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
        RETURNING id, name`,
-      [artistNames]
+      [allArtistNames]
     );
     for (const r of rows) artistMap.set(r.name, r.id);
   }
 
-  // 2. Albums (deduplicated in JS: ON CONFLICT can't touch the same row twice per statement)
-  const resolveIds = (i) => {
-    const artistId = i.artistName ? artistMap.get(i.artistName) ?? null : null;
-    const albumArtistId = i.albumArtistName ? artistMap.get(i.albumArtistName) ?? artistId : artistId;
-    return { artistId, albumArtistId };
-  };
+  // 3. Albums: look up existing albums in DB by (folder_path, title) first
+  const groupKeys = albumMetaList.map((a) => a.groupKey);
+  const titles = albumMetaList.map((a) => a.title);
+  const folders = albumMetaList.map((a) => a.normFolder);
 
-  const albums = new Map();
-  for (const i of items) {
-    if (!i.albumTitle) continue;
-    const { albumArtistId } = resolveIds(i);
-    const key = albumKey(i.albumTitle, albumArtistId);
-    if (!albums.has(key)) {
-      albums.set(key, { title: i.albumTitle, artistId: albumArtistId, year: i.year, genre: i.genre, folderPath: i.folderPath });
+  const { rows: existingAlbumRows } = await client.query(
+    `SELECT id, title, folder_path, artist_id
+     FROM albums
+     WHERE folder_path = ANY($1::text[]) AND title = ANY($2::text[])`,
+    [folders, titles]
+  );
+
+  const albumMap = new Map();
+  for (const r of existingAlbumRows) {
+    if (r.folder_path) {
+      albumMap.set(`${r.folder_path}\u0000${r.title}`, r.id);
     }
   }
 
-  const albumMap = new Map();
-  if (albums.size > 0) {
-    const list = [...albums.values()];
-    const { rows } = await client.query(
-      `INSERT INTO albums (title, artist_id, year, genre, folder_path)
-       SELECT * FROM unnest($1::text[], $2::int[], $3::int[], $4::text[], $5::text[])
+  // Albums that need to be inserted or updated
+  const albumsToUpsert = [];
+  for (const a of albumMetaList) {
+    if (!albumMap.has(a.groupKey)) {
+      const artistId = a.albumArtistName ? (artistMap.get(a.albumArtistName) ?? null) : null;
+      albumsToUpsert.push({
+        groupKey: a.groupKey,
+        title: a.title,
+        artistId,
+        year: a.year,
+        genre: a.genre,
+        folderPath: a.normFolder,
+        compilation: a.compilation,
+      });
+    }
+  }
+
+  if (albumsToUpsert.length > 0) {
+    const { rows: upsertedRows } = await client.query(
+      `INSERT INTO albums (title, artist_id, year, genre, folder_path, compilation)
+       SELECT * FROM unnest(
+         $1::text[], $2::int[], $3::int[], $4::text[], $5::text[], $6::boolean[]
+       )
        ON CONFLICT (title, artist_id) DO UPDATE SET
          year = COALESCE(EXCLUDED.year, albums.year),
          genre = COALESCE(EXCLUDED.genre, albums.genre),
-         folder_path = COALESCE(EXCLUDED.folder_path, albums.folder_path)
-       RETURNING id, title, artist_id`,
+         folder_path = COALESCE(albums.folder_path, EXCLUDED.folder_path),
+         compilation = COALESCE(albums.compilation, EXCLUDED.compilation)
+       RETURNING id, title, folder_path, artist_id`,
       [
-        list.map((a) => a.title),
-        list.map((a) => a.artistId),
-        list.map((a) => a.year),
-        list.map((a) => a.genre),
-        list.map((a) => a.folderPath),
+        albumsToUpsert.map((a) => a.title),
+        albumsToUpsert.map((a) => a.artistId),
+        albumsToUpsert.map((a) => a.year),
+        albumsToUpsert.map((a) => a.genre),
+        albumsToUpsert.map((a) => a.folderPath),
+        albumsToUpsert.map((a) => a.compilation),
       ]
     );
-    for (const r of rows) albumMap.set(albumKey(r.title, r.artist_id), r.id);
+
+    for (const r of upsertedRows) {
+      if (r.folder_path) {
+        albumMap.set(`${r.folder_path}\u0000${r.title}`, r.id);
+      }
+    }
   }
 
-  // 3. Tracks
+  // 4. Tracks: each track keeps its own artistId, but links to the shared albumId
   const cols = Array.from({ length: 15 }, () => []);
   for (const i of items) {
-    const { artistId, albumArtistId } = resolveIds(i);
-    const albumId = i.albumTitle ? albumMap.get(albumKey(i.albumTitle, albumArtistId)) ?? null : null;
+    const title = i.albumTitle || path.basename(normalizeAlbumFolder(i.folderPath));
+    const normFolder = normalizeAlbumFolder(i.folderPath);
+    const aKey = `${normFolder}\u0000${title}`;
+    const albumId = albumMap.get(aKey) ?? null;
+    const trackArtistId = i.artistName ? (artistMap.get(i.artistName) ?? null) : null;
+
     if (albumId) touchedAlbumIds.add(albumId);
     [
       i.filePath, i.fileName, i.fileSize, i.duration, i.title,
-      artistId, albumId, i.trackNumber, i.discNumber, i.genre,
+      trackArtistId, albumId, i.trackNumber, i.discNumber, i.genre,
       i.year, i.bitrate, i.sampleRate, i.format, i.mtime,
     ].forEach((v, idx) => cols[idx].push(v));
   }
@@ -225,7 +365,7 @@ async function parseTrackFile({ path: filePath, size, mtime }) {
       duration: Number.isFinite(format.duration) ? format.duration : 0,
       title: cleanStr(common.title) || base.title,
       artistName,
-      albumArtistName: cleanStr(common.albumartist) || artistName,
+      albumArtistName: cleanStr(common.albumartist) || null,
       albumTitle: cleanStr(common.album),
       trackNumber: toInt(common.track?.no),
       discNumber: toInt(common.disk?.no) || 1,
@@ -319,7 +459,7 @@ export async function scanDirectory(musicDir, { full = false } = {}) {
     }
     if (removed > 0) console.log(`Removed ${removed} stale track(s) from DB`);
 
-    // Re-tagged tracks may have moved to another album/artist, so always clean up.
+    // Clean up empty albums/artists
     await removeOrphans(client);
   } finally {
     client.release();
