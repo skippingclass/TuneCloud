@@ -1,9 +1,8 @@
 import { useState } from 'react';
-import { Radio, Lock, User, LogIn, ArrowRight } from 'lucide-react';
+import { Radio, Lock, User, ArrowRight } from 'lucide-react';
 import { api, setAuthToken } from '../api.js';
 
 export function LoginView({ onLogin }) {
-  const [tab, setTab] = useState('login'); // 'login' | 'register'
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
@@ -14,8 +13,7 @@ export function LoginView({ onLogin }) {
     setErr('');
     setLoading(true);
     try {
-      const fn = tab === 'login' ? api.login : api.register;
-      const data = await fn(username, password);
+      const data = await api.login(username, password);
       setAuthToken(data.token);
       onLogin(data.user);
     } catch (e) {
@@ -41,9 +39,7 @@ export function LoginView({ onLogin }) {
             TuneCloud
           </h1>
           <p className="text-xs text-surface-400">
-            {tab === 'login'
-              ? 'Sign in to stream your personal collection'
-              : 'Create an account on this server'}
+            Sign in to stream your personal collection
           </p>
         </div>
 
@@ -96,26 +92,10 @@ export function LoginView({ onLogin }) {
               disabled={loading}
               className="btn-primary w-full py-2.5 shadow-glow"
             >
-              <span>{loading ? 'Authenticating...' : tab === 'login' ? 'Sign In' : 'Create Account'}</span>
+              <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
-
-          {/* Tab switch */}
-          <div className="pt-2 border-t border-white/[0.06] text-center">
-            <button
-              type="button"
-              onClick={() => {
-                setTab((t) => (t === 'login' ? 'register' : 'login'));
-                setErr('');
-              }}
-              className="text-xs text-surface-400 hover:text-accent font-medium transition-colors"
-            >
-              {tab === 'login'
-                ? "Don't have an account? Sign up"
-                : 'Already have an account? Sign in'}
-            </button>
-          </div>
         </div>
       </div>
     </div>
