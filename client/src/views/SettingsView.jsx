@@ -130,7 +130,7 @@ export function SettingsView({ user, onScanComplete }) {
           </div>
           <div className="bg-white/[0.02] p-3 rounded-xl border border-white/[0.04]">
             <span className="text-surface-500 block text-[11px]">Subsonic API</span>
-            <span className="font-semibold text-white">1.16.1 (Full Gonic Parity)</span>
+            <span className="font-semibold text-white">1.16.1</span>
           </div>
           <div className="bg-white/[0.02] p-3 rounded-xl border border-white/[0.04]">
             <span className="text-surface-500 block text-[11px]">Synced Lyrics</span>

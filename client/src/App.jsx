@@ -28,7 +28,7 @@ import { LoginView } from './views/LoginView.jsx';
 
 function MainLayout({ user, onLogout }) {
   const [view, setView] = useState('home');
-  const [history, setHistory] = useState(['home']);
+  const [history, setHistory] = useState([{ view: 'home', param: null }]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
   const [selectedAlbum, setSelectedAlbum] = useState(null);
@@ -39,35 +39,72 @@ function MainLayout({ user, onLogout }) {
   const [editingTrack, setEditingTrack] = useState(null);
   const [scanVersion, setScanVersion] = useState(0);
 
-  const { currentTrack } = usePlayer();
+  const { currentTrack, playTrack } = usePlayer();
 
-  const navigateTo = useCallback((targetView, param = null) => {
-    if (targetView === 'album') {
-      setSelectedAlbum(param);
-    } else if (targetView === 'artist') {
-      setSelectedArtist(param);
-    } else if (targetView === 'search') {
-      if (typeof param === 'string') setSearchQuery(param);
-    }
+  const navigateTo = useCallback(
+    (targetView, param = null) => {
+      // Prevent duplicate history entries when clicking same page or same item
+      const currentEntry = history[historyIndex];
+      if (currentEntry && currentEntry.view === targetView) {
+        if (
+          targetView === 'album' &&
+          (currentEntry.param?.id === param?.id ||
+            (!param?.id && currentEntry.param?.title === param?.title))
+        ) {
+          return;
+        }
+        if (targetView === 'artist' && currentEntry.param?.name === param?.name) {
+          return;
+        }
+        if (targetView === 'search' && currentEntry.param === param) {
+          return;
+        }
+        if (targetView === 'browse' && currentEntry.param === param) {
+          return;
+        }
+        if (!['album', 'artist', 'search', 'browse'].includes(targetView)) {
+          return;
+        }
+      }
 
-    setView(targetView);
-    setHistory((prev) => [...prev.slice(0, historyIndex + 1), targetView]);
-    setHistoryIndex((prev) => prev + 1);
-  }, [historyIndex]);
+      if (targetView === 'album') {
+        setSelectedAlbum(param);
+      } else if (targetView === 'artist') {
+        setSelectedArtist(param);
+      } else if (targetView === 'browse') {
+        setBrowsePath(param || '');
+      } else if (targetView === 'search') {
+        if (typeof param === 'string') setSearchQuery(param);
+      }
+
+      setView(targetView);
+      setHistory((prev) => [...prev.slice(0, historyIndex + 1), { view: targetView, param }]);
+      setHistoryIndex((prev) => prev + 1);
+    },
+    [historyIndex, history]
+  );
 
   const handleBack = () => {
     if (historyIndex > 0) {
-      const prevView = history[historyIndex - 1];
+      const prevEntry = history[historyIndex - 1];
       setHistoryIndex((i) => i - 1);
-      setView(prevView);
+      setView(prevEntry.view);
+      if (prevEntry.view === 'album') setSelectedAlbum(prevEntry.param);
+      if (prevEntry.view === 'artist') setSelectedArtist(prevEntry.param);
+      if (prevEntry.view === 'browse') setBrowsePath(prevEntry.param || '');
+      if (prevEntry.view === 'search') setSearchQuery(prevEntry.param || '');
     }
   };
 
   const handleForward = () => {
     if (historyIndex < history.length - 1) {
-      const nextView = history[historyIndex + 1];
+      const nextEntry = history[historyIndex + 1];
       setHistoryIndex((i) => i + 1);
-      setView(nextView);
+      setView(nextEntry.view);
+      if (nextEntry.view === 'album') setSelectedAlbum(nextEntry.param);
+      if (nextEntry.view === 'artist') setSelectedArtist(nextEntry.param);
+      if (nextEntry.view === 'browse') setBrowsePath(nextEntry.param || '');
+      if (nextEntry.view === 'search') setSearchQuery(nextEntry.param || '');
     }
   };
 
@@ -110,11 +147,13 @@ function MainLayout({ user, onLogout }) {
             canGoForward={historyIndex < history.length - 1}
             onForward={handleForward}
             searchQuery={searchQuery}
-            onSearchChange={(q) => {
-              setSearchQuery(q);
-              if (q && view !== 'search') navigateTo('search', q);
-            }}
+            onSearchChange={setSearchQuery}
+            onSubmitSearch={(q) => navigateTo('search', q)}
+            onSelectAlbum={handleAlbumClick}
+            onSelectArtist={handleArtistClick}
+            onPlayTrack={(track) => playTrack(track, [track])}
             onOpenSidebar={() => setSidebarOpen(true)}
+            currentView={view}
             currentViewTitle={viewTitles[view]}
           />
 

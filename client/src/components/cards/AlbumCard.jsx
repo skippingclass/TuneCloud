@@ -1,6 +1,7 @@
-import { Play, Heart, Disc } from 'lucide-react';
+import { Play, Pause, Heart, Disc } from 'lucide-react';
 import { api } from '../../api.js';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
+import { usePlayer } from '../../context/PlayerContext.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -11,7 +12,14 @@ function formatDuration(sec) {
 
 export function AlbumCard({ album, onClick, onPlay, onArtistClick }) {
   const { isAlbumStarred, toggleFavoriteAlbum } = useFavorites();
+  const { currentTrack, isPlaying, togglePlay } = usePlayer();
   const starred = isAlbumStarred(album.id);
+
+  const isCurrentAlbum =
+    currentTrack &&
+    (currentTrack.album_id === album.id ||
+      (album.title && currentTrack.album === album.title));
+  const isCurrentAlbumPlaying = isCurrentAlbum && isPlaying;
 
   const handleFavoriteClick = (e) => {
     e.stopPropagation();
@@ -20,7 +28,11 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick }) {
 
   const handlePlayClick = (e) => {
     e.stopPropagation();
-    onPlay?.(album);
+    if (isCurrentAlbum) {
+      togglePlay();
+    } else {
+      onPlay?.(album);
+    }
   };
 
   return (
@@ -57,14 +69,28 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick }) {
           <Heart className={`w-3.5 h-3.5 ${starred ? 'fill-accent' : ''}`} />
         </button>
 
-        {/* Play button overlay (bottom right) */}
+        {/* Play / Pause button overlay (bottom right) */}
         {onPlay && (
           <button
             onClick={handlePlayClick}
-            className="absolute bottom-2.5 right-2.5 w-10 h-10 rounded-full bg-gradient-to-r from-accent to-accent-hover text-surface-950 flex items-center justify-center shadow-glow opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-300 hover:scale-110 z-10"
-            title="Play Album"
+            className={`absolute bottom-2.5 right-2.5 w-10 h-10 rounded-full bg-gradient-to-r from-accent to-accent-hover text-surface-950 flex items-center justify-center shadow-glow transition-all duration-300 hover:scale-110 z-10 ${
+              isCurrentAlbum
+                ? 'opacity-100 translate-y-0 scale-100'
+                : 'opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0'
+            }`}
+            title={
+              isCurrentAlbumPlaying
+                ? 'Pause Album'
+                : isCurrentAlbum
+                ? 'Resume Album'
+                : 'Play Album'
+            }
           >
-            <Play className="w-4 h-4 fill-surface-950 ml-0.5" />
+            {isCurrentAlbumPlaying ? (
+              <Pause className="w-4 h-4 fill-surface-950" />
+            ) : (
+              <Play className="w-4 h-4 fill-surface-950 ml-0.5" />
+            )}
           </button>
         )}
       </div>
