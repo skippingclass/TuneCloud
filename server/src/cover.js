@@ -33,7 +33,15 @@ export async function initCoversDir() {
 async function saveCoverBuffer(buffer, format, albumId) {
   const ext = format?.split('/')[1] || 'jpg';
   const filename = `album_${albumId}.${ext}`;
-  await fsp.writeFile(path.join(COVERS_DIR, filename), buffer);
+  const targetPath = path.join(COVERS_DIR, filename);
+  await fsp.writeFile(targetPath, buffer);
+
+  for (const altExt of ['jpg', 'jpeg', 'png', 'webp']) {
+    if (altExt !== ext) {
+      try { await fsp.unlink(path.join(COVERS_DIR, `album_${albumId}.${altExt}`)); } catch {}
+    }
+  }
+
   return `/api/cover/${filename}`;
 }
 
@@ -68,21 +76,59 @@ export async function extractCoverFromTrack(filePath, albumId) {
 }
 
 /**
- * Extracts covers for albums that have none, reading exactly one file per album.
- * @param {number[]|null} albumIds restrict to these albums (null = all albums without a cover)
+ * Extracts a cover for an album by scanning its tracks in order for embedded artwork.
  */
-export async function extractAllMissingCovers(albumIds = null) {
+export async function extractCoverForAlbum(albumId) {
+  if (!albumId) return null;
+  const { rows: tracks } = await query(
+    'SELECT file_path FROM tracks WHERE album_id = $1 ORDER BY track_number ASC, file_path ASC LIMIT 50',
+    [albumId]
+  );
+  for (const t of tracks) {
+    try {
+      const meta = await parseFile(t.file_path, { skipCovers: false });
+      const pic = meta.common?.picture?.[0];
+      if (pic) {
+        return setAlbumCover(albumId, await saveCoverBuffer(pic.data, pic.format, albumId));
+      }
+    } catch {}
+  }
+  if (tracks[0]) {
+    return extractAlbumCover(albumId, path.dirname(tracks[0].file_path));
+  }
+  return null;
+}
+
+/**
+ * Extracts covers for albums. Supports options object { albumIds, force } or legacy albumIds array.
+ * When force is true, existing covers are refreshed and overwritten.
+ */
+export async function extractAllMissingCovers(optionsOrIds = null) {
+  let albumIds = null;
+  let force = false;
+
+  if (Array.isArray(optionsOrIds)) {
+    albumIds = optionsOrIds;
+  } else if (optionsOrIds && typeof optionsOrIds === 'object') {
+    albumIds = optionsOrIds.albumIds || null;
+    force = Boolean(optionsOrIds.force);
+  }
+
   if (albumIds && albumIds.length === 0) return { total: 0, extracted: 0 };
 
-  const { rows: albums } = await query(
-    `SELECT al.id, MIN(t.file_path) AS sample_path
-     FROM albums al
-     JOIN tracks t ON t.album_id = al.id
-     WHERE al.cover_path IS NULL
-       AND ($1::int[] IS NULL OR al.id = ANY($1::int[]))
-     GROUP BY al.id`,
-    [albumIds]
-  );
+  const whereClause = force ? '' : 'WHERE al.cover_path IS NULL';
+  const andClause = albumIds
+    ? `${force ? 'WHERE' : 'AND'} al.id = ANY($1::int[])`
+    : '';
+
+  const sql = `
+    SELECT DISTINCT al.id
+    FROM albums al
+    JOIN tracks t ON t.album_id = al.id
+    ${whereClause} ${andClause}
+  `;
+
+  const { rows: albums } = await query(sql, albumIds ? [albumIds] : []);
 
   let extracted = 0;
   let next = 0;
@@ -90,7 +136,7 @@ export async function extractAllMissingCovers(albumIds = null) {
     while (next < albums.length) {
       const album = albums[next++];
       try {
-        if (await extractCoverFromTrack(album.sample_path, album.id)) extracted++;
+        if (await extractCoverForAlbum(album.id)) extracted++;
       } catch (err) {
         console.error(`Cover extraction failed for album ${album.id}: ${err.message}`);
       }

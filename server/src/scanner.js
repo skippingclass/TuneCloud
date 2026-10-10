@@ -416,7 +416,7 @@ async function removeOrphans(client) {
  * Scans musicDir. Incremental by default: only files whose mtime differs from
  * the stored one (or that are new) are parsed. `full: true` re-parses everything.
  */
-export async function scanDirectory(musicDir, { full = false } = {}) {
+export async function scanDirectory(musicDir, { full = false, reextractCovers = false } = {}) {
   const root = path.resolve(musicDir);
   const startedAt = Date.now();
 
@@ -425,23 +425,32 @@ export async function scanDirectory(musicDir, { full = false } = {}) {
 
   const prefix = root.endsWith(path.sep) ? root : root + path.sep;
   const { rows: known } = await query(
-    'SELECT id, file_path, mtime FROM tracks WHERE starts_with(file_path, $1)',
+    'SELECT id, file_path, album_id, mtime FROM tracks WHERE starts_with(file_path, $1)',
     [prefix]
   );
   const knownByPath = new Map(known.map((r) => [r.file_path, r]));
 
   const onDisk = new Set();
   const toProcess = [];
+  const touchedAlbumIds = new Set();
+
   for (const f of files) {
     onDisk.add(f.path);
     const k = knownByPath.get(f.path);
-    if (full || !k || !k.mtime || k.mtime.getTime() !== f.mtime.getTime()) toProcess.push(f);
+    if (full || !k || !k.mtime || k.mtime.getTime() !== f.mtime.getTime()) {
+      toProcess.push(f);
+      if (k?.album_id) touchedAlbumIds.add(k.album_id);
+    }
   }
   const unchanged = files.length - toProcess.length;
   console.log(`Unchanged: ${unchanged}, to process: ${toProcess.length}`);
 
-  const staleIds = known.filter((r) => !onDisk.has(r.file_path)).map((r) => r.id);
-  const touchedAlbumIds = new Set();
+  const staleRows = known.filter((r) => !onDisk.has(r.file_path));
+  const staleIds = staleRows.map((r) => r.id);
+  for (const r of staleRows) {
+    if (r.album_id) touchedAlbumIds.add(r.album_id);
+  }
+
   let processed = 0;
   let removed = 0;
 
@@ -465,12 +474,34 @@ export async function scanDirectory(musicDir, { full = false } = {}) {
     client.release();
   }
 
-  const covers = await extractAllMissingCovers(full ? null : [...touchedAlbumIds]);
-  console.log(`Covers extracted: ${covers.extracted}/${covers.total}`);
+  let coversExtracted = 0;
+  let coversTotal = 0;
+
+  if (full || reextractCovers) {
+    const covers = await extractAllMissingCovers({ force: true });
+    coversExtracted = covers.extracted;
+    coversTotal = covers.total;
+  } else {
+    // 1. Force re-extract for touched albums so retagged/moved tracks update the cover
+    if (touchedAlbumIds.size > 0) {
+      const touchedCovers = await extractAllMissingCovers({
+        albumIds: [...touchedAlbumIds],
+        force: true,
+      });
+      coversExtracted += touchedCovers.extracted;
+      coversTotal += touchedCovers.total;
+    }
+    // 2. Extract for any other albums still missing covers
+    const missingCovers = await extractAllMissingCovers({ force: false });
+    coversExtracted += missingCovers.extracted;
+    coversTotal += missingCovers.total;
+  }
+
+  console.log(`Covers extracted: ${coversExtracted}/${coversTotal}`);
 
   const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
   console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
-  return { total: files.length, processed, unchanged, removed, covers: covers.extracted, durationSeconds };
+  return { total: files.length, processed, unchanged, removed, covers: coversExtracted, durationSeconds };
 }
 
 export async function scanSingleFile(filePath) {
@@ -478,6 +509,9 @@ export async function scanSingleFile(filePath) {
     const { size, mtime } = await fs.stat(filePath);
     const item = await parseTrackFile({ path: filePath, size, mtime });
     const touched = new Set();
+    const { rows: prev } = await query('SELECT album_id FROM tracks WHERE file_path = $1', [filePath]);
+    if (prev[0]?.album_id) touched.add(prev[0].album_id);
+
     const client = await getClient();
     let written;
     try {
@@ -485,7 +519,9 @@ export async function scanSingleFile(filePath) {
     } finally {
       client.release();
     }
-    if (written > 0) await extractAllMissingCovers([...touched]);
+    if (written > 0 && touched.size > 0) {
+      await extractAllMissingCovers({ albumIds: [...touched], force: true });
+    }
     return written > 0;
   } catch (err) {
     console.error(`Failed to process ${filePath}: ${err.message}`);

@@ -1,4 +1,5 @@
 import { scanDirectory, scanSingleFile } from '../scanner.js';
+import { extractAllMissingCovers } from '../cover.js';
 import { requireAdmin } from '../auth.js';
 import { recordScan } from '../metrics.js';
 import { query } from '../db.js';
@@ -14,14 +15,14 @@ export function getScanState() {
   return { isScanning, lastResult, lastScanAt };
 }
 
-export function startScanInBackground({ full = false } = {}) {
+export function startScanInBackground({ full = false, reextractCovers = false } = {}) {
   const musicDir = process.env.MUSIC_DIR;
   if (!musicDir || !fs.existsSync(musicDir) || isScanning) return false;
   isScanning = true;
   (async () => {
     try {
       const start = Date.now();
-      const result = await scanDirectory(musicDir, { full });
+      const result = await scanDirectory(musicDir, { full, reextractCovers });
       recordScan(result, Math.round((Date.now() - start) / 1000));
       lastResult = result;
       lastScanAt = new Date().toISOString();
@@ -46,14 +47,47 @@ export default async function scanRoutes(fastify) {
     }
 
     const full = req.body?.full === true || req.query?.full === '1' || req.query?.full === 'true';
+    const reextractCovers = req.body?.reextractCovers === true || req.query?.reextractCovers === '1' || req.query?.reextractCovers === 'true';
     isScanning = true;
     try {
       const start = Date.now();
-      const result = await scanDirectory(musicDir, { full });
+      const result = await scanDirectory(musicDir, { full, reextractCovers });
       recordScan(result, Math.round((Date.now() - start) / 1000));
       lastResult = result;
       lastScanAt = new Date().toISOString();
       return { message: 'Scan completed', result };
+    } catch (err) {
+      req.log.error(err);
+      return reply.status(500).send({ error: err.message });
+    } finally {
+      isScanning = false;
+    }
+  });
+
+  fastify.post('/api/scan/covers', { preHandler: requireAdmin }, async (req, reply) => {
+    if (isScanning) {
+      return reply.status(409).send({ error: 'Scan already in progress' });
+    }
+
+    const rawAlbumId = req.body?.albumId ?? req.query?.albumId;
+    const rawAlbumIds = req.body?.albumIds ?? req.query?.albumIds;
+    let albumIds = null;
+    if (rawAlbumIds) {
+      albumIds = Array.isArray(rawAlbumIds)
+        ? rawAlbumIds.map(Number).filter(Number.isFinite)
+        : String(rawAlbumIds).split(',').map((s) => Number(s.trim())).filter(Number.isFinite);
+    } else if (rawAlbumId != null) {
+      const parsed = Number(rawAlbumId);
+      if (Number.isFinite(parsed)) albumIds = [parsed];
+    }
+
+    const force = req.body?.force !== false && req.query?.force !== 'false';
+    isScanning = true;
+    try {
+      const start = Date.now();
+      const result = await extractAllMissingCovers({ albumIds, force });
+      const durationSeconds = Math.round((Date.now() - start) / 1000);
+      return { message: 'Cover extraction completed', result, durationSeconds };
     } catch (err) {
       req.log.error(err);
       return reply.status(500).send({ error: err.message });
