@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Play, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2 } from 'lucide-react';
+import { Play, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2, Maximize2 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
+import { CoverModal } from '../components/modals/CoverModal.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { useFavorites } from '../context/FavoritesContext.jsx';
 
@@ -23,6 +24,7 @@ export function AlbumDetailView({
   const [loading, setLoading] = useState(true);
   const { currentTrack, playTrack } = usePlayer();
   const { isAlbumStarred, toggleFavoriteAlbum } = useFavorites();
+  const [showCoverModal, setShowCoverModal] = useState(false);
 
   const starred = isAlbumStarred(album.id);
 
@@ -72,14 +74,25 @@ export function AlbumDetailView({
         )}
 
         {/* Large Cover */}
-        <div className="w-40 h-40 sm:w-56 sm:h-56 rounded-2xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.12] shadow-glass-lg relative z-10">
+        <div
+          onClick={() => album.cover_path && setShowCoverModal(true)}
+          className={`w-40 h-40 sm:w-56 sm:h-56 rounded-2xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.12] shadow-glass-lg relative z-10 group ${
+            album.cover_path ? 'cursor-pointer' : ''
+          }`}
+          title={album.cover_path ? 'Click to view full cover' : ''}
+        >
           {album.cover_path ? (
-            <img
-              src={api.coverUrl(album.cover_path)}
-              alt={album.title}
-              className="w-full h-full object-cover"
-              draggable="false"
-            />
+            <>
+              <img
+                src={api.coverUrl(album.cover_path)}
+                alt={album.title}
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                draggable="false"
+              />
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                <Maximize2 className="w-6 h-6 text-white drop-shadow-md" />
+              </div>
+            </>
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-white/[0.03]">
               <Disc className="w-16 h-16 text-surface-500 stroke-1" />
@@ -190,6 +203,17 @@ export function AlbumDetailView({
             </table>
           </div>
         </div>
+      )}
+
+      {/* Fullscreen Cover Lightbox */}
+      {showCoverModal && album.cover_path && (
+        <CoverModal
+          coverPath={album.cover_path}
+          title={album.title}
+          artist={album.artist}
+          year={album.year}
+          onClose={() => setShowCoverModal(false)}
+        />
       )}
     </div>
   );

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Play,
   Pause,
@@ -12,10 +13,12 @@ import {
   Mic2,
   X,
   Disc,
+  Maximize2,
 } from 'lucide-react';
 import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
+import { CoverModal } from '../modals/CoverModal.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -52,6 +55,7 @@ export function Player() {
   } = usePlayer();
 
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
+  const [showFullCover, setShowFullCover] = useState(false);
 
   if (!currentTrack) return null;
 
@@ -69,14 +73,25 @@ export function Player() {
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-6 h-20">
         {/* Left: Track artwork & metadata */}
         <div className="flex items-center gap-3 sm:gap-4 min-w-0 w-52 sm:w-72 shrink-0">
-          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.1] shadow-md relative group">
+          <div
+            onClick={() => currentTrack.cover_path && setShowFullCover(true)}
+            className={`w-12 h-12 sm:w-14 sm:h-14 rounded-xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.1] shadow-md relative group ${
+              currentTrack.cover_path ? 'cursor-pointer' : ''
+            }`}
+            title={currentTrack.cover_path ? 'Click to view full cover' : ''}
+          >
             {currentTrack.cover_path ? (
-              <img
-                src={api.coverUrl(currentTrack.cover_path)}
-                alt=""
-                className="w-full h-full object-cover"
-                draggable="false"
-              />
+              <>
+                <img
+                  src={api.coverUrl(currentTrack.cover_path)}
+                  alt=""
+                  className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                  draggable="false"
+                />
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                  <Maximize2 className="w-4 h-4 text-white drop-shadow-md" />
+                </div>
+              </>
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-white/[0.03]">
                 <Disc className="w-6 h-6 text-surface-500" />
@@ -226,8 +241,16 @@ export function Player() {
             <ListMusic className="w-4 h-4" />
           </button>
 
-          {/* Volume slider */}
-          <div className="hidden sm:flex items-center gap-2 text-surface-400 pl-2">
+          {/* Volume slider with mousewheel adjustment */}
+          <div
+            onWheel={(e) => {
+              e.preventDefault();
+              const delta = e.deltaY > 0 ? -0.05 : 0.05;
+              setVolume(volume + delta);
+            }}
+            className="hidden sm:flex items-center gap-2 text-surface-400 pl-2 cursor-pointer select-none"
+            title="Scroll mouse wheel to change volume"
+          >
             <button
               onClick={toggleMute}
               className="hover:text-white transition-colors"
@@ -246,6 +269,11 @@ export function Player() {
               step="0.01"
               value={muted ? 0 : volume}
               onChange={(e) => setVolume(parseFloat(e.target.value))}
+              onWheel={(e) => {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? -0.05 : 0.05;
+                setVolume(volume + delta);
+              }}
               className="w-20 h-1 appearance-none bg-surface-700 rounded-full cursor-pointer accent-accent"
             />
           </div>
@@ -260,6 +288,17 @@ export function Player() {
           </button>
         </div>
       </div>
+
+      {/* Lightbox Cover Modal */}
+      {showFullCover && currentTrack.cover_path && (
+        <CoverModal
+          coverPath={currentTrack.cover_path}
+          title={currentTrack.title || currentTrack.fileName || currentTrack.file_name}
+          artist={currentTrack.artist}
+          year={currentTrack.year}
+          onClose={() => setShowFullCover(false)}
+        />
+      )}
     </div>
   );
 }

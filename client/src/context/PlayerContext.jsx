@@ -17,7 +17,12 @@ export function PlayerProvider({ children }) {
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [volume, setVolumeState] = useState(() => {
     try {
-      return parseFloat(localStorage.getItem(VOL_KEY)) || 0.7;
+      const saved = localStorage.getItem(VOL_KEY);
+      if (saved !== null) {
+        const val = parseFloat(saved);
+        if (!isNaN(val)) return Math.max(0, Math.min(1, val));
+      }
+      return 0.7;
     } catch {
       return 0.7;
     }
@@ -27,11 +32,11 @@ export function PlayerProvider({ children }) {
 
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
 
-  // Sync volume with audio element
+  // Sync volume with audio element immediately whenever volume, muted, or track changes
   useEffect(() => {
     const el = audioRef.current;
     if (el) el.volume = muted ? 0 : volume;
-  }, [volume, muted]);
+  }, [volume, muted, currentTrack]);
 
   const setVolume = useCallback((v) => {
     const clamped = Math.max(0, Math.min(1, v));
@@ -264,9 +269,18 @@ export function PlayerProvider({ children }) {
       {children}
       {currentTrack && (
         <audio
-          ref={audioRef}
+          ref={(el) => {
+            audioRef.current = el;
+            if (el) el.volume = muted ? 0 : volume;
+          }}
           key={currentTrack.id}
           autoPlay
+          onLoadedMetadata={(e) => {
+            e.currentTarget.volume = muted ? 0 : volume;
+          }}
+          onPlay={(e) => {
+            e.currentTarget.volume = muted ? 0 : volume;
+          }}
           className="hidden"
           src={api.streamUrl(currentTrack.id)}
         />
