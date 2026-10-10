@@ -58,4 +58,10 @@ export const api = {
   register: (username, password) => fetchJson('/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }),
   me: () => fetchJson('/auth/me'),
   adminUsers: () => fetchJson('/auth/users'),
+  favorites: () => fetchJson('/favorites'),
+  toggleFavoriteTrack: (id) => fetchJson(`/favorites/track/${id}`, { method: 'POST' }),
+  toggleFavoriteAlbum: (id) => fetchJson(`/favorites/album/${id}`, { method: 'POST' }),
+  genres: () => fetchJson('/genres'),
+  scrobble: (id) => fetchJson(`/scrobble/${id}`, { method: 'POST' }),
+  lyrics: (params) => fetchJson(`/lyrics?${new URLSearchParams(params)}`),
 };
