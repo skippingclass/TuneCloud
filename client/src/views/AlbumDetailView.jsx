@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Play, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2, Maximize2 } from 'lucide-react';
+import { Play, Pause, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2, Maximize2 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { CoverModal } from '../components/modals/CoverModal.jsx';
@@ -23,7 +23,7 @@ export function AlbumDetailView({
 }) {
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const { currentTrack, playTrack } = usePlayer();
+  const { currentTrack, isPlaying, playTrack, togglePlay } = usePlayer();
   const { isAlbumStarred, toggleFavoriteAlbum } = useFavorites();
   const [showCoverModal, setShowCoverModal] = useState(false);
 
@@ -37,6 +37,12 @@ export function AlbumDetailView({
     year: album.year || tracks[0]?.year,
     genre: album.genre || tracks[0]?.genre,
   };
+
+  const isThisAlbum =
+    currentTrack &&
+    (currentTrack.album_id === album.id ||
+      tracks.some((t) => t.id === currentTrack.id));
+  const isThisAlbumPlaying = isThisAlbum && isPlaying;
 
   const reloadTracks = () => {
     setLoading(true);
@@ -53,6 +59,10 @@ export function AlbumDetailView({
   const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
 
   const handlePlayAll = () => {
+    if (isThisAlbum) {
+      togglePlay();
+      return;
+    }
     if (tracks.length > 0) playTrack(tracks[0], tracks);
   };
 
@@ -148,8 +158,17 @@ export function AlbumDetailView({
               disabled={tracks.length === 0}
               className="btn-primary px-5 py-2.5 shadow-glow"
             >
-              <Play className="w-4 h-4 fill-surface-950" />
-              <span>Play All</span>
+              {isThisAlbumPlaying ? (
+                <>
+                  <Pause className="w-4 h-4 fill-surface-950" />
+                  <span>Pause</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4 fill-surface-950" />
+                  <span>{isThisAlbum ? 'Resume' : 'Play All'}</span>
+                </>
+              )}
             </button>
             <button
               onClick={handleShufflePlay}
