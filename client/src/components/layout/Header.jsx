@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Search, Menu, Sparkles } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Search, Menu } from 'lucide-react';
 
 export function Header({
   canGoBack,
@@ -68,12 +68,6 @@ export function Header({
           placeholder="Search tracks, albums, artists..."
           className="glass-input w-full pl-9 pr-4 py-1.5 text-xs sm:text-sm bg-white/[0.025]"
         />
-      </div>
-
-      {/* Right ambient badge */}
-      <div className="hidden md:flex items-center gap-2 text-xs font-medium text-accent px-3 py-1.5 rounded-full bg-accent/10 border border-accent/20">
-        <Sparkles className="w-3.5 h-3.5" />
-        <span className="tracking-wide">Hi-Fi Audio</span>
       </div>
     </header>
   );

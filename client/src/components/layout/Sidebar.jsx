@@ -12,7 +12,6 @@ import {
   LogOut,
   Shield,
   X,
-  Radio,
 } from 'lucide-react';
 import { api } from '../../api.js';
 import { toast } from './Toast.jsx';
@@ -74,19 +73,11 @@ export function Sidebar({
         <div className="p-5 flex items-center justify-between border-b border-white/[0.06]">
           <button
             onClick={() => handleNav('home')}
-            className="flex items-center gap-2.5 group text-left"
+            className="text-left group"
           >
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-accent to-accent-hover flex items-center justify-center shadow-glow group-hover:scale-105 transition-transform duration-200">
-              <Radio className="w-5 h-5 text-surface-950 stroke-[2.5]" />
-            </div>
-            <div>
-              <span className="text-base font-bold tracking-tight text-white group-hover:text-accent transition-colors">
-                TuneCloud
-              </span>
-              <p className="text-[10px] text-surface-500 font-medium tracking-wider uppercase">
-                Music Hub
-              </p>
-            </div>
+            <span className="text-lg font-bold tracking-tight text-white group-hover:text-accent transition-colors">
+              TuneCloud
+            </span>
           </button>
           <button
             onClick={onClose}
