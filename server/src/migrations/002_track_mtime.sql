@@ -1,0 +1,2 @@
+ALTER TABLE tracks ADD COLUMN IF NOT EXISTS mtime TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_tracks_mtime ON tracks(mtime);
