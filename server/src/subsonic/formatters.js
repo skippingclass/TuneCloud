@@ -236,3 +236,60 @@ export function buildIndexes(rows) {
         .map((x) => x.artist),
     }));
 }
+
+export function formatPlayQueue(row, songs = []) {
+  return compact({
+    current: row.current_track_id != null ? String(row.current_track_id) : undefined,
+    position: row.position_ms != null ? Number(row.position_ms) : 0,
+    username: row.username || undefined,
+    changed: iso(row.updated_at),
+    changedBy: row.changed_by || undefined,
+    entry: songs.length > 0 ? songs.map(formatSong) : [],
+  });
+}
+
+export function formatBookmark(row, song = null) {
+  return compact({
+    position: Number(row.position_ms || 0),
+    comment: row.comment || undefined,
+    created: iso(row.created_at),
+    changed: iso(row.updated_at),
+    username: row.username || undefined,
+    entry: song ? formatSong(song) : undefined,
+  });
+}
+
+export function formatInternetRadioStation(row) {
+  return compact({
+    id: String(row.id),
+    name: row.name,
+    streamUrl: row.stream_url,
+    homepageUrl: row.homepage_url || undefined,
+  });
+}
+
+export function formatPodcast(row, episodes = []) {
+  return compact({
+    id: String(row.id),
+    url: row.url,
+    title: row.title,
+    description: row.description || undefined,
+    coverArt: row.cover_url || undefined,
+    episode: episodes.map(formatPodcastEpisode),
+  });
+}
+
+export function formatPodcastEpisode(row) {
+  return compact({
+    id: String(row.id),
+    parent: String(row.podcast_id),
+    isDir: false,
+    title: row.title,
+    description: row.description || undefined,
+    publishDate: iso(row.publish_date || row.created_at),
+    streamUrl: row.stream_url,
+    duration: Number(row.duration || 0),
+    status: row.status || 'completed',
+  });
+}
+
