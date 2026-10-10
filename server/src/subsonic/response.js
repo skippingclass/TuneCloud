@@ -42,15 +42,23 @@ function renderValue(v) {
 function renderElement(name, obj) {
   let attrs = '';
   let children = '';
+  let textContent = '';
   for (const [k, v] of Object.entries(obj)) {
     if (v === null || v === undefined) continue;
-    if (isPrimitive(v)) {
+    if (k === '_text' || k === '_content') {
+      textContent = escapeXml(renderValue(v));
+    } else if (name === 'lyrics' && k === 'value') {
+      textContent = escapeXml(renderValue(v));
+    } else if (name === 'line' && k === 'value') {
+      textContent = escapeXml(renderValue(v));
+    } else if (isPrimitive(v)) {
       attrs += ` ${k}="${escapeXml(renderValue(v))}"`;
     } else {
       children += renderXmlChildren({ [k]: v });
     }
   }
-  return children ? `<${name}${attrs}>${children}</${name}>` : `<${name}${attrs}/>`;
+  const body = textContent + children;
+  return body ? `<${name}${attrs}>${body}</${name}>` : `<${name}${attrs}/>`;
 }
 
 export function renderXmlChildren(data) {

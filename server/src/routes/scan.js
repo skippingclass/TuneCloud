@@ -10,6 +10,30 @@ let isScanning = false;
 let lastResult = null;
 let lastScanAt = null;
 
+export function getScanState() {
+  return { isScanning, lastResult, lastScanAt };
+}
+
+export function startScanInBackground({ full = false } = {}) {
+  const musicDir = process.env.MUSIC_DIR;
+  if (!musicDir || !fs.existsSync(musicDir) || isScanning) return false;
+  isScanning = true;
+  (async () => {
+    try {
+      const start = Date.now();
+      const result = await scanDirectory(musicDir, { full });
+      recordScan(result, Math.round((Date.now() - start) / 1000));
+      lastResult = result;
+      lastScanAt = new Date().toISOString();
+    } catch (err) {
+      console.error('[Scanner] Scan failed:', err);
+    } finally {
+      isScanning = false;
+    }
+  })();
+  return true;
+}
+
 export default async function scanRoutes(fastify) {
   fastify.post('/api/scan', { preHandler: requireAdmin }, async (req, reply) => {
     const musicDir = process.env.MUSIC_DIR;
