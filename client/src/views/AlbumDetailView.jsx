@@ -18,6 +18,7 @@ export function AlbumDetailView({
   onBack,
   user,
   onGoToArtist,
+  onGoToAlbum,
   onEditTags,
 }) {
   const [tracks, setTracks] = useState([]);
@@ -27,6 +28,15 @@ export function AlbumDetailView({
   const [showCoverModal, setShowCoverModal] = useState(false);
 
   const starred = isAlbumStarred(album.id);
+
+  const resolvedAlbum = {
+    ...album,
+    title: album.title || tracks[0]?.album || 'Album',
+    artist: album.artist || tracks[0]?.artist || 'Unknown Artist',
+    cover_path: album.cover_path || tracks[0]?.cover_path,
+    year: album.year || tracks[0]?.year,
+    genre: album.genre || tracks[0]?.genre,
+  };
 
   const reloadTracks = () => {
     setLoading(true);
@@ -66,26 +76,26 @@ export function AlbumDetailView({
       {/* Hero Showcase Card */}
       <div className="glass-panel p-5 sm:p-8 rounded-3xl border border-white/[0.08] relative overflow-hidden flex flex-col sm:flex-row gap-6 sm:gap-8 items-center sm:items-end">
         {/* Ambient cover blur behind */}
-        {album.cover_path && (
+        {resolvedAlbum.cover_path && (
           <div
             className="absolute -inset-10 bg-cover bg-center opacity-20 filter blur-3xl pointer-events-none"
-            style={{ backgroundImage: `url(${api.coverUrl(album.cover_path)})` }}
+            style={{ backgroundImage: `url(${api.coverUrl(resolvedAlbum.cover_path)})` }}
           />
         )}
 
         {/* Large Cover */}
         <div
-          onClick={() => album.cover_path && setShowCoverModal(true)}
+          onClick={() => resolvedAlbum.cover_path && setShowCoverModal(true)}
           className={`w-40 h-40 sm:w-56 sm:h-56 rounded-2xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.12] shadow-glass-lg relative z-10 group ${
-            album.cover_path ? 'cursor-pointer' : ''
+            resolvedAlbum.cover_path ? 'cursor-pointer' : ''
           }`}
-          title={album.cover_path ? 'Click to view full cover' : ''}
+          title={resolvedAlbum.cover_path ? 'Click to view full cover' : ''}
         >
-          {album.cover_path ? (
+          {resolvedAlbum.cover_path ? (
             <>
               <img
-                src={api.coverUrl(album.cover_path)}
-                alt={album.title}
+                src={api.coverUrl(resolvedAlbum.cover_path)}
+                alt={resolvedAlbum.title}
                 className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                 draggable="false"
               />
@@ -103,27 +113,27 @@ export function AlbumDetailView({
         {/* Info & Action Buttons */}
         <div className="flex-1 flex flex-col justify-end text-center sm:text-left relative z-10 w-full">
           <span className="text-[11px] font-bold tracking-widest text-accent uppercase mb-1">
-            Album Release
+            Album
           </span>
           <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight drop-shadow-md">
-            {album.title}
+            {resolvedAlbum.title}
           </h1>
           <button
-            onClick={() => onGoToArtist?.({ name: album.artist })}
-            className="text-base sm:text-lg text-surface-300 hover:text-accent font-medium mt-1 transition-colors text-left"
+            onClick={() => onGoToArtist?.({ name: resolvedAlbum.artist })}
+            className="text-base sm:text-lg text-surface-300 hover:text-accent font-medium mt-1 transition-colors hover:underline text-center sm:text-left inline-block"
           >
-            {album.artist}
+            {resolvedAlbum.artist}
           </button>
 
           <div className="flex items-center justify-center sm:justify-start gap-3 mt-3 text-xs text-surface-400 flex-wrap">
-            {album.year && (
+            {resolvedAlbum.year && (
               <span className="glass-pill py-0.5 px-2.5 text-surface-300">
-                {album.year}
+                {resolvedAlbum.year}
               </span>
             )}
-            {album.genre && (
+            {resolvedAlbum.genre && (
               <span className="glass-pill py-0.5 px-2.5 text-surface-300">
-                {album.genre}
+                {resolvedAlbum.genre}
               </span>
             )}
             <span>{tracks.length} tracks</span>
@@ -196,6 +206,7 @@ export function AlbumDetailView({
                     isPlaying={currentTrack?.id === track.id}
                     user={user}
                     onEditTags={onEditTags}
+                    onGoToAlbum={onGoToAlbum}
                     onGoToArtist={onGoToArtist}
                   />
                 ))}
@@ -206,12 +217,12 @@ export function AlbumDetailView({
       )}
 
       {/* Fullscreen Cover Lightbox */}
-      {showCoverModal && album.cover_path && (
+      {showCoverModal && resolvedAlbum.cover_path && (
         <CoverModal
-          coverPath={album.cover_path}
-          title={album.title}
-          artist={album.artist}
-          year={album.year}
+          coverPath={resolvedAlbum.cover_path}
+          title={resolvedAlbum.title}
+          artist={resolvedAlbum.artist}
+          year={resolvedAlbum.year}
           onClose={() => setShowCoverModal(false)}
         />
       )}

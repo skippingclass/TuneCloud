@@ -16,6 +16,7 @@ export function ArtistDetailView({
   onBack,
   user,
   onGoToAlbum,
+  onGoToArtist,
   onEditTags,
 }) {
   const [tracks, setTracks] = useState([]);
@@ -171,6 +172,7 @@ export function ArtistDetailView({
                         user={user}
                         onEditTags={onEditTags}
                         onGoToAlbum={onGoToAlbum}
+                        onGoToArtist={onGoToArtist}
                       />
                     ))}
                   </tbody>

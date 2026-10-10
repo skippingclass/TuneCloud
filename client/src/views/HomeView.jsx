@@ -115,6 +115,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
                 key={album.id}
                 album={album}
                 onClick={onAlbumClick}
+                onArtistClick={onArtistClick}
                 onPlay={handlePlayAlbum}
               />
             ))}
@@ -172,6 +173,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
                 key={album.id}
                 album={album}
                 onClick={onAlbumClick}
+                onArtistClick={onArtistClick}
                 onPlay={handlePlayAlbum}
               />
             ))}

@@ -123,16 +123,60 @@ export function TrackRow({
         <span className={isPlaying ? 'text-accent font-semibold' : 'text-surface-100'}>
           {track.title || track.file_name}
         </span>
+        {track.artist && (
+          <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                onGoToArtist?.({ name: track.artist });
+              }}
+              className="hover:underline hover:text-white cursor-pointer transition-colors"
+            >
+              {track.artist}
+            </span>
+          </div>
+        )}
       </td>
 
       {/* Artist */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden sm:table-cell">
-        {track.artist || '—'}
+        {track.artist ? (
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onGoToArtist?.({ name: track.artist });
+            }}
+            className="hover:underline hover:text-white cursor-pointer transition-colors"
+            title={`Go to artist: ${track.artist}`}
+          >
+            {track.artist}
+          </span>
+        ) : (
+          '—'
+        )}
       </td>
 
       {/* Album */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden md:table-cell">
-        {track.album || '—'}
+        {track.album ? (
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onGoToAlbum?.({
+                id: track.album_id,
+                title: track.album,
+                artist: track.artist,
+                cover_path: track.cover_path,
+              });
+            }}
+            className="hover:underline hover:text-white cursor-pointer transition-colors"
+            title={`Go to album: ${track.album}`}
+          >
+            {track.album}
+          </span>
+        ) : (
+          '—'
+        )}
       </td>
 
       {/* Duration */}

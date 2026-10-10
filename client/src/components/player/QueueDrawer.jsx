@@ -8,7 +8,7 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function QueueDrawer() {
+export function QueueDrawer({ onGoToAlbum, onGoToArtist }) {
   const {
     queue,
     queueIndex,
@@ -91,13 +91,42 @@ export function QueueDrawer() {
                     </span>
                     <div className="min-w-0">
                       <p
+                        onClick={(e) => {
+                          if (track.album_id || track.album) {
+                            e.stopPropagation();
+                            onGoToAlbum?.({
+                              id: track.album_id,
+                              title: track.album,
+                              artist: track.artist,
+                              cover_path: track.cover_path,
+                            });
+                            setIsQueueOpen(false);
+                          }
+                        }}
                         className={`text-xs font-semibold truncate ${
                           isCurrent ? 'text-accent' : 'text-surface-100'
+                        } ${
+                          track.album_id || track.album
+                            ? 'hover:underline hover:text-accent cursor-pointer'
+                            : ''
                         }`}
+                        title={track.album ? `Go to album: ${track.album}` : ''}
                       >
                         {track.title || track.fileName || track.file_name}
                       </p>
-                      <p className="text-[11px] text-surface-400 truncate mt-0.5">
+                      <p
+                        onClick={(e) => {
+                          if (track.artist) {
+                            e.stopPropagation();
+                            onGoToArtist?.({ name: track.artist });
+                            setIsQueueOpen(false);
+                          }
+                        }}
+                        className={`text-[11px] text-surface-400 truncate mt-0.5 ${
+                          track.artist ? 'hover:underline hover:text-white cursor-pointer' : ''
+                        }`}
+                        title={track.artist ? `Go to artist: ${track.artist}` : ''}
+                      >
                         {track.artist || 'Unknown Artist'}
                       </p>
                     </div>

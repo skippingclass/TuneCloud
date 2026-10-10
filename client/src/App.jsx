@@ -131,6 +131,7 @@ function MainLayout({ user, onLogout }) {
               <AlbumsView
                 key={scanVersion}
                 onAlbumClick={handleAlbumClick}
+                onArtistClick={handleArtistClick}
               />
             )}
             {view === 'album' && selectedAlbum && (
@@ -138,6 +139,7 @@ function MainLayout({ user, onLogout }) {
                 album={selectedAlbum}
                 onBack={handleBack}
                 user={user}
+                onGoToAlbum={handleAlbumClick}
                 onGoToArtist={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
               />
@@ -154,6 +156,7 @@ function MainLayout({ user, onLogout }) {
                 onBack={handleBack}
                 user={user}
                 onGoToAlbum={handleAlbumClick}
+                onGoToArtist={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
               />
             )}
@@ -206,13 +209,22 @@ function MainLayout({ user, onLogout }) {
       </div>
 
       {/* Floating Bottom Player */}
-      <Player />
+      <Player
+        onGoToAlbum={handleAlbumClick}
+        onGoToArtist={handleArtistClick}
+      />
 
       {/* Slide-out Queue Drawer */}
-      <QueueDrawer />
+      <QueueDrawer
+        onGoToAlbum={handleAlbumClick}
+        onGoToArtist={handleArtistClick}
+      />
 
       {/* Fullscreen Karaoke Lyrics Modal */}
-      <LyricsModal />
+      <LyricsModal
+        onGoToAlbum={handleAlbumClick}
+        onGoToArtist={handleArtistClick}
+      />
 
       {/* Edit ID3 Tags Modal */}
       {editingTrack && (

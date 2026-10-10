@@ -23,7 +23,7 @@ function parseLrc(lrcText) {
   return result.sort((a, b) => a.time - b.time);
 }
 
-export function LyricsModal() {
+export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   const { currentTrack, currentTime, isLyricsOpen, setIsLyricsOpen, seek } = usePlayer();
   const [loading, setLoading] = useState(true);
   const [lyricsData, setLyricsData] = useState(null);
@@ -108,11 +108,44 @@ export function LyricsModal() {
               )}
             </div>
             <div className="min-w-0">
-              <h3 className="text-base font-bold text-white truncate leading-tight">
+              <h3
+                onClick={() => {
+                  if (currentTrack.album_id || currentTrack.album) {
+                    onGoToAlbum?.({
+                      id: currentTrack.album_id,
+                      title: currentTrack.album,
+                      artist: currentTrack.artist,
+                      cover_path: currentTrack.cover_path,
+                    });
+                    setIsLyricsOpen(false);
+                  }
+                }}
+                className={`text-base font-bold text-white truncate leading-tight ${
+                  currentTrack.album_id || currentTrack.album
+                    ? 'hover:underline hover:text-accent cursor-pointer'
+                    : ''
+                }`}
+                title={currentTrack.album ? `Go to album: ${currentTrack.album}` : ''}
+              >
                 {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
               </h3>
               <p className="text-xs text-surface-400 truncate mt-0.5">
-                {currentTrack.artist || 'Unknown Artist'}
+                <span
+                  onClick={() => {
+                    if (currentTrack.artist) {
+                      onGoToArtist?.({ name: currentTrack.artist });
+                      setIsLyricsOpen(false);
+                    }
+                  }}
+                  className={
+                    currentTrack.artist
+                      ? 'hover:underline hover:text-white cursor-pointer transition-colors'
+                      : ''
+                  }
+                  title={currentTrack.artist ? `Go to artist: ${currentTrack.artist}` : ''}
+                >
+                  {currentTrack.artist || 'Unknown Artist'}
+                </span>
                 {lyricsData?.source ? ` · synced via ${lyricsData.source.toUpperCase()}` : ''}
               </p>
             </div>

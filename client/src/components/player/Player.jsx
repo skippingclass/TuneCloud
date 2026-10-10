@@ -27,7 +27,7 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function Player() {
+export function Player({ onGoToAlbum, onGoToArtist }) {
   const {
     currentTrack,
     isPlaying,
@@ -100,10 +100,37 @@ export function Player() {
           </div>
 
           <div className="min-w-0 flex-1">
-            <p className="text-xs sm:text-sm font-semibold truncate text-white leading-tight">
+            <p
+              onClick={() => {
+                if (currentTrack.album_id || currentTrack.album) {
+                  onGoToAlbum?.({
+                    id: currentTrack.album_id,
+                    title: currentTrack.album,
+                    artist: currentTrack.artist,
+                    cover_path: currentTrack.cover_path,
+                  });
+                }
+              }}
+              className={`text-xs sm:text-sm font-semibold truncate text-white leading-tight ${
+                currentTrack.album_id || currentTrack.album
+                  ? 'hover:underline hover:text-accent cursor-pointer'
+                  : ''
+              }`}
+              title={currentTrack.album ? `Go to album: ${currentTrack.album}` : ''}
+            >
               {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
             </p>
-            <p className="text-[11px] sm:text-xs text-surface-400 truncate mt-0.5">
+            <p
+              onClick={() => {
+                if (currentTrack.artist) {
+                  onGoToArtist?.({ name: currentTrack.artist });
+                }
+              }}
+              className={`text-[11px] sm:text-xs text-surface-400 truncate mt-0.5 ${
+                currentTrack.artist ? 'hover:underline hover:text-white cursor-pointer' : ''
+              }`}
+              title={currentTrack.artist ? `Go to artist: ${currentTrack.artist}` : ''}
+            >
               {currentTrack.artist || 'Unknown Artist'}
             </p>
           </div>
