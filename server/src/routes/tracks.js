@@ -1,4 +1,8 @@
 import { query } from '../db.js';
+import { requireAuth } from '../auth.js';
+import fs from 'fs';
+import path from 'path';
+import jwt from 'jsonwebtoken';
 
 export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks', async (req, reply) => {
@@ -129,5 +133,171 @@ export default async function trackRoutes(fastify) {
       albums: albums.rows,
       artists: artists.rows,
     };
+  });
+
+  // ---- Favorites ----
+  fastify.get('/api/favorites', { preHandler: requireAuth }, async (req, reply) => {
+    const userId = req.user.id;
+    const { rows: tracks } = await query(
+      `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format,
+              a.name as artist, al.title as album, al.id as album_id, al.cover_path,
+              true as is_favorite
+       FROM user_starred_tracks st
+       JOIN tracks t ON st.track_id = t.id
+       LEFT JOIN artists a ON t.artist_id = a.id
+       LEFT JOIN albums al ON t.album_id = al.id
+       WHERE st.user_id = $1
+       ORDER BY st.created_at DESC`,
+      [userId]
+    );
+
+    const { rows: albums } = await query(
+      `SELECT al.*, a.name as artist,
+              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
+              (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration,
+              true as is_favorite
+       FROM user_starred_albums sa
+       JOIN albums al ON sa.album_id = al.id
+       LEFT JOIN artists a ON al.artist_id = a.id
+       WHERE sa.user_id = $1
+       ORDER BY sa.created_at DESC`,
+      [userId]
+    );
+
+    return { tracks, albums };
+  });
+
+  fastify.post('/api/favorites/track/:id', { preHandler: requireAuth }, async (req) => {
+    const userId = req.user.id;
+    const trackId = parseInt(req.params.id, 10);
+    const { rows } = await query(
+      'SELECT 1 FROM user_starred_tracks WHERE user_id = $1 AND track_id = $2',
+      [userId, trackId]
+    );
+    let starred = false;
+    if (rows.length > 0) {
+      await query('DELETE FROM user_starred_tracks WHERE user_id = $1 AND track_id = $2', [userId, trackId]);
+    } else {
+      await query(
+        'INSERT INTO user_starred_tracks (user_id, track_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [userId, trackId]
+      );
+      starred = true;
+    }
+    return { starred, trackId };
+  });
+
+  fastify.post('/api/favorites/album/:id', { preHandler: requireAuth }, async (req) => {
+    const userId = req.user.id;
+    const albumId = parseInt(req.params.id, 10);
+    const { rows } = await query(
+      'SELECT 1 FROM user_starred_albums WHERE user_id = $1 AND album_id = $2',
+      [userId, albumId]
+    );
+    let starred = false;
+    if (rows.length > 0) {
+      await query('DELETE FROM user_starred_albums WHERE user_id = $1 AND album_id = $2', [userId, albumId]);
+    } else {
+      await query(
+        'INSERT INTO user_starred_albums (user_id, album_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [userId, albumId]
+      );
+      starred = true;
+    }
+    return { starred, albumId };
+  });
+
+  // ---- Genres ----
+  fastify.get('/api/genres', async () => {
+    const { rows } = await query(
+      `SELECT genre as name, COUNT(*)::int as track_count
+       FROM tracks
+       WHERE genre IS NOT NULL AND TRIM(genre) <> ''
+       GROUP BY genre
+       ORDER BY track_count DESC, genre ASC
+       LIMIT 50`
+    );
+    return rows;
+  });
+
+  // ---- Scrobble ----
+  fastify.post('/api/scrobble/:id', async (req) => {
+    const trackId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(trackId)) return { success: false };
+    const authHeader = req.headers.authorization;
+    let userId = null;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const payload = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET || 'change-me-in-production');
+        userId = payload.id;
+      } catch {}
+    }
+    await query('UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1', [trackId]);
+    if (userId) {
+      await query('INSERT INTO play_history (user_id, track_id) VALUES ($1, $2)', [userId, trackId]);
+    }
+    return { success: true };
+  });
+
+  // ---- Lyrics (Local .lrc + LRCLIB fallback) ----
+  fastify.get('/api/lyrics', async (req, reply) => {
+    const { id, title, artist } = req.query;
+    let trackPath = null;
+    let trackTitle = title;
+    let trackArtist = artist;
+
+    if (id) {
+      const { rows } = await query(
+        `SELECT t.file_path, t.title, t.file_name, a.name as artist
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         WHERE t.id = $1`,
+        [id]
+      );
+      if (rows[0]) {
+        trackPath = rows[0].file_path;
+        trackTitle = trackTitle || rows[0].title || rows[0].file_name;
+        trackArtist = trackArtist || rows[0].artist;
+      }
+    }
+
+    // 1. Try local .lrc file next to trackPath
+    if (trackPath) {
+      const dir = path.dirname(trackPath);
+      const base = path.basename(trackPath, path.extname(trackPath));
+      const lrcCandidates = [
+        path.join(dir, `${base}.lrc`),
+        path.join(dir, `${base}.txt`),
+      ];
+      for (const p of lrcCandidates) {
+        try {
+          if (fs.existsSync(p)) {
+            const content = fs.readFileSync(p, 'utf8');
+            return { synced: content.includes('['), lyrics: content, source: 'local' };
+          }
+        } catch {}
+      }
+    }
+
+    // 2. Fetch from LRCLIB
+    if (trackTitle && trackArtist) {
+      try {
+        const cleanTitle = trackTitle.replace(/\(.*?\)|\[.*?\]/g, '').trim();
+        const url = `https://lrclib.net/api/get?track_name=${encodeURIComponent(cleanTitle || trackTitle)}&artist_name=${encodeURIComponent(trackArtist)}`;
+        const res = await fetch(url, { headers: { 'User-Agent': 'TuneCloud/1.0 (https://github.com/skippingclass/TuneCloud)' } });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.syncedLyrics) {
+            return { synced: true, lyrics: data.syncedLyrics, source: 'lrclib' };
+          }
+          if (data.plainLyrics) {
+            return { synced: false, lyrics: data.plainLyrics, source: 'lrclib' };
+          }
+        }
+      } catch {}
+    }
+
+    return reply.status(404).send({ error: 'Lyrics not found' });
   });
 }
