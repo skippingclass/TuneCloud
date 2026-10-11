@@ -46,7 +46,7 @@ export function Sidebar({
     if (scanning) return;
     setScanning(true);
     try {
-      const res = await api.scan();
+      const res = await api.scan({ full: false });
       toast(`Scan complete: ${res.result?.processed || 0} processed, ${res.result?.covers || 0} covers`, 'success');
       onScanComplete?.();
     } catch (err) {

@@ -176,41 +176,48 @@ async function flushTrackBatch(client, items) {
     for (const r of rows) artistMap.set(r.name, r.id);
   }
 
-  // 3. Albums: look up existing albums in DB by (folder_path, title) first
-  const groupKeys = albumMetaList.map((a) => a.groupKey);
+  // 3. Albums: look up existing albums in DB by folder_path OR (title, artist_id)
+  for (const a of albumMetaList) {
+    a.artistId = a.albumArtistName ? (artistMap.get(a.albumArtistName) ?? null) : null;
+  }
+
   const titles = albumMetaList.map((a) => a.title);
   const folders = albumMetaList.map((a) => a.normFolder);
+  const artistIds = albumMetaList.map((a) => a.artistId).filter((id) => id !== null);
 
   const { rows: existingAlbumRows } = await client.query(
     `SELECT id, title, folder_path, artist_id
      FROM albums
-     WHERE folder_path = ANY($1::text[]) AND title = ANY($2::text[])`,
-    [folders, titles]
+     WHERE folder_path = ANY($1::text[])
+        OR (title = ANY($2::text[]) AND artist_id = ANY($3::int[]))`,
+    [folders, titles, artistIds]
   );
 
   const albumMap = new Map();
-  for (const r of existingAlbumRows) {
-    if (r.folder_path) {
-      albumMap.set(`${r.folder_path}\u0000${r.title}`, r.id);
+
+  for (const a of albumMetaList) {
+    // Exact match on folder_path + title first
+    let match = existingAlbumRows.find(
+      (r) => r.folder_path === a.normFolder && r.title === a.title
+    );
+    // If not found, match on title + artist_id (album was moved to another folder)
+    if (!match && a.artistId != null) {
+      match = existingAlbumRows.find(
+        (r) => r.title === a.title && r.artist_id === a.artistId
+      );
+      if (match && match.folder_path !== a.normFolder) {
+        // Update album folder_path in DB to the new folder
+        await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [a.normFolder, match.id]);
+        match.folder_path = a.normFolder;
+      }
+    }
+    if (match) {
+      albumMap.set(a.groupKey, match.id);
     }
   }
 
-  // Albums that need to be inserted or updated
-  const albumsToUpsert = [];
-  for (const a of albumMetaList) {
-    if (!albumMap.has(a.groupKey)) {
-      const artistId = a.albumArtistName ? (artistMap.get(a.albumArtistName) ?? null) : null;
-      albumsToUpsert.push({
-        groupKey: a.groupKey,
-        title: a.title,
-        artistId,
-        year: a.year,
-        genre: a.genre,
-        folderPath: a.normFolder,
-        compilation: a.compilation,
-      });
-    }
-  }
+  // Albums that need to be inserted or upserted
+  const albumsToUpsert = albumMetaList.filter((a) => !albumMap.has(a.groupKey));
 
   if (albumsToUpsert.length > 0) {
     const { rows: upsertedRows } = await client.query(
@@ -221,21 +228,26 @@ async function flushTrackBatch(client, items) {
        ON CONFLICT (title, artist_id) DO UPDATE SET
          year = COALESCE(EXCLUDED.year, albums.year),
          genre = COALESCE(EXCLUDED.genre, albums.genre),
-         folder_path = COALESCE(albums.folder_path, EXCLUDED.folder_path),
-         compilation = COALESCE(albums.compilation, EXCLUDED.compilation)
+         folder_path = COALESCE(EXCLUDED.folder_path, albums.folder_path),
+         compilation = COALESCE(EXCLUDED.compilation, albums.compilation)
        RETURNING id, title, folder_path, artist_id`,
       [
         albumsToUpsert.map((a) => a.title),
         albumsToUpsert.map((a) => a.artistId),
         albumsToUpsert.map((a) => a.year),
         albumsToUpsert.map((a) => a.genre),
-        albumsToUpsert.map((a) => a.folderPath),
+        albumsToUpsert.map((a) => a.normFolder),
         albumsToUpsert.map((a) => a.compilation),
       ]
     );
 
     for (const r of upsertedRows) {
-      if (r.folder_path) {
+      const meta = albumsToUpsert.find(
+        (a) => a.title === r.title && (a.artistId === r.artist_id || a.normFolder === r.folder_path)
+      );
+      if (meta) {
+        albumMap.set(meta.groupKey, r.id);
+      } else if (r.folder_path) {
         albumMap.set(`${r.folder_path}\u0000${r.title}`, r.id);
       }
     }
@@ -437,7 +449,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   for (const f of files) {
     onDisk.add(f.path);
     const k = knownByPath.get(f.path);
-    if (full || !k || !k.mtime || k.mtime.getTime() !== f.mtime.getTime()) {
+    if (full || !k || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
     }
