@@ -15,6 +15,7 @@ import {
   formatPodcast,
   formatPodcastEpisode,
   buildIndexes,
+  buildFolderIndexes,
   songSelectSql,
   albumSelectSql,
   artistSelectSql,
@@ -27,6 +28,43 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COVERS_DIR = path.resolve(__dirname, '../../covers');
 
 const MUSIC_FOLDER_ID = 1;
+
+const AUDIO_EXTS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
+
+function isAudioFile(fileName) {
+  return AUDIO_EXTS.has(path.extname(fileName).toLowerCase());
+}
+
+function encodeDirId(relPath) {
+  if (!relPath || relPath === '.' || relPath === '') return String(MUSIC_FOLDER_ID);
+  return `dir:${Buffer.from(relPath, 'utf8').toString('base64url')}`;
+}
+
+function decodeDirId(id) {
+  if (id === undefined || id === null || id === '' || id === String(MUSIC_FOLDER_ID) || id === MUSIC_FOLDER_ID) {
+    return '';
+  }
+  const s = String(id);
+  if (s.startsWith('dir:')) {
+    try {
+      return Buffer.from(s.slice(4), 'base64url').toString('utf8');
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function resolveMusicDirPath(relPath) {
+  const musicDir = process.env.MUSIC_DIR;
+  if (!musicDir) return null;
+  const resolvedRoot = path.resolve(musicDir);
+  if (!relPath) return resolvedRoot;
+  const target = path.resolve(resolvedRoot, relPath);
+  const rel = path.relative(resolvedRoot, target);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return target;
+}
 
 function parseId(v) {
   if (v === undefined || v === null || v === '') return null;
@@ -159,6 +197,9 @@ const GENRES_SQL = `
 
 function coverFileFromPath(coverPath) {
   if (!coverPath) return null;
+  if (path.isAbsolute(coverPath) && fs.existsSync(coverPath)) {
+    return coverPath;
+  }
   const file = path.join(COVERS_DIR, path.basename(coverPath));
   return fs.existsSync(file) ? file : null;
 }
@@ -166,6 +207,37 @@ function coverFileFromPath(coverPath) {
 async function resolveCoverPath(rawId) {
   const id = String(rawId);
   let m;
+  if (id.startsWith('dir:')) {
+    const rel = decodeDirId(id);
+    if (rel !== null) {
+      const fullDir = resolveMusicDirPath(rel);
+      if (fullDir && fs.existsSync(fullDir)) {
+        const alb = await query(
+          'SELECT cover_path FROM albums WHERE folder_path = $1 AND cover_path IS NOT NULL LIMIT 1',
+          [fullDir]
+        );
+        if (alb.rows[0]?.cover_path) return alb.rows[0].cover_path;
+        const prefix = fullDir.endsWith(path.sep) ? fullDir : fullDir + path.sep;
+        const tr = await query(
+          `SELECT COALESCE(t.cover_path, al.cover_path) AS cover_path
+           FROM tracks t
+           LEFT JOIN albums al ON t.album_id = al.id
+           WHERE starts_with(t.file_path, $1) AND (t.cover_path IS NOT NULL OR al.cover_path IS NOT NULL)
+           LIMIT 1`,
+          [prefix]
+        );
+        if (tr.rows[0]?.cover_path) return tr.rows[0].cover_path;
+        for (const name of [
+          'cover.jpg', 'cover.jpeg', 'cover.png', 'Cover.jpg', 'Cover.png',
+          'folder.jpg', 'folder.png', 'Folder.jpg', 'Folder.png',
+          'front.jpg', 'front.png', 'Front.jpg',
+        ]) {
+          const directFile = path.join(fullDir, name);
+          if (fs.existsSync(directFile)) return directFile;
+        }
+      }
+    }
+  }
   if ((m = id.match(/^al-(\d+)$/))) {
     const { rows } = await query('SELECT cover_path FROM albums WHERE id = $1', [m[1]]);
     return rows[0]?.cover_path || null;
@@ -288,15 +360,68 @@ export default async function subsonicRoutes(fastify) {
     sendOk(reply, req, { musicFolders: { musicFolder: [{ id: MUSIC_FOLDER_ID, name: 'Music Library' }] } })
   );
 
-  endpoint('getIndexes', async (req, reply) => {
-    const { rows } = await query(artistSelectSql(req.subsonicUser.id));
-    return sendOk(reply, req, {
-      indexes: {
-        lastModified: Date.now(),
-        ignoredArticles: IGNORED_ARTICLES_STR,
-        index: buildIndexes(rows),
-      },
-    });
+  endpoint('getIndexes', async (req, reply, params) => {
+    if (params.musicFolderId && parseId(params.musicFolderId) !== MUSIC_FOLDER_ID) {
+      return sendOk(reply, req, {
+        indexes: {
+          lastModified: Date.now(),
+          ignoredArticles: IGNORED_ARTICLES_STR,
+          index: [],
+        },
+      });
+    }
+
+    const rootPath = resolveMusicDirPath('');
+    if (!rootPath || !fs.existsSync(rootPath)) {
+      return sendOk(reply, req, {
+        indexes: {
+          lastModified: Date.now(),
+          ignoredArticles: IGNORED_ARTICLES_STR,
+          index: [],
+        },
+      });
+    }
+
+    try {
+      const entries = await fs.promises.readdir(rootPath, { withFileTypes: true });
+      const visible = entries.filter((e) => !e.name.startsWith('.'));
+      const subdirs = visible.filter((e) => e.isDirectory());
+      const audioFiles = visible.filter((e) => e.isFile() && isAudioFile(e.name));
+
+      const dirItems = subdirs.map((d) => ({
+        id: encodeDirId(d.name),
+        name: d.name,
+        coverArt: encodeDirId(d.name),
+      }));
+
+      let rootSongs = [];
+      if (audioFiles.length > 0) {
+        const filePaths = audioFiles.map((f) => path.join(rootPath, f.name));
+        const { rows } = await query(
+          `${songSelectSql(req.subsonicUser.id)} WHERE t.file_path = ANY($1::text[]) ORDER BY t.disc_number ASC NULLS FIRST, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
+          [filePaths]
+        );
+        rootSongs = rows.map((r) => ({ ...formatSong(r), parent: String(MUSIC_FOLDER_ID) }));
+      }
+
+      return sendOk(reply, req, {
+        indexes: {
+          lastModified: Date.now(),
+          ignoredArticles: IGNORED_ARTICLES_STR,
+          index: buildFolderIndexes(dirItems),
+          ...(rootSongs.length > 0 ? { child: rootSongs } : {}),
+        },
+      });
+    } catch (err) {
+      req.log.error(err, 'Failed to read root music directory for getIndexes');
+      return sendOk(reply, req, {
+        indexes: {
+          lastModified: Date.now(),
+          ignoredArticles: IGNORED_ARTICLES_STR,
+          index: [],
+        },
+      });
+    }
   });
 
   endpoint('getArtists', async (req, reply) => {
@@ -370,27 +495,118 @@ export default async function subsonicRoutes(fastify) {
   });
 
   endpoint('getMusicDirectory', async (req, reply, params) => {
-    const id = requireId(reply, req, params, 'Directory');
-    if (id === null) return;
+    if (!params.id) {
+      return missing(reply, req, 'id');
+    }
 
-    if (id === MUSIC_FOLDER_ID) {
-      // Top level: return albums as directories
-      const { rows } = await query(
-        `${albumSelectSql(req.subsonicUser.id)} ${ALBUM_GROUP}, sa.created_at, ur.rating ORDER BY al.title ASC LIMIT 500`
-      );
+    const rawId = String(params.id).trim();
+
+    // 1. Directory ID navigation ('1' or 'dir:...')
+    const relPath = decodeDirId(rawId);
+    if (relPath !== null) {
+      const targetDir = resolveMusicDirPath(relPath);
+      if (!targetDir || !fs.existsSync(targetDir)) {
+        return notFound(reply, req, 'Directory');
+      }
+
+      let stat;
+      try {
+        stat = await fs.promises.stat(targetDir);
+      } catch {
+        return notFound(reply, req, 'Directory');
+      }
+      if (!stat.isDirectory()) {
+        return notFound(reply, req, 'Directory');
+      }
+
+      let entries;
+      try {
+        entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
+      } catch (err) {
+        req.log.error(err, `Failed to read directory: ${targetDir}`);
+        return notFound(reply, req, 'Directory');
+      }
+
+      const isRoot = relPath === '';
+      const currentDirId = isRoot ? String(MUSIC_FOLDER_ID) : encodeDirId(relPath);
+      const dirName = isRoot ? 'Music Library' : path.basename(relPath);
+
+      let parentId;
+      if (!isRoot) {
+        const parentRel = path.dirname(relPath);
+        parentId = (!parentRel || parentRel === '.') ? String(MUSIC_FOLDER_ID) : encodeDirId(parentRel);
+      }
+
+      const visible = entries.filter((e) => !e.name.startsWith('.'));
+      const subdirs = visible.filter((e) => e.isDirectory());
+      const audioFiles = visible.filter((e) => e.isFile() && isAudioFile(e.name));
+
+      subdirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+      const childDirs = subdirs.map((d) => {
+        const childRel = isRoot ? d.name : `${relPath}/${d.name}`;
+        const childId = encodeDirId(childRel);
+        return {
+          id: childId,
+          parent: currentDirId,
+          isDir: true,
+          title: d.name,
+          name: d.name,
+          album: d.name,
+          coverArt: childId,
+        };
+      });
+
+      let childSongs = [];
+      if (audioFiles.length > 0) {
+        const filePaths = audioFiles.map((f) => path.join(targetDir, f.name));
+        const { rows } = await query(
+          `${songSelectSql(req.subsonicUser.id)} WHERE t.file_path = ANY($1::text[])`,
+          [filePaths]
+        );
+        const songsByPath = new Map(rows.map((r) => [r.file_path, r]));
+
+        for (const f of audioFiles) {
+          const fp = path.join(targetDir, f.name);
+          const row = songsByPath.get(fp);
+          if (row) {
+            childSongs.push({
+              ...formatSong(row),
+              parent: currentDirId,
+            });
+          }
+        }
+
+        childSongs.sort((a, b) => {
+          const d1 = a.discNumber ?? 1;
+          const d2 = b.discNumber ?? 1;
+          if (d1 !== d2) return d1 - d2;
+          const t1 = a.track ?? 999;
+          const t2 = b.track ?? 999;
+          if (t1 !== t2) return t1 - t2;
+          return (a.title || '').localeCompare(b.title || '');
+        });
+      }
+
       return sendOk(reply, req, {
         directory: {
-          id: String(MUSIC_FOLDER_ID),
-          name: 'Music Library',
-          child: rows.map((r) => ({ ...formatAlbum(r), isDir: true })),
+          id: currentDirId,
+          name: dirName,
+          ...(parentId ? { parent: parentId } : {}),
+          child: [...childDirs, ...childSongs],
         },
       });
     }
 
-    // Album directory: return songs
+    // 2. Legacy fallback for numeric album ID
+    const numId = parseId(rawId);
+    if (Number.isNaN(numId) || numId <= 0) {
+      return notFound(reply, req, 'Directory');
+    }
+
     const albumRes = await query(
       `${albumSelectSql(req.subsonicUser.id)} WHERE al.id = $1 ${ALBUM_GROUP}, sa.created_at, ur.rating`,
-      [id]
+      [numId]
     );
     const album = albumRes.rows[0];
     if (!album) return notFound(reply, req, 'Directory');
@@ -398,12 +614,12 @@ export default async function subsonicRoutes(fastify) {
     const { rows } = await query(
       `${songSelectSql(req.subsonicUser.id)} WHERE t.album_id = $1
        ORDER BY t.disc_number ASC NULLS FIRST, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-      [id]
+      [numId]
     );
 
     return sendOk(reply, req, {
       directory: {
-        id: String(id),
+        id: String(numId),
         name: album.title,
         parent: String(MUSIC_FOLDER_ID),
         child: rows.map(formatSong),
