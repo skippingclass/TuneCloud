@@ -237,6 +237,38 @@ export function buildIndexes(rows) {
     }));
 }
 
+/**
+ * Groups folder items into alphabetical index buckets ("A".."Z", "А".."Я", "#").
+ * Used for getIndexes in Subsonic folder browsing.
+ */
+export function buildFolderIndexes(folders) {
+  const buckets = new Map();
+  for (const f of folders) {
+    const key = sortName(f.name || '').trim();
+    const ch = key.charAt(0).toUpperCase();
+    const letter = /[A-ZА-ЯЁ]/.test(ch) ? ch : '#';
+    if (!buckets.has(letter)) buckets.set(letter, []);
+    buckets.get(letter).push({
+      key,
+      artist: compact({
+        id: String(f.id),
+        name: f.name,
+        coverArt: f.coverArt,
+      }),
+    });
+  }
+
+  return [...buckets.keys()]
+    .sort((a, b) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b, 'ru')))
+    .map((name) => ({
+      name,
+      artist: buckets
+        .get(name)
+        .sort((a, b) => a.key.localeCompare(b.key, undefined, { sensitivity: 'base' }))
+        .map((x) => x.artist),
+    }));
+}
+
 export function formatPlayQueue(row, songs = []) {
   return compact({
     current: row.current_track_id != null ? String(row.current_track_id) : undefined,
