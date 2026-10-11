@@ -29,24 +29,50 @@
 
 ---
 
-**TuneCloud** is a self-hosted music browser and player built with Node.js, PostgreSQL, and React, with a strong focus on DevOps and cloud-native deployment.
-
-## 🎯 Project Goals
-
-The project was built to demonstrate practical DevOps workflows around a real application:
-
-* Automated container builds and image publishing
-* GitOps-based continuous delivery with ArgoCD
-* Kubernetes orchestration with Helm
-* Automated application deployments to a k3s cluster
-* Application and database observability with Prometheus and Grafana
-* Separation of application code and deployment configuration
+**TuneCloud** is a self-hosted music server and streaming platform built with Node.js, PostgreSQL, and React, designed from the ground up for automated cloud-native deployment. It combines a modern **Spotify-inspired glassmorphic Web UI** with **full Subsonic / OpenSubsonic API compatibility**, backed by a production-ready DevOps delivery lifecycle.
 
 ---
 
-## 📸 Interface & Architecture Visualization
+## 📸 Interface
 
 ![Скриншот интерфейса](pictures/screenshot.png)
+
+---
+
+## 🎯 Project Goals (DevOps Showcase)
+
+The project was built to demonstrate practical, production-grade DevOps workflows around a real-world, high-traffic application:
+
+* **Infrastructure as Code & GitOps**: Clear separation of application code and deployment configuration via a dedicated GitOps repository.
+* **Automated CI/CD Pipeline**: Multi-stage Docker builds using GitHub Actions, pushing versioned short-SHA tagged images to **GitHub Container Registry (GHCR)**, with automated GitOps updates via `yq`.
+* **GitOps Continuous Delivery**: **ArgoCD** continuously monitors the GitOps repository and synchronizes desired state to a **k3s Kubernetes** cluster with rolling zero-downtime updates.
+* **Kubernetes Orchestration**: Production-configured workloads with Helm, ConfigMaps, Secrets, Ingress routing, Persistent Volume Claims (PVCs), and health probes.
+* **Full-Stack Observability**: Native metrics scraped from `fastify-metrics` and `postgres-exporter` by Prometheus ServiceMonitors, visualized with custom Grafana dashboards.
+* **Security & Network Hardening**: Rate limiting (`@fastify/rate-limit`), security headers (`@fastify/helmet`), directory traversal protection, and token-authenticated audio streaming.
+
+---
+
+## ✨ Application Features
+
+### 🎨 Modern Web Experience
+* **Spotify-Inspired Glassmorphism**: Clean dark aesthetic with glass panels and customizable accent palettes (Peach, Emerald, Amber, Violet, Cyan).
+* **Live Search**: Instant keyboard-driven global search dropdown with direct navigation to tracks, artists, and albums.
+* **Synchronized Lyrics**: Built-in karaoke synchronized lyrics display supporting embedded tags, local `.lrc` / `.txt` files, and LRCLIB integration.
+* **Interactive Player & Queue**: Volume scroll wheel, draggable playback scrubber, persistent queue drawer, and cover art lightbox.
+* **Dual-Mode Library Synchronization**:
+  * **Incremental Rescan**: Ultra-fast filesystem diffing based on `mtime`, detecting newly added/removed files and auto-healing unlinked tracks without re-reading unchanged files.
+  * **Full Rescan**: Deep tag re-parsing from disk, complete cover art re-extraction, and orphan metadata cleanup.
+
+### 📱 OpenSubsonic & Subsonic API (v1.16.1)
+Connect seamlessly with all popular Subsonic ecosystem clients (**Symfonium**, **Feishin**, **DSub**, **Tempo**, **Substreamer**):
+* **60+ Subsonic API Endpoints**: Full parity covering streaming, transcoding, scrobbling, playlists, star ratings, and search.
+* **Real Filesystem & ID3 Browsing**: Browse by artist/album ID3 tags or explore real disk folder hierarchies (`getIndexes` & `getMusicDirectory`).
+* **OpenSubsonic Extensions**: `songLyrics`, `playQueue`, `topSongsByArtistId`, `formPost`, `transcodeOffset`, and `playlistUpload`.
+* **Standard Authentication**: Token authentication (`u` + `t` + `s` MD5 salt) and clear/hex token support.
+
+---
+
+## 🏗️ Architecture & Pipeline Visualization
 
 ![CI Pipeline](pictures/1.png)
 
@@ -137,13 +163,14 @@ Monitoring is implemented using the **kube-prometheus-stack**.
 
 ## 💻 Tech Stack
 
-| Domain                             | Technologies                           |
-| ---------------------------------- | -------------------------------------- |
-| **Infrastructure & Orchestration** | Kubernetes (k3s), Docker               |
-| **CI/CD & GitOps**                 | GitHub Actions, ArgoCD, Helm, Git      |
-| **Monitoring & Metrics**           | Prometheus, Grafana, Postgres Exporter |
-| **Backend**                        | Node.js 22, Fastify, PostgreSQL 16     |
-| **Frontend**                       | React 18, Vite, Tailwind CSS 3, Nginx  |
+| Domain                             | Technologies                                      |
+| ---------------------------------- | ------------------------------------------------- |
+| **Infrastructure & Orchestration** | Kubernetes (k3s), Docker, Helm                    |
+| **CI/CD & GitOps**                 | GitHub Actions, ArgoCD, Git                       |
+| **Monitoring & Metrics**           | Prometheus, Grafana, Postgres Exporter            |
+| **Protocols & Integrations**       | OpenSubsonic / Subsonic v1.16.1, Spotify API, LRCLIB |
+| **Backend**                        | Node.js 22, Fastify, PostgreSQL 16                |
+| **Frontend**                       | React 18, Vite, Tailwind CSS 3, Lucide, Nginx     |
 
 ---
 
