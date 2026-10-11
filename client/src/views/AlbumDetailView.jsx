@@ -33,6 +33,7 @@ export function AlbumDetailView({
     ...album,
     title: album.title || tracks[0]?.album || 'Album',
     artist: album.artist || tracks[0]?.artist || 'Unknown Artist',
+    artist_id: album.artist_id || tracks[0]?.artist_id,
     cover_path: album.cover_path || tracks[0]?.cover_path,
     year: album.year || tracks[0]?.year,
     genre: album.genre || tracks[0]?.genre,
@@ -129,7 +130,7 @@ export function AlbumDetailView({
             {resolvedAlbum.title}
           </h1>
           <button
-            onClick={() => onGoToArtist?.({ name: resolvedAlbum.artist })}
+            onClick={() => onGoToArtist?.({ id: resolvedAlbum.artist_id, name: resolvedAlbum.artist })}
             className="text-base sm:text-lg text-surface-300 hover:text-accent font-medium mt-1 transition-colors hover:underline text-center sm:text-left inline-block"
           >
             {resolvedAlbum.artist}
