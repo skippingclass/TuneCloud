@@ -1,7 +1,33 @@
-import { useState, useEffect, useRef } from 'react';
-import { X, Mic2, Disc, Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  X,
+  Disc,
+  Loader2,
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  Shuffle,
+  Repeat,
+  Repeat1,
+  Volume2,
+  VolumeX,
+  Heart,
+  Maximize2,
+  Minimize2,
+  Mic2,
+} from 'lucide-react';
 import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
+import { useFavorites } from '../../context/FavoritesContext.jsx';
+import { extractPalette } from '../../utils/palette.js';
+
+function formatTime(seconds) {
+  if (!seconds || isNaN(seconds)) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
 
 function parseLrc(lrcText) {
   if (!lrcText) return [];
@@ -15,22 +41,65 @@ function parseLrc(lrcText) {
       const min = parseInt(match[1], 10);
       const sec = parseFloat(match[2]);
       const text = match[3].trim();
-      const time = min * 60 + sec;
-      result.push({ time, text });
+      const startMs = Math.round((min * 60 + sec) * 1000);
+      result.push({ startMs, endMs: startMs + 4000, text });
     }
   }
 
-  return result.sort((a, b) => a.time - b.time);
+  return result.sort((a, b) => a.startMs - b.startMs);
 }
 
 export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
-  const { currentTrack, currentTime, isLyricsOpen, setIsLyricsOpen, seek } = usePlayer();
+  const {
+    currentTrack,
+    currentTime,
+    duration,
+    isPlaying,
+    togglePlay,
+    seek,
+    next,
+    prev,
+    shuffle,
+    toggleShuffle,
+    repeat,
+    toggleRepeat,
+    volume,
+    setVolume,
+    muted,
+    toggleMute,
+    isLyricsOpen,
+    setIsLyricsOpen,
+  } = usePlayer();
+
+  const { isTrackStarred, toggleTrackStar } = useFavorites();
+
   const [loading, setLoading] = useState(true);
   const [lyricsData, setLyricsData] = useState(null);
+  const [dominantColors, setDominantColors] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [mobileTab, setMobileTab] = useState('lyrics'); // 'lyrics' | 'art'
+
   const activeLineRef = useRef(null);
   const containerRef = useRef(null);
+  const volumeBarRef = useRef(null);
 
+  const isStarred = currentTrack ? isTrackStarred(currentTrack.id) : false;
+
+  // Extract color palette from cover when track changes
   useEffect(() => {
+    if (!currentTrack?.cover_path) {
+      setDominantColors(null);
+      return;
+    }
+    const coverUrl = api.coverUrl(currentTrack.cover_path);
+    extractPalette(coverUrl).then((colors) => {
+      if (colors && colors.length > 0) setDominantColors(colors);
+      else setDominantColors(null);
+    });
+  }, [currentTrack?.cover_path]);
+
+  // Load lyrics
+  const loadLyrics = useCallback(() => {
     if (!isLyricsOpen || !currentTrack) return;
     setLoading(true);
     setLyricsData(null);
@@ -44,9 +113,17 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
       .then((data) => {
         if (data.synced) {
           const parsed = parseLrc(data.lyrics);
-          setLyricsData({ synced: true, lines: parsed, source: data.source });
+          setLyricsData({
+            synced: true,
+            lines: parsed,
+            source: data.source || 'lrclib',
+          });
         } else {
-          setLyricsData({ synced: false, text: data.lyrics, source: data.source });
+          setLyricsData({
+            synced: false,
+            text: data.lyrics,
+            source: data.source || 'lrclib',
+          });
         }
       })
       .catch(() => {
@@ -55,11 +132,50 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
       .finally(() => setLoading(false));
   }, [isLyricsOpen, currentTrack?.id]);
 
+  useEffect(() => {
+    loadLyrics();
+  }, [loadLyrics]);
+
+  // Handle Fullscreen events and key listener (Escape, F)
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    const onKeyDown = (e) => {
+      if (!isLyricsOpen) return;
+      if (e.key === 'Escape' && !document.fullscreenElement) {
+        setIsLyricsOpen(false);
+      }
+      if (e.key === 'f' || e.key === 'F') {
+        if (!e.target.matches('input, textarea')) {
+          toggleFullscreen();
+        }
+      }
+    };
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isLyricsOpen]);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  };
+
   // Find active line index
+  const currentMs = currentTime * 1000;
   let activeIndex = -1;
-  if (lyricsData?.synced && lyricsData.lines.length > 0) {
-    for (let i = 0; i < lyricsData.lines.length; i++) {
-      if (currentTime >= lyricsData.lines[i].time) {
+  if (lyricsData?.synced && lyricsData.lines?.length > 0) {
+    const lines = lyricsData.lines;
+    for (let i = 0; i < lines.length; i++) {
+      if (currentMs >= lines[i].startMs) {
         activeIndex = i;
       } else {
         break;
@@ -77,38 +193,244 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     }
   }, [activeIndex]);
 
+  // Volume slider drag handler
+  const handleVolumeBarClick = (e) => {
+    if (!volumeBarRef.current) return;
+    const rect = volumeBarRef.current.getBoundingClientRect();
+    const offsetY = rect.bottom - e.clientY;
+    const height = rect.height;
+    const nextVol = Math.max(0, Math.min(1, offsetY / height));
+    setVolume(nextVol);
+  };
+
   if (!isLyricsOpen || !currentTrack) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-black/80 backdrop-blur-2xl animate-fade-in select-none">
-      {/* Background ambient album glow */}
-      {currentTrack.cover_path && (
-        <div
-          className="absolute inset-0 bg-cover bg-center opacity-15 filter blur-3xl pointer-events-none"
-          style={{ backgroundImage: `url(${api.coverUrl(currentTrack.cover_path)})` }}
-        />
-      )}
+  const bgOrb1 = dominantColors?.[0] || 'var(--theme-primary, #c084fc)';
+  const bgOrb2 = dominantColors?.[1] || 'var(--theme-secondary, #38bdf8)';
+  const bgOrb3 = dominantColors?.[2] || bgOrb1;
 
-      {/* Main glass modal container */}
-      <div className="relative z-10 w-full max-w-2xl h-[85vh] glass-panel border border-white/[0.1] rounded-3xl shadow-glass flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="p-5 sm:p-6 border-b border-white/[0.08] flex items-center justify-between shrink-0 bg-black/20">
-          <div className="flex items-center gap-3.5 min-w-0">
-            <div className="w-11 h-11 rounded-xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.1]">
-              {currentTrack.cover_path ? (
-                <img
-                  src={api.coverUrl(currentTrack.cover_path)}
-                  alt=""
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <Disc className="w-5 h-5 text-surface-500" />
-                </div>
-              )}
+  return (
+    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#040508] text-white flex flex-col select-none overflow-hidden animate-fade-in font-sans">
+      {/* Dynamic blurred mesh gradient backdrop */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
+        <div
+          className="absolute -top-[15%] -left-[10%] w-[65vw] h-[65vw] rounded-full filter blur-[120px] opacity-35 mix-blend-screen transition-all duration-1000"
+          style={{ background: bgOrb1 }}
+        />
+        <div
+          className="absolute top-[25%] -right-[15%] w-[60vw] h-[60vw] rounded-full filter blur-[140px] opacity-25 mix-blend-screen transition-all duration-1000"
+          style={{ background: bgOrb2 }}
+        />
+        <div
+          className="absolute -bottom-[20%] left-[25%] w-[55vw] h-[55vw] rounded-full filter blur-[130px] opacity-25 mix-blend-screen transition-all duration-1000"
+          style={{ background: bgOrb3 }}
+        />
+        {/* Soft vignette darkening layer */}
+        <div className="absolute inset-0 bg-black/45" />
+      </div>
+
+      {/* Top action header */}
+      <header className="relative z-20 flex items-center justify-between px-6 py-4 shrink-0">
+        {/* Source badge */}
+        <div className="flex items-center gap-2">
+          {lyricsData?.synced ? (
+            <div className="px-3 py-1 rounded-full bg-white/[0.06] border border-white/[0.1] text-surface-300 text-xs font-medium">
+              Synced via {lyricsData?.source?.toUpperCase() || 'LRC'}
             </div>
-            <div className="min-w-0">
-              <h3
+          ) : (
+            <div className="px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] text-surface-400 text-xs">
+              TuneCloud Player
+            </div>
+          )}
+        </div>
+
+        {/* Mobile tab switchers */}
+        <div className="flex lg:hidden items-center p-1 bg-white/[0.06] rounded-xl border border-white/[0.08]">
+          <button
+            onClick={() => setMobileTab('lyrics')}
+            className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
+              mobileTab === 'lyrics' ? 'bg-white/15 text-white' : 'text-surface-400 hover:text-white'
+            }`}
+          >
+            Lyrics
+          </button>
+          <button
+            onClick={() => setMobileTab('art')}
+            className={`px-3 py-1 text-xs font-medium rounded-lg transition-all ${
+              mobileTab === 'art' ? 'bg-white/15 text-white' : 'text-surface-400 hover:text-white'
+            }`}
+          >
+            Artwork
+          </button>
+        </div>
+
+        {/* Right buttons: Fullscreen & Close */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
+            className="p-2.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-surface-300 hover:text-white transition-all duration-200"
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={() => setIsLyricsOpen(false)}
+            title="Close (Esc)"
+            className="p-2.5 rounded-full bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-surface-300 hover:text-white transition-all duration-200"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      {/* Main 2-column view */}
+      <main className="relative z-10 flex-1 min-h-0 max-w-7xl w-full mx-auto px-6 pb-6 pt-2 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-14 items-center">
+        {/* Left Column: Artwork, hover controls, scrubber, track info */}
+        <div
+          className={`lg:col-span-5 flex flex-col items-center justify-center max-w-[440px] mx-auto w-full space-y-6 ${
+            mobileTab === 'lyrics' ? 'hidden lg:flex' : 'flex'
+          }`}
+        >
+          {/* Artwork container with hover controls */}
+          <div className="relative group w-full aspect-square rounded-3xl overflow-hidden shadow-[0_24px_50px_rgba(0,0,0,0.8)] ring-1 ring-white/15 bg-surface-900 select-none">
+            {currentTrack.cover_path ? (
+              <img
+                src={api.coverUrl(currentTrack.cover_path)}
+                alt=""
+                className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-surface-900">
+                <Disc className="w-24 h-24 text-surface-600 animate-spin-slow" />
+              </div>
+            )}
+
+            {/* Smooth hover overlay: appears smoothly ONLY when cursor is over the cover */}
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-between p-5 pointer-events-none group-hover:pointer-events-auto">
+              {/* Top row of overlay */}
+              <div className="flex items-center justify-end">
+                <button
+                  onClick={toggleFullscreen}
+                  title="Fullscreen"
+                  className="p-2 rounded-full bg-white/[0.08] hover:bg-white/[0.18] text-white/80 hover:text-white border border-white/10 transition-colors"
+                >
+                  {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {/* Center Heart + Right Volume bar */}
+              <div className="flex items-center justify-between px-2">
+                <div className="w-8" />
+                {/* Big Heart button */}
+                <button
+                  onClick={() => toggleTrackStar(currentTrack.id)}
+                  title={isStarred ? 'Remove from favorites' : 'Add to favorites'}
+                  className="p-4 rounded-full bg-white/[0.1] hover:bg-white/[0.2] border border-white/15 text-white transition-all transform active:scale-90 hover:scale-110"
+                >
+                  <Heart
+                    className={`w-14 h-14 transition-colors ${
+                      isStarred ? 'fill-rose-500 text-rose-500 drop-shadow-[0_0_15px_rgba(244,63,94,0.6)]' : 'text-white'
+                    }`}
+                  />
+                </button>
+
+                {/* Right: Vertical volume slider bar */}
+                <div className="flex flex-col items-center gap-2">
+                  <div
+                    ref={volumeBarRef}
+                    onClick={handleVolumeBarClick}
+                    className="w-2.5 h-24 bg-white/20 hover:bg-white/30 rounded-full relative cursor-pointer overflow-hidden"
+                  >
+                    <div
+                      className="absolute bottom-0 left-0 right-0 bg-white rounded-full transition-all duration-75"
+                      style={{ height: `${(muted ? 0 : volume) * 100}%` }}
+                    />
+                  </div>
+                  <button
+                    onClick={toggleMute}
+                    className="text-white/70 hover:text-white transition-colors"
+                  >
+                    {muted || volume === 0 ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Bottom playback controls row */}
+              <div className="flex items-center justify-center gap-4 pt-2">
+                <button
+                  onClick={toggleShuffle}
+                  title="Shuffle"
+                  className={`p-2 rounded-full transition-colors ${
+                    shuffle ? 'text-accent bg-accent/20' : 'text-white/70 hover:text-white'
+                  }`}
+                >
+                  <Shuffle className="w-4 h-4" />
+                </button>
+
+                <button
+                  onClick={prev}
+                  title="Previous track"
+                  className="p-2 rounded-full text-white/80 hover:text-white transition-transform active:scale-95"
+                >
+                  <SkipBack className="w-6 h-6 fill-current" />
+                </button>
+
+                <button
+                  onClick={togglePlay}
+                  title={isPlaying ? 'Pause' : 'Play'}
+                  className="p-3.5 rounded-full bg-white text-surface-950 hover:scale-105 active:scale-95 transition-all shadow-lg"
+                >
+                  {isPlaying ? (
+                    <Pause className="w-6 h-6 fill-current" />
+                  ) : (
+                    <Play className="w-6 h-6 fill-current translate-x-0.5" />
+                  )}
+                </button>
+
+                <button
+                  onClick={next}
+                  title="Next track"
+                  className="p-2 rounded-full text-white/80 hover:text-white transition-transform active:scale-95"
+                >
+                  <SkipForward className="w-6 h-6 fill-current" />
+                </button>
+
+                <button
+                  onClick={toggleRepeat}
+                  title={`Repeat: ${repeat}`}
+                  className={`p-2 rounded-full transition-colors ${
+                    repeat !== 'none' ? 'text-accent bg-accent/20' : 'text-white/70 hover:text-white'
+                  }`}
+                >
+                  {repeat === 'one' ? <Repeat1 className="w-4 h-4" /> : <Repeat className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Under artwork: Scrubber & Track Title / Artist */}
+          <div className="w-full space-y-4 text-center select-none">
+            {/* Scrubber */}
+            <div className="space-y-1.5 px-2">
+              <div className="relative group/bar flex items-center py-1">
+                <input
+                  type="range"
+                  min="0"
+                  max={duration || 100}
+                  value={currentTime || 0}
+                  onChange={(e) => seek(parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-white/20 group-hover/bar:h-2 rounded-lg appearance-none cursor-pointer accent-white transition-all"
+                />
+              </div>
+              <div className="flex justify-between text-[11px] font-mono text-white/50 px-0.5">
+                <span>{formatTime(currentTime)}</span>
+                <span>{formatTime(duration)}</span>
+              </div>
+            </div>
+
+            {/* Title & Artist */}
+            <div className="space-y-1">
+              <h2
                 onClick={() => {
                   if (currentTrack.album_id || currentTrack.album) {
                     onGoToAlbum?.({
@@ -120,16 +442,16 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                     setIsLyricsOpen(false);
                   }
                 }}
-                className={`text-base font-bold text-white truncate leading-tight ${
+                className={`text-2xl sm:text-3xl font-black text-white tracking-tight truncate leading-tight ${
                   currentTrack.album_id || currentTrack.album
-                    ? 'hover:underline hover:text-accent cursor-pointer'
+                    ? 'hover:text-accent cursor-pointer transition-colors'
                     : ''
                 }`}
-                title={currentTrack.album ? `Go to album: ${currentTrack.album}` : ''}
+                title={currentTrack.title || currentTrack.fileName}
               >
                 {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
-              </h3>
-              <p className="text-xs text-surface-400 truncate mt-0.5">
+              </h2>
+              <p className="text-sm sm:text-base text-white/60 font-medium truncate">
                 <span
                   onClick={() => {
                     if (currentTrack.artist) {
@@ -139,72 +461,77 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                   }}
                   className={
                     currentTrack.artist
-                      ? 'hover:underline hover:text-white cursor-pointer transition-colors'
+                      ? 'hover:text-white hover:underline cursor-pointer transition-colors'
                       : ''
                   }
-                  title={currentTrack.artist ? `Go to artist: ${currentTrack.artist}` : ''}
                 >
                   {currentTrack.artist || 'Unknown Artist'}
                 </span>
-                {lyricsData?.source ? ` · synced via ${lyricsData.source.toUpperCase()}` : ''}
               </p>
             </div>
           </div>
-
-          <button
-            onClick={() => setIsLyricsOpen(false)}
-            className="p-2.5 rounded-full text-surface-400 hover:text-white hover:bg-white/[0.08] transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
         </div>
 
-        {/* Lyrics body */}
+        {/* Right Column: Scrolling Lyrics */}
         <div
           ref={containerRef}
-          className="flex-1 overflow-y-auto p-6 sm:p-10 space-y-6 text-center sm:text-left scroll-smooth"
+          className={`lg:col-span-7 h-full overflow-y-auto px-4 sm:px-8 py-12 scroll-smooth text-left relative ${
+            mobileTab === 'art' ? 'hidden lg:block' : 'block'
+          }`}
+          style={{ scrollbarWidth: 'thin' }}
         >
           {loading ? (
-            <div className="h-full flex flex-col items-center justify-center gap-3 text-surface-400">
-              <Loader2 className="w-7 h-7 animate-spin text-accent" />
-              <span className="text-xs font-medium">Finding lyrics...</span>
+            <div className="h-full min-h-[300px] flex flex-col items-center justify-center gap-3 text-white/50">
+              <Loader2 className="w-8 h-8 animate-spin text-accent" />
+              <span className="text-sm font-medium">Loading lyrics...</span>
             </div>
           ) : lyricsData?.notFound ? (
-            <div className="h-full flex flex-col items-center justify-center gap-2 text-surface-500">
-              <Mic2 className="w-10 h-10 stroke-1 opacity-50" />
-              <p className="text-sm font-semibold">No lyrics found for this track</p>
-              <p className="text-xs text-surface-600">Enjoy the music</p>
+            <div className="h-full min-h-[300px] flex flex-col items-center justify-center gap-3 text-center text-white/40 max-w-md mx-auto">
+              <Mic2 className="w-14 h-14 stroke-1 opacity-40" />
+              <div className="space-y-1">
+                <p className="text-lg font-bold text-white/80">No lyrics found for this track</p>
+                <p className="text-xs text-white/50">Enjoy the music</p>
+              </div>
             </div>
           ) : lyricsData?.synced ? (
-            <div className="space-y-4 py-8">
-              {lyricsData.lines.map((item, idx) => {
+            <div className="space-y-6 sm:space-y-8 py-16 pb-32">
+              {lyricsData.lines.map((line, idx) => {
                 const isActive = idx === activeIndex;
-                const isPassed = idx < activeIndex;
+                const isPast = idx < activeIndex;
+
                 return (
-                  <p
+                  <div
                     key={idx}
                     ref={isActive ? activeLineRef : null}
-                    onClick={() => seek(item.time)}
-                    className={`cursor-pointer transition-all duration-300 py-1.5 px-3 rounded-2xl ${
+                    onClick={() => seek(line.startMs / 1000)}
+                    className={`cursor-pointer transition-all duration-300 rounded-2xl py-2 px-3 sm:px-4 ${
                       isActive
-                        ? 'text-accent font-bold text-xl sm:text-2xl scale-[1.02] bg-white/[0.05] drop-shadow-[0_0_20px_var(--theme-glow)]'
-                        : isPassed
-                        ? 'text-surface-400 hover:text-surface-200 text-base sm:text-lg opacity-60'
-                        : 'text-surface-500 hover:text-surface-300 text-base sm:text-lg opacity-40'
+                        ? 'scale-[1.02] origin-left bg-white/[0.04] drop-shadow-[0_0_25px_rgba(255,255,255,0.15)]'
+                        : isPast
+                        ? 'opacity-30 hover:opacity-70'
+                        : 'opacity-40 hover:opacity-80'
                     }`}
                   >
-                    {item.text || '♪'}
-                  </p>
+                    <p
+                      className={`font-sans tracking-tight leading-snug transition-colors ${
+                        isActive
+                          ? 'text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.4)]'
+                          : 'text-xl sm:text-2xl lg:text-3xl font-bold text-white/70'
+                      }`}
+                    >
+                      {line.text || '♪'}
+                    </p>
+                  </div>
                 );
               })}
             </div>
           ) : (
-            <div className="whitespace-pre-line text-sm sm:text-base leading-relaxed text-surface-300 font-sans py-4">
+            <div className="whitespace-pre-line text-lg sm:text-xl leading-relaxed text-white/80 font-sans py-16 max-w-xl">
               {lyricsData?.text}
             </div>
           )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }

@@ -272,7 +272,12 @@ export default async function trackRoutes(fastify) {
         try {
           if (fs.existsSync(p)) {
             const content = fs.readFileSync(p, 'utf8');
-            return { synced: content.includes('['), lyrics: content, source: 'local' };
+            return {
+              synced: content.includes('['),
+              type: content.includes('[') ? 'line' : 'plain',
+              lyrics: content,
+              source: 'local',
+            };
           }
         } catch {}
       }
@@ -287,10 +292,20 @@ export default async function trackRoutes(fastify) {
         if (res.ok) {
           const data = await res.json();
           if (data.syncedLyrics) {
-            return { synced: true, lyrics: data.syncedLyrics, source: 'lrclib' };
+            return {
+              synced: true,
+              type: 'line',
+              lyrics: data.syncedLyrics,
+              source: 'lrclib',
+            };
           }
           if (data.plainLyrics) {
-            return { synced: false, lyrics: data.plainLyrics, source: 'lrclib' };
+            return {
+              synced: false,
+              type: 'plain',
+              lyrics: data.plainLyrics,
+              source: 'lrclib',
+            };
           }
         }
       } catch {}
