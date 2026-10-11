@@ -128,7 +128,7 @@ export function TrackRow({
             <span
               onClick={(e) => {
                 e.stopPropagation();
-                onGoToArtist?.({ name: track.artist });
+                onGoToArtist?.({ id: track.artist_id, name: track.artist });
               }}
               className="hover:underline hover:text-white cursor-pointer transition-colors"
             >
@@ -144,7 +144,7 @@ export function TrackRow({
           <span
             onClick={(e) => {
               e.stopPropagation();
-              onGoToArtist?.({ name: track.artist });
+              onGoToArtist?.({ id: track.artist_id, name: track.artist });
             }}
             className="hover:underline hover:text-white cursor-pointer transition-colors"
             title={`Go to artist: ${track.artist}`}
@@ -245,7 +245,7 @@ export function TrackRow({
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen(false);
-                  onGoToArtist?.({ name: track.artist });
+                  onGoToArtist?.({ id: track.artist_id, name: track.artist });
                 }}
                 className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white transition-colors"
               >

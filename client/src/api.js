@@ -45,6 +45,8 @@ export const api = {
   albums: () => fetchJson('/albums'),
   album: (id) => fetchJson(`/albums/${id}`),
   artists: () => fetchJson('/artists'),
+  artist: (id) => fetchJson(`/artists/${id}`),
+  artistByName: (name) => fetchJson(`/artists/by-name?name=${encodeURIComponent(name)}`),
   search: (q) => fetchJson(`/search?q=${encodeURIComponent(q)}`),
   streamUrl: (id) => {
     const t = getAuthToken();

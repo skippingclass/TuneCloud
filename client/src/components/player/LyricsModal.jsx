@@ -49,6 +49,8 @@ function parseLrc(lrcText) {
   return result.sort((a, b) => a.startMs - b.startMs);
 }
 
+const lyricsCache = new Map();
+
 export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   const {
     currentTrack,
@@ -74,6 +76,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   const { isTrackStarred, toggleTrackStar } = useFavorites();
 
   const [loading, setLoading] = useState(true);
+  const [loadedTrackId, setLoadedTrackId] = useState(null);
   const [lyricsData, setLyricsData] = useState(null);
   const [dominantColors, setDominantColors] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -82,6 +85,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   const activeLineRef = useRef(null);
   const containerRef = useRef(null);
   const volumeBarRef = useRef(null);
+  const activeRequestIdRef = useRef(0);
 
   const isStarred = currentTrack ? isTrackStarred(currentTrack.id) : false;
 
@@ -98,38 +102,63 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     });
   }, [currentTrack?.cover_path]);
 
-  // Load lyrics
+  // Load lyrics with request cancellation, instant memory caching and zero flash
   const loadLyrics = useCallback(() => {
     if (!isLyricsOpen || !currentTrack) return;
+    const trackId = currentTrack.id;
+
+    if (lyricsCache.has(trackId)) {
+      setLyricsData(lyricsCache.get(trackId));
+      setLoadedTrackId(trackId);
+      setLoading(false);
+      return;
+    }
+
+    const reqId = ++activeRequestIdRef.current;
     setLoading(true);
     setLyricsData(null);
+    setLoadedTrackId(null);
 
     api
       .lyrics({
-        id: currentTrack.id,
+        id: trackId,
         title: currentTrack.title || currentTrack.fileName || '',
         artist: currentTrack.artist || '',
+        duration: currentTrack.duration || 0,
       })
       .then((data) => {
+        if (reqId !== activeRequestIdRef.current) return;
+        let parsedData;
         if (data.synced) {
           const parsed = parseLrc(data.lyrics);
-          setLyricsData({
+          parsedData = {
             synced: true,
             lines: parsed,
             source: data.source || 'lrclib',
-          });
+          };
         } else {
-          setLyricsData({
+          parsedData = {
             synced: false,
             text: data.lyrics,
             source: data.source || 'lrclib',
-          });
+          };
         }
+        lyricsCache.set(trackId, parsedData);
+        setLyricsData(parsedData);
+        setLoadedTrackId(trackId);
       })
       .catch(() => {
-        setLyricsData({ notFound: true });
+        if (reqId !== activeRequestIdRef.current) return;
+        const notFoundData = { notFound: true };
+        lyricsCache.set(trackId, notFoundData);
+        setLyricsData(notFoundData);
+        setLoadedTrackId(trackId);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (reqId === activeRequestIdRef.current) {
+          setLoading(false);
+        }
+      });
   }, [isLyricsOpen, currentTrack?.id]);
 
   useEffect(() => {
@@ -204,6 +233,8 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   };
 
   if (!isLyricsOpen || !currentTrack) return null;
+
+  const isCurrentlyLoading = loading || (currentTrack && loadedTrackId !== currentTrack.id);
 
   const bgOrb1 = dominantColors?.[0] || 'var(--theme-primary, #c084fc)';
   const bgOrb2 = dominantColors?.[1] || 'var(--theme-secondary, #38bdf8)';
@@ -480,7 +511,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
           }`}
           style={{ scrollbarWidth: 'thin' }}
         >
-          {loading ? (
+          {isCurrentlyLoading ? (
             <div className="h-full min-h-[300px] flex flex-col items-center justify-center gap-3 text-white/50">
               <Loader2 className="w-8 h-8 animate-spin text-accent" />
               <span className="text-sm font-medium">Loading lyrics...</span>

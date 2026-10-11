@@ -104,7 +104,7 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick }) {
           onClick={(e) => {
             if (album.artist && onArtistClick) {
               e.stopPropagation();
-              onArtistClick({ name: album.artist });
+              onArtistClick({ id: album.artist_id, name: album.artist });
             }
           }}
           className={`text-xs text-surface-400 truncate mt-0.5 ${

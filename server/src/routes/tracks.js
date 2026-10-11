@@ -3,12 +3,20 @@ import { requireAuth } from '../auth.js';
 import fs from 'fs';
 import path from 'path';
 import jwt from 'jsonwebtoken';
+import {
+  cleanTrackTitle,
+  readLocalLyrics,
+  readEmbeddedLyrics,
+  fetchLrclibLyrics,
+} from '../lyrics.js';
 
 export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks', { preHandler: requireAuth }, async (req, reply) => {
-    const { limit = 50, offset = 0, sort = 'title', order = 'asc' } = req.query;
+    const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id } = req.query;
 
-    const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), 200);
+    const isFiltered = artist_id || artist || album_id;
+    const maxLimit = isFiltered ? 10000 : 200;
+    const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), maxLimit);
     const safeOffset = Math.max(0, parseInt(offset, 10) || 0);
 
     const dir = order === 'desc' ? 'DESC' : 'ASC';
@@ -22,19 +30,46 @@ export default async function trackRoutes(fastify) {
     };
     const orderClause = sortMap[sort] || 't.title ASC';
 
+    const conditions = [];
+    const params = [];
+
+    if (artist_id) {
+      params.push(parseInt(artist_id, 10));
+      conditions.push(`t.artist_id = $${params.length}`);
+    } else if (artist) {
+      params.push(artist);
+      conditions.push(`a.name ILIKE $${params.length}`);
+    }
+
+    if (album_id) {
+      params.push(parseInt(album_id, 10));
+      conditions.push(`t.album_id = $${params.length}`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limitParamIndex = params.length + 1;
+    const offsetParamIndex = params.length + 2;
+    params.push(safeLimit, safeOffset);
+
     const { rows } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
-              a.name as artist, al.title as album, al.id as album_id, al.cover_path
+              a.name as artist, a.id as artist_id, al.title as album, al.id as album_id, al.cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
+       ${whereClause}
        ORDER BY ${orderClause}
-       LIMIT $1 OFFSET $2`,
-      [safeLimit, safeOffset]
+       LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
+      params
     );
 
-    const countResult = await query('SELECT COUNT(*) FROM tracks');
+    const countResult = await query(
+      `SELECT COUNT(*) FROM tracks t
+       LEFT JOIN artists a ON t.artist_id = a.id
+       ${whereClause}`,
+      params.slice(0, conditions.length)
+    );
     const total = parseInt(countResult.rows[0].count, 10);
 
     return { tracks: rows, total };
@@ -43,7 +78,7 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
-      `SELECT t.*, a.name as artist, al.title as album
+      `SELECT t.*, a.name as artist, a.id as artist_id, al.title as album
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
@@ -60,7 +95,7 @@ export default async function trackRoutes(fastify) {
 
   fastify.get('/api/albums', { preHandler: requireAuth }, async (req, reply) => {
     const { rows } = await query(
-      `SELECT al.*, a.name as artist,
+      `SELECT al.*, a.name as artist, a.id as artist_id,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
               (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
        FROM albums al
@@ -73,7 +108,7 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/albums/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
-      `SELECT t.*, a.name as artist, al.title as album, al.cover_path
+      `SELECT t.*, a.name as artist, a.id as artist_id, al.title as album, al.cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
@@ -95,6 +130,128 @@ export default async function trackRoutes(fastify) {
     return rows;
   });
 
+  fastify.get('/api/artists/by-name', { preHandler: requireAuth }, async (req, reply) => {
+    const { name } = req.query;
+    if (!name || typeof name !== 'string') {
+      return reply.status(400).send({ error: 'Artist name required' });
+    }
+
+    const trimmed = name.trim();
+    let artistRes = await query(
+      `SELECT a.*,
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+       FROM artists a
+       WHERE a.name ILIKE $1
+       LIMIT 1`,
+      [trimmed]
+    );
+
+    let artist = artistRes.rows[0];
+
+    if (!artist) {
+      const fallbackRes = await query(
+        `SELECT a.*,
+                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
+                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+         FROM tracks t
+         JOIN artists a ON t.artist_id = a.id
+         WHERE a.name ILIKE $1 OR t.track_artist_credit ILIKE $1
+         LIMIT 1`,
+        [`%${trimmed}%`]
+      );
+      artist = fallbackRes.rows[0];
+    }
+
+    if (!artist) {
+      return reply.status(404).send({ error: 'Artist not found' });
+    }
+
+    const [albumsRes, tracksRes] = await Promise.all([
+      query(
+        `SELECT al.*, a.name as artist, a.id as artist_id,
+                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
+                (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+         FROM albums al
+         LEFT JOIN artists a ON al.artist_id = a.id
+         WHERE al.artist_id = $1
+         ORDER BY al.year DESC NULLS LAST, al.title ASC`,
+        [artist.id]
+      ),
+      query(
+        `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+                t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+                a.name as artist, a.id as artist_id,
+                al.title as album, al.id as album_id, al.cover_path
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
+         WHERE t.artist_id = $1
+         ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
+        [artist.id]
+      ),
+    ]);
+
+    return {
+      artist,
+      albums: albumsRes.rows,
+      tracks: tracksRes.rows,
+    };
+  });
+
+  fastify.get('/api/artists/:id', { preHandler: requireAuth }, async (req, reply) => {
+    const { id } = req.params;
+    const artistId = parseInt(id, 10);
+    if (isNaN(artistId)) {
+      return reply.status(400).send({ error: 'Invalid artist ID' });
+    }
+
+    const artistRes = await query(
+      `SELECT a.*,
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+       FROM artists a
+       WHERE a.id = $1`,
+      [artistId]
+    );
+
+    const artist = artistRes.rows[0];
+    if (!artist) {
+      return reply.status(404).send({ error: 'Artist not found' });
+    }
+
+    const [albumsRes, tracksRes] = await Promise.all([
+      query(
+        `SELECT al.*, a.name as artist, a.id as artist_id,
+                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
+                (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+         FROM albums al
+         LEFT JOIN artists a ON al.artist_id = a.id
+         WHERE al.artist_id = $1
+         ORDER BY al.year DESC NULLS LAST, al.title ASC`,
+        [artistId]
+      ),
+      query(
+        `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+                t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+                a.name as artist, a.id as artist_id,
+                al.title as album, al.id as album_id, al.cover_path
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
+         WHERE t.artist_id = $1
+         ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
+        [artistId]
+      ),
+    ]);
+
+    return {
+      artist,
+      albums: albumsRes.rows,
+      tracks: tracksRes.rows,
+    };
+  });
+
   fastify.get('/api/search', { preHandler: requireAuth }, async (req, reply) => {
     const { q, limit = 30 } = req.query;
     const cleanQ = String(q || '').trim().slice(0, 100);
@@ -105,7 +262,7 @@ export default async function trackRoutes(fastify) {
 
     const tracks = await query(
       `SELECT t.id, t.title, t.file_name, t.duration, t.track_number, t.format,
-              a.name as artist, al.title as album, al.id as album_id, al.cover_path
+              a.name as artist, a.id as artist_id, al.title as album, al.id as album_id, al.cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
@@ -115,7 +272,7 @@ export default async function trackRoutes(fastify) {
     );
 
     const albums = await query(
-      `SELECT al.*, a.name as artist
+      `SELECT al.*, a.name as artist, al.artist_id
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
        WHERE al.title ILIKE $1
@@ -146,7 +303,7 @@ export default async function trackRoutes(fastify) {
     const { rows: tracks } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format,
-              a.name as artist, al.title as album, al.id as album_id, al.cover_path,
+              a.name as artist, a.id as artist_id, al.title as album, al.id as album_id, al.cover_path,
               true as is_favorite
        FROM user_starred_tracks st
        JOIN tracks t ON st.track_id = t.id
@@ -158,7 +315,7 @@ export default async function trackRoutes(fastify) {
     );
 
     const { rows: albums } = await query(
-      `SELECT al.*, a.name as artist,
+      `SELECT al.*, a.name as artist, al.artist_id,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
               (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration,
               true as is_favorite
@@ -238,79 +395,105 @@ export default async function trackRoutes(fastify) {
     return { success: true };
   });
 
-  // ---- Lyrics (Local .lrc + LRCLIB fallback) ----
+  // ---- Lyrics (Cache in DB -> Local .lrc -> Embedded tags -> LRCLIB multi-tier fallback) ----
   fastify.get('/api/lyrics', { preHandler: requireAuth }, async (req, reply) => {
-    const { id, title, artist } = req.query;
+    const { id, title, artist, duration } = req.query;
+    let trackId = id ? parseInt(id, 10) : null;
+    if (isNaN(trackId)) trackId = null;
+
     let trackPath = null;
     let trackTitle = typeof title === 'string' ? title.slice(0, 200) : null;
     let trackArtist = typeof artist === 'string' ? artist.slice(0, 200) : null;
+    let trackDuration = duration ? parseFloat(duration) : null;
+    let trackAlbum = null;
 
-    if (id) {
+    // 1. If trackId provided, check DB cache first (0ms response)
+    if (trackId) {
+      try {
+        const cached = await query(
+          'SELECT synced, type, lyrics, source FROM track_lyrics WHERE track_id = $1',
+          [trackId]
+        );
+        if (cached.rows[0]) {
+          return cached.rows[0];
+        }
+      } catch {}
+
+      // Get track metadata from DB
       const { rows } = await query(
-        `SELECT t.file_path, t.title, t.file_name, a.name as artist
+        `SELECT t.file_path, t.title, t.file_name, t.duration,
+                a.name as artist, al.title as album
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
          WHERE t.id = $1`,
-        [id]
+        [trackId]
       );
       if (rows[0]) {
         trackPath = rows[0].file_path;
         trackTitle = trackTitle || rows[0].title || rows[0].file_name;
         trackArtist = trackArtist || rows[0].artist;
+        trackDuration = trackDuration || rows[0].duration;
+        trackAlbum = rows[0].album;
       }
     }
 
-    // 1. Try local .lrc file next to trackPath
+    const cleanTitle = cleanTrackTitle(trackTitle);
+
+    // 2. Try local .lrc or .txt file next to trackPath
     if (trackPath) {
-      const dir = path.dirname(trackPath);
-      const base = path.basename(trackPath, path.extname(trackPath));
-      const lrcCandidates = [
-        path.join(dir, `${base}.lrc`),
-        path.join(dir, `${base}.txt`),
-      ];
-      for (const p of lrcCandidates) {
-        try {
-          if (fs.existsSync(p)) {
-            const content = fs.readFileSync(p, 'utf8');
-            return {
-              synced: content.includes('['),
-              type: content.includes('[') ? 'line' : 'plain',
-              lyrics: content,
-              source: 'local',
-            };
-          }
-        } catch {}
+      const localResult = readLocalLyrics(trackPath, cleanTitle);
+      if (localResult) {
+        if (trackId) {
+          saveLyricsToDb(trackId, localResult).catch(() => {});
+        }
+        return localResult;
       }
     }
 
-    // 2. Fetch from LRCLIB
-    if (trackTitle && trackArtist) {
-      try {
-        const cleanTitle = trackTitle.replace(/\(.*?\)|\[.*?\]/g, '').trim();
-        const url = `https://lrclib.net/api/get?track_name=${encodeURIComponent(cleanTitle || trackTitle)}&artist_name=${encodeURIComponent(trackArtist)}`;
-        const res = await fetch(url, { headers: { 'User-Agent': 'TuneCloud/1.0 (https://github.com/skippingclass/TuneCloud)' } });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.syncedLyrics) {
-            return {
-              synced: true,
-              type: 'line',
-              lyrics: data.syncedLyrics,
-              source: 'lrclib',
-            };
-          }
-          if (data.plainLyrics) {
-            return {
-              synced: false,
-              type: 'plain',
-              lyrics: data.plainLyrics,
-              source: 'lrclib',
-            };
-          }
+    // 3. Try embedded tags inside audio file
+    if (trackPath) {
+      const embeddedResult = await readEmbeddedLyrics(trackPath);
+      if (embeddedResult) {
+        if (trackId) {
+          saveLyricsToDb(trackId, embeddedResult).catch(() => {});
         }
-      } catch {}
+        return embeddedResult;
+      }
+    }
+
+    // 4. Fetch from LRCLIB with robust multi-tiered fallback
+    if (trackTitle) {
+      const lrclibResult = await fetchLrclibLyrics({
+        title: trackTitle,
+        artist: trackArtist,
+        album: trackAlbum,
+        duration: trackDuration,
+      });
+      if (lrclibResult) {
+        if (trackId) {
+          saveLyricsToDb(trackId, lrclibResult).catch(() => {});
+        }
+        return lrclibResult;
+      }
     }
 
     return reply.status(404).send({ error: 'Lyrics not found' });
   });
+
+  async function saveLyricsToDb(trackId, result) {
+    try {
+      await query(
+        `INSERT INTO track_lyrics (track_id, synced, type, lyrics, source, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (track_id) DO UPDATE SET
+           synced = EXCLUDED.synced,
+           type = EXCLUDED.type,
+           lyrics = EXCLUDED.lyrics,
+           source = EXCLUDED.source,
+           updated_at = NOW()`,
+        [trackId, !!result.synced, result.type || 'plain', result.lyrics, result.source || 'lrclib']
+      );
+    } catch {}
+  }
 }

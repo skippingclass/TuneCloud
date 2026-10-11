@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Users, Disc, Play, Loader2 } from 'lucide-react';
+import { ArrowLeft, Users, Disc, Play, Shuffle, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
@@ -19,6 +19,8 @@ export function ArtistDetailView({
   onGoToArtist,
   onEditTags,
 }) {
+  const [resolvedArtist, setResolvedArtist] = useState(artist);
+  const [albums, setAlbums] = useState([]);
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [artistImage, setArtistImage] = useState(null);
@@ -26,37 +28,45 @@ export function ArtistDetailView({
 
   useEffect(() => {
     setLoading(true);
-    api
-      .tracks({ limit: 10000, sort: 'album', order: 'asc' })
+    const fetchPromise = artist.id
+      ? api.artist(artist.id)
+      : api.artistByName(artist.name);
+
+    fetchPromise
       .then((res) => {
-        const filtered = (res.tracks || []).filter((t) => t.artist === artist.name);
-        filtered.sort((a, b) => {
-          const aa = a.album || '';
-          const bb = b.album || '';
-          if (aa !== bb) return aa.localeCompare(bb);
-          return (a.track_number || 999) - (b.track_number || 999);
-        });
-        setTracks(filtered);
+        if (res && res.artist) {
+          setResolvedArtist(res.artist);
+          setAlbums(res.albums || []);
+          setTracks(res.tracks || []);
+        } else if (Array.isArray(res)) {
+          setTracks(res);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load artist details:', err);
       })
       .finally(() => setLoading(false));
 
-    api
-      .spotifyArtist(artist.name)
-      .then((data) => {
-        if (data?.found && data.artist?.image) {
-          setArtistImage(data.artist.image);
-        }
-      })
-      .catch(() => {});
-  }, [artist.name]);
+    const nameToQuery = artist.name || resolvedArtist?.name;
+    if (nameToQuery) {
+      api
+        .spotifyArtist(nameToQuery)
+        .then((data) => {
+          if (data?.found && data.artist?.image) {
+            setArtistImage(data.artist.image);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [artist.id, artist.name]);
 
   const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
 
-  // Group by albums
+  // Group tracks by album for clean discography listing
   const albumGroups = [];
   const map = {};
   for (const t of tracks) {
-    const key = t.album || 'Singles & Other';
+    const key = t.album || 'Singles & Standalone';
     if (!map[key]) {
       map[key] = {
         title: key,
@@ -69,6 +79,21 @@ export function ArtistDetailView({
     }
     map[key].tracks.push(t);
   }
+
+  const handlePlayAll = () => {
+    if (tracks.length > 0) {
+      playTrack(tracks[0], tracks);
+    }
+  };
+
+  const handleShuffle = () => {
+    if (tracks.length > 0) {
+      const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+      playTrack(shuffled[0], shuffled);
+    }
+  };
+
+  const displayName = resolvedArtist?.name || artist.name || 'Artist';
 
   return (
     <div className="space-y-6 sm:space-y-8 animate-fade-in">
@@ -93,7 +118,7 @@ export function ArtistDetailView({
           {artistImage ? (
             <img
               src={artistImage}
-              alt={artist.name}
+              alt={displayName}
               className="w-full h-full object-cover"
               draggable="false"
             />
@@ -109,15 +134,35 @@ export function ArtistDetailView({
             Artist Profile
           </span>
           <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
-            {artist.name}
+            {displayName}
           </h1>
           <div className="flex items-center justify-center sm:justify-start gap-3 mt-3 text-xs text-surface-400">
-            <span>{albumGroups.length} releases</span>
+            <span>{albumGroups.length} {albumGroups.length === 1 ? 'release' : 'releases'}</span>
             <span>·</span>
-            <span>{tracks.length} tracks</span>
+            <span>{tracks.length} {tracks.length === 1 ? 'track' : 'tracks'}</span>
             <span>·</span>
             <span>{formatDuration(totalDuration)}</span>
           </div>
+
+          {/* Quick Play Controls */}
+          {tracks.length > 0 && (
+            <div className="flex items-center justify-center sm:justify-start gap-3 mt-5">
+              <button
+                onClick={handlePlayAll}
+                className="btn-primary py-2 px-5 rounded-2xl flex items-center gap-2 text-xs font-bold shadow-glow hover:scale-[1.02] active:scale-[0.98] transition-all"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>Play Discography</span>
+              </button>
+              <button
+                onClick={handleShuffle}
+                className="btn-glass py-2 px-4 rounded-2xl flex items-center gap-2 text-xs font-semibold hover:border-white/20 transition-all"
+              >
+                <Shuffle className="w-3.5 h-3.5 text-accent" />
+                <span>Shuffle</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -126,6 +171,12 @@ export function ArtistDetailView({
         <div className="h-48 flex items-center justify-center gap-2 text-surface-500">
           <Loader2 className="w-6 h-6 animate-spin text-accent" />
           <span className="text-xs">Loading discography...</span>
+        </div>
+      ) : albumGroups.length === 0 ? (
+        <div className="glass-panel p-12 text-center rounded-3xl border border-white/[0.06] text-surface-400">
+          <Disc className="w-12 h-12 stroke-1 text-surface-500 mx-auto mb-3 opacity-60" />
+          <p className="text-base font-semibold text-white">No tracks found for this artist</p>
+          <p className="text-xs text-surface-500 mt-1">Their files may not be indexed or tagged yet.</p>
         </div>
       ) : (
         <div className="space-y-8">
@@ -142,6 +193,9 @@ export function ArtistDetailView({
                       ({group.year})
                     </span>
                   )}
+                  <span className="text-xs text-surface-500">
+                    · {group.tracks.length} {group.tracks.length === 1 ? 'track' : 'tracks'}
+                  </span>
                 </div>
                 {group.album_id && (
                   <button
