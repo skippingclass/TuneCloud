@@ -51,9 +51,8 @@ export const api = {
     return t ? `${BASE}/stream/${id}?token=${encodeURIComponent(t)}` : `${BASE}/stream/${id}`;
   },
   coverUrl: (path) => path ? (path.startsWith('/api/') ? path : `${BASE}${path}`) : null,
-  albumCover: (id) => `${BASE}/cover/album/${id}`,
-  scan: () => fetchJson('/scan', { method: 'POST', body: JSON.stringify({}) }),
-  scanStatus: () => fetchJson('/scan/status'),
+  scan: ({ full = false, reextractCovers = false } = {}) =>
+    fetchJson('/scan', { method: 'POST', body: JSON.stringify({ full, reextractCovers }) }),
   tags: (id) => fetchJson(`/tags/${id}`),
   updateTags: (id, data) => fetchJson(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   spotifyArtist: (name) => fetchJson(`/spotify/artist?name=${encodeURIComponent(name)}`),

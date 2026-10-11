@@ -22,7 +22,8 @@ export function startScanInBackground({ full = false, reextractCovers = false } 
   (async () => {
     try {
       const start = Date.now();
-      const result = await scanDirectory(musicDir, { full, reextractCovers });
+      const covers = reextractCovers || full;
+      const result = await scanDirectory(musicDir, { full, reextractCovers: covers });
       recordScan(result, Math.round((Date.now() - start) / 1000));
       lastResult = result;
       lastScanAt = new Date().toISOString();
@@ -47,7 +48,7 @@ export default async function scanRoutes(fastify) {
     }
 
     const full = req.body?.full === true || req.query?.full === '1' || req.query?.full === 'true';
-    const reextractCovers = req.body?.reextractCovers === true || req.query?.reextractCovers === '1' || req.query?.reextractCovers === 'true';
+    const reextractCovers = req.body?.reextractCovers === true || req.query?.reextractCovers === '1' || req.query?.reextractCovers === 'true' || (full && req.body?.reextractCovers !== false);
     isScanning = true;
     try {
       const start = Date.now();
