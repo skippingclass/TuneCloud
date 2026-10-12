@@ -127,7 +127,7 @@ function MainLayout({ user, onLogout }) {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-surface-950 text-surface-100">
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-1 min-h-0 overflow-hidden relative">
         {/* Left Sidebar */}
         <Sidebar
           activeView={view}

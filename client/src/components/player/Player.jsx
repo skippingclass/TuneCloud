@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -56,6 +56,24 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
 
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
   const [showFullCover, setShowFullCover] = useState(false);
+  const volumeRef = useRef(null);
+
+  // Prevent background page scrolling on volume wheel by using a non-passive listener
+  useEffect(() => {
+    const el = volumeRef.current;
+    if (!el) return;
+
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.05 : 0.05;
+      setVolume((prev) => prev + delta);
+    };
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+    };
+  }, [setVolume]);
 
   if (!currentTrack) return null;
 
@@ -69,10 +87,10 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
   };
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#0a0b12]/85 backdrop-blur-3xl border-t border-white/[0.08] shadow-glass px-4 sm:px-6 select-none pb-safe animate-slide-up">
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-6 h-20">
+    <div className="fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0b12]/92 backdrop-blur-2xl border border-white/[0.1] rounded-2xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.65)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
+      <div className="w-full h-full flex items-center justify-between gap-3 sm:gap-4">
         {/* Left: Track artwork & metadata */}
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0 w-52 sm:w-72 shrink-0">
+        <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-3 shrink-0">
           <div
             onClick={() => currentTrack.cover_path && setShowFullCover(true)}
             className={`w-12 h-12 sm:w-14 sm:h-14 rounded-xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.1] shadow-md relative group ${
@@ -122,8 +140,11 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
             </p>
             <p
               onClick={() => {
-                if (currentTrack.artist) {
-                  onGoToArtist?.({ name: currentTrack.artist });
+                if (currentTrack.artist || currentTrack.artist_id) {
+                  onGoToArtist?.({
+                    id: currentTrack.artist_id,
+                    name: currentTrack.artist,
+                  });
                 }
               }}
               className={`text-[11px] sm:text-xs text-surface-400 truncate mt-0.5 ${
@@ -148,8 +169,8 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
           </button>
         </div>
 
-        {/* Center: Playback controls & Seekbar */}
-        <div className="flex-1 max-w-xl flex flex-col items-center justify-center">
+        {/* Center: Playback controls & Seekbar (centered & balanced) */}
+        <div className="flex-1 max-w-2xl lg:max-w-3xl flex flex-col items-center justify-center px-2 sm:px-4">
           {/* Buttons row */}
           <div className="flex items-center gap-3 sm:gap-4 mb-1.5">
             <button
@@ -221,11 +242,13 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
           </div>
 
           {/* Timeline progress slider */}
-          <div className="w-full flex items-center gap-3 text-[11px] text-surface-400 font-mono">
-            <span className="w-10 text-right">{formatDuration(currentTime)}</span>
+          <div className="w-full flex items-center gap-3 text-[11px] text-surface-400 font-mono select-none">
+            <span className="w-10 text-right tabular-nums text-surface-400">
+              {formatDuration(currentTime)}
+            </span>
             <div
               onClick={handleSeekClick}
-              className="flex-1 h-2 bg-white/[0.08] hover:h-2.5 rounded-full cursor-pointer relative group transition-all"
+              className="flex-1 h-1.5 hover:h-2 bg-white/[0.1] hover:bg-white/[0.15] rounded-full cursor-pointer relative group transition-all"
             >
               <div
                 className="h-full bg-gradient-to-r from-accent to-accent-hover rounded-full shadow-glow"
@@ -236,12 +259,14 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
                 style={{ left: `calc(${progressPct}% - 7px)` }}
               />
             </div>
-            <span className="w-10">{formatDuration(duration)}</span>
+            <span className="w-10 text-left tabular-nums text-surface-400">
+              {formatDuration(duration)}
+            </span>
           </div>
         </div>
 
         {/* Right: Lyrics, Queue, Volume & Close */}
-        <div className="flex items-center gap-1.5 sm:gap-3 shrink-0 justify-end w-52 sm:w-72">
+        <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-1.5 sm:gap-2 shrink-0 justify-end">
           {/* Lyrics toggle */}
           <button
             onClick={() => setIsLyricsOpen((v) => !v)}
@@ -268,13 +293,9 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
             <ListMusic className="w-4 h-4" />
           </button>
 
-          {/* Volume slider with mousewheel adjustment */}
+          {/* Volume slider with native mousewheel adjustment */}
           <div
-            onWheel={(e) => {
-              e.preventDefault();
-              const delta = e.deltaY > 0 ? -0.05 : 0.05;
-              setVolume(volume + delta);
-            }}
+            ref={volumeRef}
             className="hidden sm:flex items-center gap-2 text-surface-400 pl-2 cursor-pointer select-none"
             title="Scroll mouse wheel to change volume"
           >
@@ -296,12 +317,7 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
               step="0.01"
               value={muted ? 0 : volume}
               onChange={(e) => setVolume(parseFloat(e.target.value))}
-              onWheel={(e) => {
-                e.preventDefault();
-                const delta = e.deltaY > 0 ? -0.05 : 0.05;
-                setVolume(volume + delta);
-              }}
-              className="w-20 h-1 appearance-none bg-surface-700 rounded-full cursor-pointer accent-accent"
+              className="w-20 sm:w-24 lg:w-28 h-1 appearance-none bg-surface-700/80 rounded-full cursor-pointer accent-accent"
             />
           </div>
 

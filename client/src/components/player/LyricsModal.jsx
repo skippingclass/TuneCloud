@@ -315,15 +315,15 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
       </header>
 
       {/* Main 2-column view */}
-      <main className="relative z-10 flex-1 min-h-0 max-w-7xl w-full mx-auto px-6 pb-6 pt-2 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-14 items-center">
+      <main className="relative z-10 flex-1 min-h-0 max-w-[1500px] w-full mx-auto px-6 sm:px-10 pb-8 pt-2 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-14 items-center">
         {/* Left Column: Artwork, hover controls, scrubber, track info */}
         <div
-          className={`lg:col-span-5 flex flex-col items-center justify-center max-w-[440px] mx-auto w-full space-y-6 ${
+          className={`lg:col-span-5 flex flex-col items-center justify-center max-w-[480px] xl:max-w-[520px] mx-auto w-full space-y-6 ${
             mobileTab === 'lyrics' ? 'hidden lg:flex' : 'flex'
           }`}
         >
           {/* Artwork container with hover controls */}
-          <div className="relative group w-full aspect-square rounded-3xl overflow-hidden shadow-[0_24px_50px_rgba(0,0,0,0.8)] ring-1 ring-white/15 bg-surface-900 select-none">
+          <div className="relative group w-full aspect-square rounded-[28px] sm:rounded-[36px] overflow-hidden shadow-[0_28px_70px_rgba(0,0,0,0.7)] ring-1 ring-white/20 bg-surface-900 select-none transition-transform duration-500">
             {currentTrack.cover_path ? (
               <img
                 src={api.coverUrl(currentTrack.cover_path)}
@@ -337,13 +337,13 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
             )}
 
             {/* Smooth hover overlay: appears smoothly ONLY when cursor is over the cover */}
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-between p-5 pointer-events-none group-hover:pointer-events-auto">
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-between p-5 pointer-events-none group-hover:pointer-events-auto">
               {/* Top row of overlay */}
               <div className="flex items-center justify-end">
                 <button
                   onClick={toggleFullscreen}
                   title="Fullscreen"
-                  className="p-2 rounded-full bg-white/[0.08] hover:bg-white/[0.18] text-white/80 hover:text-white border border-white/10 transition-colors"
+                  className="p-2.5 rounded-full bg-white/[0.08] hover:bg-white/[0.18] text-white/80 hover:text-white border border-white/10 transition-colors"
                 >
                   {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
                 </button>
@@ -440,7 +440,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
           </div>
 
           {/* Under artwork: Scrubber & Track Title / Artist */}
-          <div className="w-full space-y-4 text-center select-none">
+          <div className="w-full space-y-4 text-center select-none font-[-apple-system,BlinkMacSystemFont,'SF_Pro_Display','SF_Pro_Text',sans-serif]">
             {/* Scrubber */}
             <div className="space-y-1.5 px-2">
               <div className="relative group/bar flex items-center py-1">
@@ -473,7 +473,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                     setIsLyricsOpen(false);
                   }
                 }}
-                className={`text-2xl sm:text-3xl font-black text-white tracking-tight truncate leading-tight ${
+                className={`text-2xl sm:text-3xl font-extrabold text-white tracking-tight truncate leading-tight ${
                   currentTrack.album_id || currentTrack.album
                     ? 'hover:text-accent cursor-pointer transition-colors'
                     : ''
@@ -482,11 +482,14 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
               >
                 {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
               </h2>
-              <p className="text-sm sm:text-base text-white/60 font-medium truncate">
+              <p className="text-sm sm:text-base text-white/60 font-medium truncate tracking-tight">
                 <span
                   onClick={() => {
-                    if (currentTrack.artist) {
-                      onGoToArtist?.({ name: currentTrack.artist });
+                    if (currentTrack.artist || currentTrack.artist_id) {
+                      onGoToArtist?.({
+                        id: currentTrack.artist_id,
+                        name: currentTrack.artist,
+                      });
                       setIsLyricsOpen(false);
                     }
                   }}
@@ -503,10 +506,10 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
           </div>
         </div>
 
-        {/* Right Column: Scrolling Lyrics */}
+        {/* Right Column: Scrolling Lyrics (Apple San Francisco style) */}
         <div
           ref={containerRef}
-          className={`lg:col-span-7 h-full overflow-y-auto px-4 sm:px-8 py-12 scroll-smooth text-left relative ${
+          className={`lg:col-span-7 h-full overflow-y-auto px-4 sm:px-10 py-12 scroll-smooth text-left relative font-[-apple-system,BlinkMacSystemFont,'SF_Pro_Display','SF_Pro_Text',sans-serif] ${
             mobileTab === 'art' ? 'hidden lg:block' : 'block'
           }`}
           style={{ scrollbarWidth: 'thin' }}
@@ -514,18 +517,18 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
           {isCurrentlyLoading ? (
             <div className="h-full min-h-[300px] flex flex-col items-center justify-center gap-3 text-white/50">
               <Loader2 className="w-8 h-8 animate-spin text-accent" />
-              <span className="text-sm font-medium">Loading lyrics...</span>
+              <span className="text-sm font-medium tracking-tight">Loading lyrics...</span>
             </div>
           ) : lyricsData?.notFound ? (
             <div className="h-full min-h-[300px] flex flex-col items-center justify-center gap-3 text-center text-white/40 max-w-md mx-auto">
               <Mic2 className="w-14 h-14 stroke-1 opacity-40" />
               <div className="space-y-1">
-                <p className="text-lg font-bold text-white/80">No lyrics found for this track</p>
+                <p className="text-lg font-bold text-white/80 tracking-tight">No lyrics found for this track</p>
                 <p className="text-xs text-white/50">Enjoy the music</p>
               </div>
             </div>
           ) : lyricsData?.synced ? (
-            <div className="space-y-6 sm:space-y-8 py-16 pb-32">
+            <div className="space-y-5 sm:space-y-7 py-20 pb-44">
               {lyricsData.lines.map((line, idx) => {
                 const isActive = idx === activeIndex;
                 const isPast = idx < activeIndex;
@@ -535,19 +538,19 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                     key={idx}
                     ref={isActive ? activeLineRef : null}
                     onClick={() => seek(line.startMs / 1000)}
-                    className={`cursor-pointer transition-all duration-300 rounded-2xl py-2 px-3 sm:px-4 ${
+                    className={`cursor-pointer transition-all duration-300 rounded-2xl sm:rounded-3xl py-2.5 px-3.5 sm:px-5 ${
                       isActive
-                        ? 'scale-[1.02] origin-left bg-white/[0.04] drop-shadow-[0_0_25px_rgba(255,255,255,0.15)]'
+                        ? 'scale-[1.03] origin-left bg-white/[0.07] backdrop-blur-md ring-1 ring-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.25)]'
                         : isPast
-                        ? 'opacity-30 hover:opacity-70'
-                        : 'opacity-40 hover:opacity-80'
+                        ? 'opacity-30 hover:opacity-80 hover:bg-white/[0.02]'
+                        : 'opacity-40 hover:opacity-85 hover:bg-white/[0.02]'
                     }`}
                   >
                     <p
-                      className={`font-sans tracking-tight leading-snug transition-colors ${
+                      className={`tracking-tight leading-snug transition-all duration-300 ${
                         isActive
-                          ? 'text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.4)]'
-                          : 'text-xl sm:text-2xl lg:text-3xl font-bold text-white/70'
+                          ? 'text-2xl sm:text-3xl lg:text-[38px] font-extrabold text-white drop-shadow-[0_0_24px_rgba(255,255,255,0.45)]'
+                          : 'text-xl sm:text-2xl lg:text-[30px] font-bold text-white/75'
                       }`}
                     >
                       {line.text || '♪'}
@@ -557,7 +560,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
               })}
             </div>
           ) : (
-            <div className="whitespace-pre-line text-lg sm:text-xl leading-relaxed text-white/80 font-sans py-16 max-w-xl">
+            <div className="whitespace-pre-line text-lg sm:text-2xl leading-relaxed text-white/80 py-16 max-w-2xl tracking-tight">
               {lyricsData?.text}
             </div>
           )}
