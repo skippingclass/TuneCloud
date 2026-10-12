@@ -37,22 +37,43 @@ export function Header({
   currentViewTitle,
 }) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const isFocusedRef = useRef(false);
+  const inputRef = useRef(null);
   const [results, setResults] = useState({ tracks: [], albums: [], artists: [] });
   const [loading, setLoading] = useState(false);
   const searchContainerRef = useRef(null);
 
-  // Close dropdown on outside click
+  const closeAndBlur = () => {
+    setIsFocused(false);
+    isFocusedRef.current = false;
+    setDropdownOpen(false);
+    inputRef.current?.blur();
+  };
+
+  // Close dropdown on outside click or touch
   useEffect(() => {
-    const handleClickOutside = (e) => {
+    const handlePointerDown = (e) => {
       if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
+        setIsFocused(false);
+        isFocusedRef.current = false;
         setDropdownOpen(false);
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
   }, []);
 
-  // Debounced search query fetching
+  // When view changes, immediately close dropdown and blur
+  useEffect(() => {
+    closeAndBlur();
+  }, [currentView]);
+
+  // Debounced search query fetching (strictly bound to user typing)
   useEffect(() => {
     const q = (searchQuery || '').trim();
     if (!q || currentView === 'search') {
@@ -72,7 +93,10 @@ export function Header({
             albums: data.albums?.slice(0, 3) || [],
             artists: data.artists?.slice(0, 3) || [],
           });
-          setDropdownOpen(true);
+          // ONLY open dropdown if input is currently focused by user
+          if (isFocusedRef.current) {
+            setDropdownOpen(true);
+          }
         })
         .catch(() => {
           setResults({ tracks: [], albums: [], artists: [] });
@@ -83,23 +107,23 @@ export function Header({
     }, 180);
 
     return () => clearTimeout(timer);
-  }, [searchQuery, currentView]);
+  }, [searchQuery]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
       const q = (searchQuery || '').trim();
       if (q) {
-        setDropdownOpen(false);
+        closeAndBlur();
         onSubmitSearch?.(q);
       }
     } else if (e.key === 'Escape') {
-      setDropdownOpen(false);
+      closeAndBlur();
     }
   };
 
   const handleClear = () => {
+    closeAndBlur();
     onSearchChange?.('');
-    setDropdownOpen(false);
     setResults({ tracks: [], albums: [], artists: [] });
   };
 
@@ -163,10 +187,13 @@ export function Header({
             <Search className="w-4 h-4 text-surface-500 absolute left-3.5 pointer-events-none" />
           )}
           <input
+            ref={inputRef}
             type="text"
             value={searchQuery || ''}
             onChange={(e) => onSearchChange?.(e.target.value)}
             onFocus={() => {
+              setIsFocused(true);
+              isFocusedRef.current = true;
               if (
                 (searchQuery || '').trim() &&
                 currentView !== 'search' &&
@@ -192,7 +219,10 @@ export function Header({
 
         {/* Dropdown Results Popover */}
         {dropdownOpen && currentView !== 'search' && (
-          <div className="absolute top-full left-0 right-0 sm:-left-12 sm:-right-12 mt-2 glass-panel rounded-2xl shadow-glass-lg border border-white/[0.1] backdrop-blur-2xl overflow-hidden z-50 animate-fade-in max-h-[75vh] flex flex-col">
+          <div
+            onMouseDown={(e) => e.preventDefault()}
+            className="absolute top-full left-0 right-0 sm:-left-12 sm:-right-12 mt-2 glass-panel rounded-2xl shadow-glass-lg border border-white/[0.1] backdrop-blur-2xl overflow-hidden z-50 animate-fade-in max-h-[75vh] flex flex-col"
+          >
             <div className="p-2 space-y-3 overflow-y-auto flex-1">
               {!hasAnyResults && !loading && (
                 <div className="py-6 text-center text-xs text-surface-500">
@@ -211,8 +241,8 @@ export function Header({
                       <div
                         key={artist.id || artist.name}
                         onClick={() => {
-                          setDropdownOpen(false);
-                          onSelectArtist?.({ name: artist.name });
+                          closeAndBlur();
+                          onSelectArtist?.({ id: artist.id, name: artist.name });
                         }}
                         className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/[0.06] cursor-pointer transition-colors group"
                       >
@@ -242,7 +272,7 @@ export function Header({
                       <div
                         key={album.id}
                         onClick={() => {
-                          setDropdownOpen(false);
+                          closeAndBlur();
                           onSelectAlbum?.(album);
                         }}
                         className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/[0.06] cursor-pointer transition-colors group"
@@ -285,7 +315,7 @@ export function Header({
                       <div
                         key={track.id}
                         onClick={() => {
-                          setDropdownOpen(false);
+                          closeAndBlur();
                           onPlayTrack?.(track);
                         }}
                         className="flex items-center justify-between gap-3 p-2 rounded-xl hover:bg-white/[0.06] cursor-pointer transition-colors group"
@@ -329,7 +359,7 @@ export function Header({
             {/* Bottom Footer: See all results */}
             <div
               onClick={() => {
-                setDropdownOpen(false);
+                closeAndBlur();
                 onSubmitSearch?.(searchQuery);
               }}
               className="p-2.5 bg-white/[0.03] hover:bg-accent/15 border-t border-white/[0.06] flex items-center justify-between cursor-pointer transition-colors group"

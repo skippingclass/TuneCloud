@@ -407,7 +407,8 @@ export default async function trackRoutes(fastify) {
     let trackDuration = duration ? parseFloat(duration) : null;
     let trackAlbum = null;
 
-    // 1. If trackId provided, check DB cache first (0ms response)
+    // 1. If trackId provided, check DB cache
+    let cachedPlain = null;
     if (trackId) {
       try {
         const cached = await query(
@@ -415,7 +416,10 @@ export default async function trackRoutes(fastify) {
           [trackId]
         );
         if (cached.rows[0]) {
-          return cached.rows[0];
+          if (cached.rows[0].synced) {
+            return cached.rows[0];
+          }
+          cachedPlain = cached.rows[0];
         }
       } catch {}
 
@@ -441,9 +445,10 @@ export default async function trackRoutes(fastify) {
     const cleanTitle = cleanTrackTitle(trackTitle);
 
     // 2. Try local .lrc or .txt file next to trackPath
+    let localResult = null;
     if (trackPath) {
-      const localResult = readLocalLyrics(trackPath, cleanTitle);
-      if (localResult) {
+      localResult = readLocalLyrics(trackPath, cleanTitle);
+      if (localResult && localResult.synced) {
         if (trackId) {
           saveLyricsToDb(trackId, localResult).catch(() => {});
         }
@@ -452,9 +457,10 @@ export default async function trackRoutes(fastify) {
     }
 
     // 3. Try embedded tags inside audio file
+    let embeddedResult = null;
     if (trackPath) {
-      const embeddedResult = await readEmbeddedLyrics(trackPath);
-      if (embeddedResult) {
+      embeddedResult = await readEmbeddedLyrics(trackPath);
+      if (embeddedResult && embeddedResult.synced) {
         if (trackId) {
           saveLyricsToDb(trackId, embeddedResult).catch(() => {});
         }
@@ -462,20 +468,31 @@ export default async function trackRoutes(fastify) {
       }
     }
 
-    // 4. Fetch from LRCLIB with robust multi-tiered fallback
+    // 4. Try LRCLIB: if LRCLIB has synced lyrics, it takes precedence over plain embedded/local
+    let lrclibResult = null;
     if (trackTitle) {
-      const lrclibResult = await fetchLrclibLyrics({
+      lrclibResult = await fetchLrclibLyrics({
         title: trackTitle,
         artist: trackArtist,
         album: trackAlbum,
         duration: trackDuration,
       });
-      if (lrclibResult) {
+
+      if (lrclibResult && lrclibResult.synced) {
         if (trackId) {
           saveLyricsToDb(trackId, lrclibResult).catch(() => {});
         }
         return lrclibResult;
       }
+    }
+
+    // 5. Fall back to plain lyrics: prefer embedded tags, then local files, then LRCLIB plain, then cached plain
+    const bestPlain = embeddedResult || localResult || lrclibResult || cachedPlain;
+    if (bestPlain) {
+      if (trackId) {
+        saveLyricsToDb(trackId, bestPlain).catch(() => {});
+      }
+      return bestPlain;
     }
 
     return reply.status(404).send({ error: 'Lyrics not found' });
