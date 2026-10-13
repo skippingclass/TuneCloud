@@ -4,7 +4,7 @@ import { glob } from 'glob';
 import pkg from 'music-metadata';
 const { parseFile } = pkg;
 import { query, getClient } from './db.js';
-import { extractAllMissingCovers } from './cover.js';
+import { extractAllMissingCovers, deleteTrackCover } from './cover.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
 const BATCH_SIZE = 300;
@@ -475,8 +475,10 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     }
 
     for (let i = 0; i < staleIds.length; i += DELETE_CHUNK) {
-      const res = await client.query('DELETE FROM tracks WHERE id = ANY($1::int[])', [staleIds.slice(i, i + DELETE_CHUNK)]);
+      const chunk = staleIds.slice(i, i + DELETE_CHUNK);
+      const res = await client.query('DELETE FROM tracks WHERE id = ANY($1::int[])', [chunk]);
       removed += res.rowCount;
+      for (const id of chunk) deleteTrackCover(id).catch(() => {});
     }
     if (removed > 0) console.log(`Removed ${removed} stale track(s) from DB`);
 

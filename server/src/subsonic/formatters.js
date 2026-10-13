@@ -71,8 +71,8 @@ export function formatAlbum(row) {
 export function formatSong(row) {
   const suffix = (row.format || path.extname(row.file_name || '').slice(1) || 'mp3').toLowerCase();
   let coverArt;
-  if (row.album_id && (row.album_cover || row.cover_path)) coverArt = `al-${row.album_id}`;
-  else if (row.cover_path) coverArt = `tr-${row.id}`;
+  if (row.cover_path) coverArt = `tr-${row.id}`;
+  else if (row.album_id && row.album_cover) coverArt = `al-${row.album_id}`;
 
   return compact({
     id: String(row.id),

@@ -34,6 +34,18 @@ export default async function coverRoutes(fastify) {
     serveCover(reply, rows[0].cover_path);
   });
 
+  fastify.get('/api/cover/track/:id', async (req, reply) => {
+    const { default: db } = await import('../db.js');
+    const { rows } = await db.query(
+      'SELECT COALESCE(t.cover_path, al.cover_path) as cover_path FROM tracks t LEFT JOIN albums al ON t.album_id = al.id WHERE t.id = $1',
+      [req.params.id]
+    );
+    if (!rows[0]?.cover_path) {
+      return reply.status(404).send({ error: 'No cover' });
+    }
+    serveCover(reply, rows[0].cover_path);
+  });
+
   fastify.get('/api/cover/:filename', async (req, reply) => {
     serveCover(reply, req.params.filename);
   });
