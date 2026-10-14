@@ -56,24 +56,25 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
 
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
   const [showFullCover, setShowFullCover] = useState(false);
-  const volumeRef = useRef(null);
+  const [volumeNode, setVolumeNode] = useState(null);
 
   // Prevent background page scrolling on volume wheel by using a non-passive listener
   useEffect(() => {
-    const el = volumeRef.current;
-    if (!el) return;
+    if (!volumeNode) return;
 
     const handleWheel = (e) => {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -0.05 : 0.05;
-      setVolume((prev) => prev + delta);
+      e.stopPropagation();
+      const step = 0.05;
+      const delta = e.deltaY < 0 ? step : -step;
+      setVolume((prev) => Math.min(1, Math.max(0, Math.round((prev + delta) * 100) / 100)));
     };
 
-    el.addEventListener('wheel', handleWheel, { passive: false });
+    volumeNode.addEventListener('wheel', handleWheel, { passive: false });
     return () => {
-      el.removeEventListener('wheel', handleWheel);
+      volumeNode.removeEventListener('wheel', handleWheel);
     };
-  }, [setVolume]);
+  }, [volumeNode, setVolume]);
 
   if (!currentTrack) return null;
 
@@ -295,8 +296,8 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
 
           {/* Volume slider with native mousewheel adjustment */}
           <div
-            ref={volumeRef}
-            className="hidden sm:flex items-center gap-2 text-surface-400 pl-2 cursor-pointer select-none"
+            ref={setVolumeNode}
+            className="hidden sm:flex items-center gap-2 text-surface-400 pl-2 py-2 cursor-pointer select-none"
             title="Scroll mouse wheel to change volume"
           >
             <button

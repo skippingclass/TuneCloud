@@ -184,6 +184,7 @@ export default async function trackRoutes(fastify) {
       query(
         `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
                 t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+                COALESCE(t.play_count, 0) as play_count, t.last_played_at,
                 a.name as artist, a.id as artist_id,
                 al.title as album, al.id as album_id,
                 COALESCE(t.cover_path, al.cover_path) as cover_path
@@ -238,6 +239,7 @@ export default async function trackRoutes(fastify) {
       query(
         `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
                 t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+                COALESCE(t.play_count, 0) as play_count, t.last_played_at,
                 a.name as artist, a.id as artist_id,
                 al.title as album, al.id as album_id,
                 COALESCE(t.cover_path, al.cover_path) as cover_path
@@ -334,7 +336,19 @@ export default async function trackRoutes(fastify) {
       [userId]
     );
 
-    return { tracks, albums };
+    const { rows: artists } = await query(
+      `SELECT a.*,
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count,
+              true as is_favorite
+       FROM user_starred_artists sa
+       JOIN artists a ON sa.artist_id = a.id
+       WHERE sa.user_id = $1
+       ORDER BY sa.created_at DESC`,
+      [userId]
+    );
+
+    return { tracks, albums, artists };
   });
 
   fastify.post('/api/favorites/track/:id', { preHandler: requireAuth }, async (req) => {
@@ -375,6 +389,26 @@ export default async function trackRoutes(fastify) {
       starred = true;
     }
     return { starred, albumId };
+  });
+
+  fastify.post('/api/favorites/artist/:id', { preHandler: requireAuth }, async (req) => {
+    const userId = req.user.id;
+    const artistId = parseInt(req.params.id, 10);
+    const { rows } = await query(
+      'SELECT 1 FROM user_starred_artists WHERE user_id = $1 AND artist_id = $2',
+      [userId, artistId]
+    );
+    let starred = false;
+    if (rows.length > 0) {
+      await query('DELETE FROM user_starred_artists WHERE user_id = $1 AND artist_id = $2', [userId, artistId]);
+    } else {
+      await query(
+        'INSERT INTO user_starred_artists (user_id, artist_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [userId, artistId]
+      );
+      starred = true;
+    }
+    return { starred, artistId };
   });
 
   // ---- Genres ----

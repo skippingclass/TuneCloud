@@ -6,6 +6,7 @@ const FavoritesContext = createContext(null);
 export function FavoritesProvider({ children }) {
   const [starredTrackIds, setStarredTrackIds] = useState(new Set());
   const [starredAlbumIds, setStarredAlbumIds] = useState(new Set());
+  const [starredArtistIds, setStarredArtistIds] = useState(new Set());
   const [loading, setLoading] = useState(false);
 
   const loadFavorites = useCallback(async () => {
@@ -15,8 +16,10 @@ export function FavoritesProvider({ children }) {
       const data = await api.favorites();
       const trackIds = new Set((data.tracks || []).map((t) => t.id));
       const albumIds = new Set((data.albums || []).map((a) => a.id));
+      const artistIds = new Set((data.artists || []).map((a) => a.id));
       setStarredTrackIds(trackIds);
       setStarredAlbumIds(albumIds);
+      setStarredArtistIds(artistIds);
     } catch {
       // Ignore if unauthenticated
     } finally {
@@ -81,18 +84,48 @@ export function FavoritesProvider({ children }) {
     }
   }, []);
 
+  const toggleFavoriteArtist = useCallback(async (artistId) => {
+    if (!artistId) return;
+    setStarredArtistIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(artistId)) next.delete(artistId);
+      else next.add(artistId);
+      return next;
+    });
+    try {
+      const res = await api.toggleFavoriteArtist(artistId);
+      setStarredArtistIds((prev) => {
+        const next = new Set(prev);
+        if (res.starred) next.add(artistId);
+        else next.delete(artistId);
+        return next;
+      });
+    } catch {
+      setStarredArtistIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(artistId)) next.delete(artistId);
+        else next.add(artistId);
+        return next;
+      });
+    }
+  }, []);
+
   const isTrackStarred = useCallback((id) => starredTrackIds.has(id), [starredTrackIds]);
   const isAlbumStarred = useCallback((id) => starredAlbumIds.has(id), [starredAlbumIds]);
+  const isArtistStarred = useCallback((id) => starredArtistIds.has(id), [starredArtistIds]);
 
   return (
     <FavoritesContext.Provider
       value={{
         starredTrackIds,
         starredAlbumIds,
+        starredArtistIds,
         isTrackStarred,
         isAlbumStarred,
+        isArtistStarred,
         toggleFavoriteTrack,
         toggleFavoriteAlbum,
+        toggleFavoriteArtist,
         reloadFavorites: loadFavorites,
         loading,
       }}
