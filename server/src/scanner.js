@@ -156,10 +156,16 @@ async function flushTrackBatch(client, items) {
     });
   }
 
-  // 2. Artists: collect all track artists + all inferred album artists
+  // Pre-calculate canonical artist name and preserve full track artist credit
+  for (const item of items) {
+    item.canonicalArtistName = extractLeadingArtist(item.artistName) || item.artistName;
+    item.trackArtistCredit = item.artistName || null;
+  }
+
+  // 2. Artists: collect ONLY canonical artist names + inferred album artists (no comma/feat composites)
   const allArtistNames = [
     ...new Set([
-      ...items.map((i) => i.artistName).filter(Boolean),
+      ...items.map((i) => i.canonicalArtistName).filter(Boolean),
       ...albumMetaList.map((a) => a.albumArtistName).filter(Boolean),
     ]),
   ];
@@ -253,20 +259,24 @@ async function flushTrackBatch(client, items) {
     }
   }
 
-  // 4. Tracks: each track keeps its own artistId, but links to the shared albumId
-  const cols = Array.from({ length: 15 }, () => []);
+  // 4. Tracks: each track links to canonical artistId, while preserving raw featuring credit
+  const cols = Array.from({ length: 16 }, () => []);
   for (const i of items) {
     const title = i.albumTitle || path.basename(normalizeAlbumFolder(i.folderPath));
     const normFolder = normalizeAlbumFolder(i.folderPath);
     const aKey = `${normFolder}\u0000${title}`;
     const albumId = albumMap.get(aKey) ?? null;
-    const trackArtistId = i.artistName ? (artistMap.get(i.artistName) ?? null) : null;
+    const albumMeta = albumMetaList.find((a) => a.groupKey === aKey);
+
+    // Prefer album artist if track starts with/matches it, else canonical track artist
+    const canonicalName = i.canonicalArtistName || albumMeta?.albumArtistName || null;
+    const trackArtistId = canonicalName ? (artistMap.get(canonicalName) ?? null) : null;
 
     if (albumId) touchedAlbumIds.add(albumId);
     [
       i.filePath, i.fileName, i.fileSize, i.duration, i.title,
       trackArtistId, albumId, i.trackNumber, i.discNumber, i.genre,
-      i.year, i.bitrate, i.sampleRate, i.format, i.mtime,
+      i.year, i.bitrate, i.sampleRate, i.format, i.mtime, i.trackArtistCredit,
     ].forEach((v, idx) => cols[idx].push(v));
   }
 
@@ -274,12 +284,12 @@ async function flushTrackBatch(client, items) {
     `INSERT INTO tracks (
        file_path, file_name, file_size, duration, title,
        artist_id, album_id, track_number, disc_number, genre,
-       year, bitrate, sample_rate, format, mtime
+       year, bitrate, sample_rate, format, mtime, track_artist_credit
      )
      SELECT * FROM unnest(
        $1::text[], $2::text[], $3::bigint[], $4::real[], $5::text[],
        $6::int[], $7::int[], $8::int[], $9::int[], $10::text[],
-       $11::int[], $12::int[], $13::int[], $14::text[], $15::timestamptz[]
+       $11::int[], $12::int[], $13::int[], $14::text[], $15::timestamptz[], $16::text[]
      )
      ON CONFLICT (file_path) DO UPDATE SET
        file_name = EXCLUDED.file_name,
@@ -296,6 +306,7 @@ async function flushTrackBatch(client, items) {
        sample_rate = EXCLUDED.sample_rate,
        format = EXCLUDED.format,
        mtime = EXCLUDED.mtime,
+       track_artist_credit = EXCLUDED.track_artist_credit,
        updated_at = NOW()`,
     cols
   );

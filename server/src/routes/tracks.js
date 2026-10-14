@@ -54,7 +54,8 @@ export default async function trackRoutes(fastify) {
     const { rows } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
-              a.name as artist, a.id as artist_id, al.title as album, al.id as album_id,
+              COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
+              al.title as album, al.id as album_id,
               COALESCE(t.cover_path, al.cover_path) as cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
@@ -79,7 +80,7 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
-      `SELECT t.*, a.name as artist, a.id as artist_id, al.title as album,
+      `SELECT t.*, COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id, al.title as album,
               COALESCE(t.cover_path, al.cover_path) as cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
@@ -110,7 +111,7 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/albums/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
-      `SELECT t.*, a.name as artist, a.id as artist_id, al.title as album,
+      `SELECT t.*, COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id, al.title as album,
               COALESCE(t.cover_path, al.cover_path) as cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
@@ -128,6 +129,7 @@ export default async function trackRoutes(fastify) {
               (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
               (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
        FROM artists a
+       WHERE a.name NOT LIKE '%,%'
        ORDER BY a.name`
     );
     return rows;
@@ -185,15 +187,15 @@ export default async function trackRoutes(fastify) {
         `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
                 t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
                 COALESCE(t.play_count, 0) as play_count, t.last_played_at,
-                a.name as artist, a.id as artist_id,
+                COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
                 al.title as album, al.id as album_id,
                 COALESCE(t.cover_path, al.cover_path) as cover_path
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
-         WHERE t.artist_id = $1
+         WHERE t.artist_id = $1 OR t.track_artist_credit ILIKE $2
          ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-        [artist.id]
+        [artist.id, `%${artist.name}%`]
       ),
     ]);
 
@@ -240,15 +242,15 @@ export default async function trackRoutes(fastify) {
         `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
                 t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
                 COALESCE(t.play_count, 0) as play_count, t.last_played_at,
-                a.name as artist, a.id as artist_id,
+                COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
                 al.title as album, al.id as album_id,
                 COALESCE(t.cover_path, al.cover_path) as cover_path
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
-         WHERE t.artist_id = $1
+         WHERE t.artist_id = $1 OR t.track_artist_credit ILIKE $2
          ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-        [artistId]
+        [artistId, `%${artist.name}%`]
       ),
     ]);
 
@@ -269,12 +271,12 @@ export default async function trackRoutes(fastify) {
 
     const tracks = await query(
       `SELECT t.id, t.title, t.file_name, t.duration, t.track_number, t.format,
-              a.name as artist, a.id as artist_id, al.title as album, al.id as album_id,
+              COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id, al.title as album, al.id as album_id,
               COALESCE(t.cover_path, al.cover_path) as cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE t.title ILIKE $1 OR a.name ILIKE $1 OR al.title ILIKE $1
+       WHERE t.title ILIKE $1 OR a.name ILIKE $1 OR t.track_artist_credit ILIKE $1 OR al.title ILIKE $1
        LIMIT $2`,
       [searchTerm, safeLimit]
     );
@@ -311,7 +313,7 @@ export default async function trackRoutes(fastify) {
     const { rows: tracks } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format,
-              a.name as artist, a.id as artist_id, al.title as album, al.id as album_id,
+              COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id, al.title as album, al.id as album_id,
               COALESCE(t.cover_path, al.cover_path) as cover_path,
               true as is_favorite
        FROM user_starred_tracks st
