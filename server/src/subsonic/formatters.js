@@ -42,6 +42,14 @@ export function formatArtist(row) {
   });
 }
 
+export function splitArtistNames(str) {
+  if (!str) return [];
+  return str
+    .split(/\s*(?:,|&|\/|\bfeat\.?|\bft\.?)\s*/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /**
  * Row: { id, title, year, genre, cover_path, created_at, artist_id, artist_name, song_count, duration, starred_at, user_rating }
  */
@@ -52,6 +60,8 @@ export function formatAlbum(row) {
     title: row.title,
     album: row.title,
     artist: row.artist_name || '',
+    displayArtist: row.artist_name || '',
+    displayAlbumArtist: row.artist_name || '',
     artistId: str(row.artist_id),
     coverArt: row.cover_path ? `al-${row.id}` : undefined,
     songCount: Number(row.song_count || 0),
@@ -74,13 +84,22 @@ export function formatSong(row) {
   if (row.cover_path) coverArt = `tr-${row.id}`;
   else if (row.album_id && row.album_cover) coverArt = `al-${row.album_id}`;
 
+  const trackArtist = row.track_artist_credit || row.artist_name || '';
+  const names = splitArtistNames(trackArtist);
+  const artists = names.length > 0 ? names.map((name, idx) => ({
+    id: idx === 0 && row.artist_id ? String(row.artist_id) : str(row.artist_id) || '0',
+    name,
+  })) : undefined;
+
   return compact({
     id: String(row.id),
     parent: str(row.album_id),
     isDir: false,
     title: row.title || row.file_name,
     album: row.album_title || '',
-    artist: row.artist_name || '',
+    artist: trackArtist,
+    displayArtist: trackArtist,
+    artists,
     track: row.track_number || 1,
     year: row.year || row.album_year || undefined,
     genre: row.genre || row.album_genre || undefined,
@@ -124,6 +143,7 @@ export const SONG_SELECT = `
   SELECT t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
          t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
          t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
+         t.track_artist_credit,
          al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
          al.cover_path AS album_cover,
          a.name AS artist_name
@@ -138,6 +158,7 @@ export function songSelectSql(userId = null) {
     SELECT t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
            t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
            t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
+           t.track_artist_credit,
            al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
            al.cover_path AS album_cover,
            a.name AS artist_name,
@@ -184,7 +205,7 @@ export const ARTIST_SELECT = `
   LEFT JOIN albums al ON al.artist_id = a.id`;
 
 export function artistSelectSql(userId = null) {
-  if (!userId) return `${ARTIST_SELECT} GROUP BY a.id, a.name ORDER BY a.name ASC`;
+  if (!userId) return `${ARTIST_SELECT} WHERE a.name NOT LIKE '%,%' GROUP BY a.id, a.name ORDER BY a.name ASC`;
   const uid = Number(userId);
   return `
     SELECT a.id, a.name,
@@ -196,6 +217,7 @@ export function artistSelectSql(userId = null) {
     LEFT JOIN albums al ON al.artist_id = a.id
     LEFT JOIN user_starred_artists sar ON sar.artist_id = a.id AND sar.user_id = ${uid}
     LEFT JOIN user_ratings ur ON ur.entity_type = 'artist' AND ur.entity_id = a.id AND ur.user_id = ${uid}
+    WHERE a.name NOT LIKE '%,%'
     GROUP BY a.id, a.name, sar.created_at, ur.rating
     ORDER BY a.name ASC`;
 }

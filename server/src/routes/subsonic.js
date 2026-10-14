@@ -893,7 +893,7 @@ export default async function subsonicRoutes(fastify) {
     const songPromise = songCount > 0
       ? query(
           `${songSelectSql(req.subsonicUser.id)}
-           WHERE t.title ILIKE $1 OR al.title ILIKE $1 OR a.name ILIKE $1
+           WHERE t.title ILIKE $1 OR al.title ILIKE $1 OR a.name ILIKE $1 OR t.track_artist_credit ILIKE $1
            ORDER BY t.title ASC
            LIMIT $2 OFFSET $3`,
           [pattern, songCount, songOffset]
@@ -1404,6 +1404,7 @@ export default async function subsonicRoutes(fastify) {
               t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
               t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
               t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
+              t.track_artist_credit,
               al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
               al.cover_path AS album_cover, a.name AS artist_name,
               st.created_at AS starred_at, ur.rating AS user_rating
@@ -1446,11 +1447,11 @@ export default async function subsonicRoutes(fastify) {
     if (!title && !artist) return missing(reply, req, 'title');
 
     const { rows } = await query(
-      `SELECT t.id, t.title, t.file_path, a.name AS artist_name
+      `SELECT t.id, t.title, t.file_path, COALESCE(t.track_artist_credit, a.name) AS artist_name
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        WHERE ($1 = '' OR LOWER(t.title) LIKE LOWER($1))
-         AND ($2 = '' OR LOWER(a.name) LIKE LOWER($2))
+         AND ($2 = '' OR LOWER(a.name) LIKE LOWER($2) OR LOWER(t.track_artist_credit) LIKE LOWER($2))
        LIMIT 1`,
       [title ? `%${title}%` : '', artist ? `%${artist}%` : '']
     );
@@ -1475,7 +1476,7 @@ export default async function subsonicRoutes(fastify) {
     if (id === null) return;
 
     const { rows } = await query(
-      `SELECT t.id, t.title, t.file_path, a.name AS artist_name
+      `SELECT t.id, t.title, t.file_path, COALESCE(t.track_artist_credit, a.name) AS artist_name
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        WHERE t.id = $1`,
