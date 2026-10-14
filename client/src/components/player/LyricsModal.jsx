@@ -538,19 +538,19 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                     key={idx}
                     ref={isActive ? activeLineRef : null}
                     onClick={() => seek(line.startMs / 1000)}
-                    className={`cursor-pointer transition-all duration-300 rounded-2xl sm:rounded-3xl py-2.5 px-3.5 sm:px-5 ${
+                    className={`cursor-pointer transition-all duration-300 rounded-xl py-2 sm:py-2.5 px-3 sm:px-4 ${
                       isActive
-                        ? 'scale-[1.03] origin-left bg-white/[0.08] backdrop-blur-md ring-1 ring-white/15 shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+                        ? 'scale-[1.02] origin-left text-white'
                         : isPast
-                        ? 'opacity-30 hover:opacity-80 hover:bg-white/[0.02]'
-                        : 'opacity-40 hover:opacity-85 hover:bg-white/[0.02]'
+                        ? 'text-white/30 hover:text-white/75 hover:bg-white/[0.02]'
+                        : 'text-white/40 hover:text-white/80 hover:bg-white/[0.02]'
                     }`}
                   >
                     <p
                       className={`tracking-tight leading-snug transition-all duration-300 ${
                         isActive
-                          ? 'text-2xl sm:text-3xl lg:text-[40px] font-[850] text-white drop-shadow-[0_0_28px_rgba(255,255,255,0.45)]'
-                          : 'text-xl sm:text-2xl lg:text-[32px] font-[600] text-white/75'
+                          ? 'text-2xl sm:text-3xl lg:text-[36px] font-[650] text-white'
+                          : 'text-xl sm:text-2xl lg:text-[28px] font-medium'
                       }`}
                     >
                       {line.text || '♪'}
@@ -560,7 +560,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
               })}
             </div>
           ) : (
-            <div className="whitespace-pre-line text-xl sm:text-2xl lg:text-3xl font-[600] leading-relaxed text-white/80 py-16 max-w-2xl tracking-tight">
+            <div className="whitespace-pre-line text-xl sm:text-2xl lg:text-3xl font-medium leading-relaxed text-white/85 py-16 max-w-2xl tracking-tight">
               {lyricsData?.text}
             </div>
           )}
