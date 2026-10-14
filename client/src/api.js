@@ -65,6 +65,7 @@ export const api = {
   favorites: () => fetchJson('/favorites'),
   toggleFavoriteTrack: (id) => fetchJson(`/favorites/track/${id}`, { method: 'POST' }),
   toggleFavoriteAlbum: (id) => fetchJson(`/favorites/album/${id}`, { method: 'POST' }),
+  toggleFavoriteArtist: (id) => fetchJson(`/favorites/artist/${id}`, { method: 'POST' }),
   genres: () => fetchJson('/genres'),
   scrobble: (id) => fetchJson(`/scrobble/${id}`, { method: 'POST' }),
   lyrics: (params) => fetchJson(`/lyrics?${new URLSearchParams(params)}`),

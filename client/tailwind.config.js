@@ -57,6 +57,17 @@ export default {
           '100%': { transform: 'translateX(0)', opacity: '1' },
         },
       },
+      fontFamily: {
+        lyrics: [
+          '"Google Sans Flex"',
+          'Inter',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"SF Pro Display"',
+          '"SF Pro Text"',
+          'sans-serif',
+        ],
+      },
     },
   },
   plugins: [],
