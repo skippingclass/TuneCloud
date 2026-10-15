@@ -43,7 +43,7 @@
 
 The project was built to demonstrate practical, production-grade DevOps workflows around a real-world, high-traffic application:
 
-* **Infrastructure as Code & GitOps**: Clear separation of application code and deployment configuration via a dedicated GitOps repository.
+* **Infrastructure as Code & GitOps**: Clear separation of application code and deployment configuration via a dedicated GitOps repository ([**TuneCloud-GitOps**](https://github.com/skippingclass/TuneCloud-GitOps)).
 * **Automated CI/CD Pipeline**: Multi-stage Docker builds using GitHub Actions, pushing versioned short-SHA tagged images to **GitHub Container Registry (GHCR)**, with automated GitOps updates via `yq`.
 * **GitOps Continuous Delivery**: **ArgoCD** continuously monitors the GitOps repository and synchronizes desired state to a **k3s Kubernetes** cluster with rolling zero-downtime updates.
 * **Kubernetes Orchestration**: Production-configured workloads with Helm, ConfigMaps, Secrets, Ingress routing, Persistent Volume Claims (PVCs), and health probes.
@@ -86,7 +86,7 @@ Connect seamlessly with all popular Subsonic ecosystem clients (**Symfonium**, *
 
 ## 🏗️ Cloud-Native Architecture & Kubernetes
 
-The application is deployed on a **Kubernetes (k3s)** cluster using a custom **Helm Chart** stored in a separate GitOps repository.
+The application is deployed on a **Kubernetes (k3s)** cluster using a custom **Helm Chart** stored in the dedicated GitOps repository: [**TuneCloud-GitOps**](https://github.com/skippingclass/TuneCloud-GitOps).
 
 ### Kubernetes Resources
 
@@ -203,14 +203,22 @@ docker compose up -d
   - **Username**: `admin` (or `ADMIN_USERNAME` set in `.env`)
   - **Password**: `admin` (or `ADMIN_PASSWORD` set in `.env`)
 
-### Helm & Kubernetes
+### Kubernetes & GitOps (Production)
 
-For high-availability or GitOps-driven deployment in Kubernetes (k3s):
+TuneCloud adheres to enterprise GitOps best practices: application source code and deployment configurations are strictly decoupled.
 
+All Kubernetes manifests, Helm charts, and ArgoCD configurations are maintained in [**TuneCloud-GitOps**](https://github.com/skippingclass/TuneCloud-GitOps).
+
+To deploy manually via Helm:
 ```bash
+git clone https://github.com/skippingclass/TuneCloud-GitOps.git
+cd TuneCloud-GitOps
+
 helm install tunecloud ./tunecloud -n tunecloud --create-namespace
 kubectl get pods -n tunecloud
 ```
+
+Or connect your **ArgoCD** instance directly to the GitOps repository for automated continuous delivery.
 
 ## 📜 License
 
