@@ -20,6 +20,7 @@ export function AlbumDetailView({
   onGoToArtist,
   onGoToAlbum,
   onEditTags,
+  onAddToPlaylist,
 }) {
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -228,6 +229,7 @@ export function AlbumDetailView({
                     onEditTags={onEditTags}
                     onGoToAlbum={onGoToAlbum}
                     onGoToArtist={onGoToArtist}
+                    onAddToPlaylist={onAddToPlaylist}
                   />
                 ))}
               </tbody>

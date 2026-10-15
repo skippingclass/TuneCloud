@@ -69,4 +69,21 @@ export const api = {
   genres: () => fetchJson('/genres'),
   scrobble: (id) => fetchJson(`/scrobble/${id}`, { method: 'POST' }),
   lyrics: (params) => fetchJson(`/lyrics?${new URLSearchParams(params)}`),
+  playlists: () => fetchJson('/playlists'),
+  playlist: (id) => fetchJson(`/playlists/${id}`),
+  createPlaylist: (data) => fetchJson('/playlists', { method: 'POST', body: JSON.stringify(data) }),
+  updatePlaylist: (id, data) => fetchJson(`/playlists/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deletePlaylist: (id) => fetchJson(`/playlists/${id}`, { method: 'DELETE' }),
+  addTracksToPlaylist: (id, trackIds) =>
+    fetchJson(`/playlists/${id}/tracks`, {
+      method: 'POST',
+      body: JSON.stringify({ trackIds: Array.isArray(trackIds) ? trackIds : [trackIds] }),
+    }),
+  removeTrackFromPlaylist: (id, playlistTrackId) =>
+    fetchJson(`/playlists/${id}/tracks/${playlistTrackId}`, { method: 'DELETE' }),
+  reorderPlaylist: (id, playlistTrackIds) =>
+    fetchJson(`/playlists/${id}/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ playlistTrackIds }),
+    }),
 };

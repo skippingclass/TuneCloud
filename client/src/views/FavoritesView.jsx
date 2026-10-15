@@ -11,6 +11,7 @@ export function FavoritesView({
   onAlbumClick,
   onGoToArtist,
   onEditTags,
+  onAddToPlaylist,
 }) {
   const [tab, setTab] = useState('tracks'); // 'tracks' | 'albums'
   const [favorites, setFavorites] = useState({ tracks: [], albums: [] });
@@ -151,6 +152,7 @@ export function FavoritesView({
                     onEditTags={onEditTags}
                     onGoToAlbum={onAlbumClick}
                     onGoToArtist={onGoToArtist}
+                    onAddToPlaylist={onAddToPlaylist}
                   />
                 ))}
               </tbody>

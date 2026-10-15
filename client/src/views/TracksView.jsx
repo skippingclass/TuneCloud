@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 
-export function TracksView({ user, onGoToAlbum, onGoToArtist, onEditTags }) {
+export function TracksView({ user, onGoToAlbum, onGoToArtist, onEditTags, onAddToPlaylist }) {
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -120,6 +120,7 @@ export function TracksView({ user, onGoToAlbum, onGoToArtist, onEditTags }) {
                     onEditTags={onEditTags}
                     onGoToAlbum={onGoToAlbum}
                     onGoToArtist={onGoToArtist}
+                    onAddToPlaylist={onAddToPlaylist}
                   />
                 ))}
               </tbody>

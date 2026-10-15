@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  ListMusic,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AlbumCard } from '../components/cards/AlbumCard.jsx';
@@ -52,6 +53,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
   const quickPills = [
     { label: 'All Albums', id: 'albums', icon: Disc, count: albums.length },
     { label: 'Tracks Library', id: 'tracks', icon: Music2 },
+    { label: 'Playlists', id: 'playlists', icon: ListMusic },
     { label: 'Artists', id: 'artists', icon: Users },
     { label: 'Favorites', id: 'favorites', icon: Heart },
     { label: 'Folders', id: 'browse', icon: Folder },

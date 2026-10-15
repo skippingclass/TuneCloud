@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus } from 'lucide-react';
+import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus, FolderPlus, Trash2 } from 'lucide-react';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { ArtistLinks } from '../common/ArtistLinks.jsx';
@@ -22,6 +22,9 @@ export function TrackRow({
   onEditTags,
   onGoToAlbum,
   onGoToArtist,
+  onAddToPlaylist,
+  onRemoveFromPlaylist,
+  reorderControls,
 }) {
   const [hover, setHover] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -182,6 +185,13 @@ export function TrackRow({
         {track.format || ''}
       </td>
 
+      {/* Optional reorder controls (used in playlist details) */}
+      {reorderControls && (
+        <td className="px-1 py-2 text-center w-14">
+          {reorderControls}
+        </td>
+      )}
+
       {/* Context menu */}
       <td className="px-2 py-2.5 text-sm w-9 text-right">
         <button
@@ -200,7 +210,7 @@ export function TrackRow({
         createPortal(
           <div
             ref={menuRef}
-            className="fixed glass-panel rounded-2xl py-1.5 min-w-[180px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
+            className="fixed glass-panel rounded-2xl py-1.5 min-w-[190px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
             style={{ top: menuPos.top, right: menuPos.right }}
           >
             <button
@@ -214,6 +224,34 @@ export function TrackRow({
               <ListPlus className="w-3.5 h-3.5 text-accent" />
               <span>Add to Queue</span>
             </button>
+
+            {onAddToPlaylist && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  onAddToPlaylist(track);
+                }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white transition-colors"
+              >
+                <FolderPlus className="w-3.5 h-3.5 text-accent" />
+                <span>Add to Playlist</span>
+              </button>
+            )}
+
+            {onRemoveFromPlaylist && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  onRemoveFromPlaylist(track);
+                }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-rose-300 hover:bg-rose-500/10 hover:text-rose-200 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>Remove from Playlist</span>
+              </button>
+            )}
 
             {track.album_id && (
               <button

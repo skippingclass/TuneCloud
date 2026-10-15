@@ -19,12 +19,15 @@ import { AlbumDetailView } from './views/AlbumDetailView.jsx';
 import { ArtistsView } from './views/ArtistsView.jsx';
 import { ArtistDetailView } from './views/ArtistDetailView.jsx';
 import { TracksView } from './views/TracksView.jsx';
+import { PlaylistsView } from './views/PlaylistsView.jsx';
+import { PlaylistDetailView } from './views/PlaylistDetailView.jsx';
 import { FavoritesView } from './views/FavoritesView.jsx';
 import { BrowseView } from './views/BrowseView.jsx';
 import { SearchView } from './views/SearchView.jsx';
 import { SettingsView } from './views/SettingsView.jsx';
 import { AdminView } from './views/AdminView.jsx';
 import { LoginView } from './views/LoginView.jsx';
+import { AddToPlaylistModal } from './components/modals/AddToPlaylistModal.jsx';
 
 function MainLayout({ user, onLogout }) {
   const [view, setView] = useState('home');
@@ -33,6 +36,8 @@ function MainLayout({ user, onLogout }) {
 
   const [selectedAlbum, setSelectedAlbum] = useState(null);
   const [selectedArtist, setSelectedArtist] = useState(null);
+  const [selectedPlaylist, setSelectedPlaylist] = useState(null);
+  const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
   const [browsePath, setBrowsePath] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -56,13 +61,16 @@ function MainLayout({ user, onLogout }) {
         if (targetView === 'artist' && currentEntry.param?.name === param?.name) {
           return;
         }
+        if (targetView === 'playlist' && currentEntry.param?.id === param?.id) {
+          return;
+        }
         if (targetView === 'search' && currentEntry.param === param) {
           return;
         }
         if (targetView === 'browse' && currentEntry.param === param) {
           return;
         }
-        if (!['album', 'artist', 'search', 'browse'].includes(targetView)) {
+        if (!['album', 'artist', 'playlist', 'search', 'browse'].includes(targetView)) {
           return;
         }
       }
@@ -71,6 +79,8 @@ function MainLayout({ user, onLogout }) {
         setSelectedAlbum(param);
       } else if (targetView === 'artist') {
         setSelectedArtist(param);
+      } else if (targetView === 'playlist') {
+        setSelectedPlaylist(param);
       } else if (targetView === 'browse') {
         setBrowsePath(param || '');
       } else if (targetView === 'search') {
@@ -91,6 +101,7 @@ function MainLayout({ user, onLogout }) {
       setView(prevEntry.view);
       if (prevEntry.view === 'album') setSelectedAlbum(prevEntry.param);
       if (prevEntry.view === 'artist') setSelectedArtist(prevEntry.param);
+      if (prevEntry.view === 'playlist') setSelectedPlaylist(prevEntry.param);
       if (prevEntry.view === 'browse') setBrowsePath(prevEntry.param || '');
       if (prevEntry.view === 'search') setSearchQuery(prevEntry.param || '');
     }
@@ -103,6 +114,7 @@ function MainLayout({ user, onLogout }) {
       setView(nextEntry.view);
       if (nextEntry.view === 'album') setSelectedAlbum(nextEntry.param);
       if (nextEntry.view === 'artist') setSelectedArtist(nextEntry.param);
+      if (nextEntry.view === 'playlist') setSelectedPlaylist(nextEntry.param);
       if (nextEntry.view === 'browse') setBrowsePath(nextEntry.param || '');
       if (nextEntry.view === 'search') setSearchQuery(nextEntry.param || '');
     }
@@ -110,6 +122,7 @@ function MainLayout({ user, onLogout }) {
 
   const handleAlbumClick = (album) => navigateTo('album', album);
   const handleArtistClick = (artist) => navigateTo('artist', artist);
+  const handlePlaylistClick = (playlist) => navigateTo('playlist', playlist);
 
   const viewTitles = {
     home: 'Home Hub',
@@ -118,6 +131,8 @@ function MainLayout({ user, onLogout }) {
     artists: 'Artists',
     artist: selectedArtist?.name || 'Artist',
     tracks: 'Tracks Library',
+    playlists: 'Playlists',
+    playlist: selectedPlaylist?.name || 'Playlist',
     favorites: 'Favorites',
     browse: 'Folder Browser',
     search: 'Search Library',
@@ -181,6 +196,7 @@ function MainLayout({ user, onLogout }) {
                 onGoToAlbum={handleAlbumClick}
                 onGoToArtist={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
             {view === 'artists' && (
@@ -197,6 +213,7 @@ function MainLayout({ user, onLogout }) {
                 onGoToAlbum={handleAlbumClick}
                 onGoToArtist={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
             {view === 'tracks' && (
@@ -206,6 +223,25 @@ function MainLayout({ user, onLogout }) {
                 onGoToAlbum={handleAlbumClick}
                 onGoToArtist={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
+              />
+            )}
+            {view === 'playlists' && (
+              <PlaylistsView
+                key={scanVersion}
+                onPlaylistClick={handlePlaylistClick}
+                user={user}
+              />
+            )}
+            {view === 'playlist' && selectedPlaylist && (
+              <PlaylistDetailView
+                playlist={selectedPlaylist}
+                onBack={handleBack}
+                user={user}
+                onGoToAlbum={handleAlbumClick}
+                onGoToArtist={handleArtistClick}
+                onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
             {view === 'favorites' && (
@@ -214,6 +250,7 @@ function MainLayout({ user, onLogout }) {
                 onAlbumClick={handleAlbumClick}
                 onGoToArtist={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
             {view === 'browse' && (
@@ -225,6 +262,7 @@ function MainLayout({ user, onLogout }) {
                 onAlbumClick={handleAlbumClick}
                 onArtistClick={handleArtistClick}
                 onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
             {view === 'search' && (
@@ -234,6 +272,7 @@ function MainLayout({ user, onLogout }) {
                 onArtistClick={handleArtistClick}
                 user={user}
                 onEditTags={(t) => setEditingTrack(t)}
+                onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
             {view === 'settings' && (
@@ -251,6 +290,7 @@ function MainLayout({ user, onLogout }) {
       <Player
         onGoToAlbum={handleAlbumClick}
         onGoToArtist={handleArtistClick}
+        onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
       />
 
       {/* Slide-out Queue Drawer */}
@@ -271,6 +311,17 @@ function MainLayout({ user, onLogout }) {
           track={editingTrack}
           onClose={() => setEditingTrack(null)}
           onSaved={() => setScanVersion((v) => v + 1)}
+        />
+      )}
+
+      {/* Add To Playlist Modal */}
+      {addToPlaylistTrack && (
+        <AddToPlaylistModal
+          track={addToPlaylistTrack}
+          onClose={() => setAddToPlaylistTrack(null)}
+          onPlaylistCreated={(newPl) => {
+            // Optional: navigateTo('playlist', newPl);
+          }}
         />
       )}
 

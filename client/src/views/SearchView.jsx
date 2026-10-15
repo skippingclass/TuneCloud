@@ -11,6 +11,7 @@ export function SearchView({
   onArtistClick,
   user,
   onEditTags,
+  onAddToPlaylist,
 }) {
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState(null);
@@ -133,6 +134,7 @@ export function SearchView({
                         onEditTags={onEditTags}
                         onGoToAlbum={onAlbumClick}
                         onGoToArtist={onArtistClick}
+                        onAddToPlaylist={onAddToPlaylist}
                       />
                     ))}
                   </tbody>
