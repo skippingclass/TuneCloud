@@ -2,52 +2,68 @@ services:
   db:
     image: postgres:16-alpine
     container_name: tunecloud-db
-    restart: always
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: tunecloud
-      POSTGRES_PASSWORD: tunecloud
-      POSTGRES_DB: tunecloud
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-tunecloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tunecloud}
+      POSTGRES_DB: ${POSTGRES_DB:-tunecloud}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./server/src/schema.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tunecloud -d tunecloud"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tunecloud} -d ${POSTGRES_DB:-tunecloud}"]
       interval: 5s
       timeout: 5s
       retries: 5
-  
-  api:
+
+  server:
+    image: ghcr.io/skippingclass/tunecloud-server:latest
     build:
       context: ./server
       dockerfile: Dockerfile
-    container_name: tunecloud-api
-    restart: always
-    ports:
-      - "4000:4000"
+    container_name: tunecloud-server
+    restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://tunecloud:tunecloud@db:5432/tunecloud
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tunecloud}:${POSTGRES_PASSWORD:-tunecloud}@db:5432/${POSTGRES_DB:-tunecloud}
       MUSIC_DIR: /music
       PORT: 4000
       HOST: 0.0.0.0
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET:-tunecloud-default-secret-replace-me}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
     volumes:
-      - ${MUSIC_DIR:-/home/pirkov/music}:/music:ro
+      - ${MUSIC_DIR}:/music:ro
       - covers_data:/app/covers
+    networks:
+      default:
+        aliases:
+          - tunecloud-server
+          - server
+          - api
     depends_on:
       db:
         condition: service_healthy
-  
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   web:
+    image: ghcr.io/skippingclass/tunecloud-client:latest
     build:
       context: ./client
       dockerfile: Dockerfile
     container_name: tunecloud-web
-    restart: always
+    restart: unless-stopped
     ports:
-      - "80:80"
+      - "${APP_PORT:-80}:80"
     depends_on:
-      - api
+      server:
+        condition: service_healthy
 
 volumes:
   pgdata:

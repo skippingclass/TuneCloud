@@ -84,6 +84,7 @@ async function main() {
       return (
         req.url === '/metrics' ||
         req.url.startsWith('/metrics') ||
+        req.url === '/api/health' ||
         req.url.startsWith('/api/stream/')
       );
     },
@@ -91,6 +92,12 @@ async function main() {
 
   await app.register(fastifyMetrics, { endpoint: '/metrics' });
   setupCustomMetrics(app);
+
+  app.get('/api/health', async () => ({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    version: '0.1.0',
+  }));
 
   const clientDist = path.resolve(__dirname, '../../client/dist');
   if (fs.existsSync(clientDist)) {

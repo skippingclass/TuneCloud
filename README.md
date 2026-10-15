@@ -178,18 +178,34 @@ Monitoring is implemented using the **kube-prometheus-stack**.
 
 ### Docker Compose
 
+The fastest way to deploy TuneCloud on a server, VPS, or local machine:
+
 ```bash
-git clone https://github.com/egorpirkov/TuneCloud.git tunecloud
+# 1. Clone repository
+git clone https://github.com/skippingclass/TuneCloud.git tunecloud
 cd tunecloud
 
-# Setup environment variables
-cp server/.env.example server/.env
+# 2. Copy environment template and configure paths
+cp .env.example .env
+# Edit .env: set your MUSIC_DIR path and change default passwords
+nano .env
 
-# Start the entire stack
-docker compose up -d --build
+# 3. Start the entire stack
+docker compose up -d
 ```
 
-### Helm
+> **Single Port Architecture**: TuneCloud Web UI, REST API, and OpenSubsonic API are all unified on port `APP_PORT` (default: `80`, configurable to `3000`, `8080`, etc. in `.env`).
+
+#### Connecting Clients
+- **Web Interface**: Open `http://YOUR_SERVER_IP:APP_PORT` in your browser.
+- **OpenSubsonic Apps** (Symfonium, Feishin, Substreamer, DSub, Tempo):
+  - **Server URL**: `http://YOUR_SERVER_IP:APP_PORT`
+  - **Username**: `admin` (or `ADMIN_USERNAME` set in `.env`)
+  - **Password**: `admin` (or `ADMIN_PASSWORD` set in `.env`)
+
+### Helm & Kubernetes
+
+For high-availability or GitOps-driven deployment in Kubernetes (k3s):
 
 ```bash
 helm install tunecloud ./tunecloud -n tunecloud --create-namespace

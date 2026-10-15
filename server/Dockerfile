@@ -9,6 +9,8 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+RUN mkdir -p /app/covers && chown -R node:node /app
+
 USER node
 
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
