@@ -28,7 +28,7 @@ function cleanStr(v) {
   return s === '' ? null : s;
 }
 
-function extractLeadingArtist(name) {
+export function extractLeadingArtist(name) {
   if (!name) return null;
   const m = name.match(/^(.+?)\s*(?:feat\.|ft\.|featuring|vs\.?|&|,\s)/i);
   return m ? m[1].trim() : name.trim();
@@ -53,7 +53,10 @@ function normalizeAlbumFolder(fp) {
 function inferAlbumArtist(tracks) {
   // 1. Any track has an explicit albumartist tag?
   for (const t of tracks) {
-    if (t.albumArtistName) return { name: t.albumArtistName, compilation: false };
+    if (t.albumArtistName) {
+      const canonical = extractLeadingArtist(t.albumArtistName) || t.albumArtistName;
+      return { name: canonical, compilation: false };
+    }
   }
 
   // 2. Count frequency of exact artist names
@@ -65,7 +68,10 @@ function inferAlbumArtist(tracks) {
   }
 
   if (counts.size === 0) return { name: 'Unknown', compilation: false };
-  if (counts.size === 1) return { name: [...counts.keys()][0], compilation: false };
+  if (counts.size === 1) {
+    const raw = [...counts.keys()][0];
+    return { name: extractLeadingArtist(raw) || raw, compilation: false };
+  }
 
   // Find most frequent artist
   let bestArtist = null;
@@ -79,7 +85,7 @@ function inferAlbumArtist(tracks) {
 
   // If dominant artist covers at least 40% of the tracks or appears multiple times, use it
   if (bestArtist && (maxCount >= Math.ceil(tracks.length * 0.4) || maxCount >= 2)) {
-    return { name: bestArtist, compilation: false };
+    return { name: extractLeadingArtist(bestArtist) || bestArtist, compilation: false };
   }
 
   // 3. Check leading artist prefix (e.g. "Sqwore, glaive" -> "Sqwore")
@@ -145,11 +151,12 @@ async function flushTrackBatch(client, items) {
   for (const [groupKey, group] of albumGroups.entries()) {
     const inferred = inferAlbumArtist(group.tracks);
     const sample = group.tracks[0];
+    const canonicalAlbumArtist = extractLeadingArtist(inferred.name) || inferred.name;
     albumMetaList.push({
       groupKey,
       normFolder: group.normFolder,
       title: group.title,
-      albumArtistName: inferred.name,
+      albumArtistName: canonicalAlbumArtist,
       compilation: inferred.compilation,
       year: sample.year,
       genre: sample.genre,
@@ -166,7 +173,7 @@ async function flushTrackBatch(client, items) {
   const allArtistNames = [
     ...new Set([
       ...items.map((i) => i.canonicalArtistName).filter(Boolean),
-      ...albumMetaList.map((a) => a.albumArtistName).filter(Boolean),
+      ...albumMetaList.map((a) => extractLeadingArtist(a.albumArtistName) || a.albumArtistName).filter(Boolean),
     ]),
   ];
 

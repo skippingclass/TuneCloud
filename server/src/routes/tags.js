@@ -4,13 +4,14 @@ import pkg from 'music-metadata';
 const { parseFile } = pkg;
 import { query } from '../db.js';
 import { requireAuth, requireAdmin } from '../auth.js';
+import { extractLeadingArtist } from '../scanner.js';
 
 const MP3_EXTS = ['.mp3'];
 const TAG_EXTS = ['.mp3', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.wav'];
 
 async function ensureArtist(name) {
   if (!name || name.trim() === '') return null;
-  name = name.trim();
+  name = (extractLeadingArtist(name) || name).trim();
   const { rows } = await query(
     `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
     [name]
@@ -108,9 +109,12 @@ export default async function tagRoutes(fastify) {
     }
 
     if (updates.artist !== undefined) {
-      const artistId = updates.artist ? await ensureArtist(updates.artist) : null;
+      const canonicalArtist = updates.artist ? (extractLeadingArtist(updates.artist) || updates.artist.trim()) : null;
+      const artistId = canonicalArtist ? await ensureArtist(canonicalArtist) : null;
       dbUpdates.push(`artist_id = $${idx++}`);
       dbParams.push(artistId);
+      dbUpdates.push(`track_artist_credit = $${idx++}`);
+      dbParams.push(updates.artist ? updates.artist.trim() : null);
     }
 
     if (updates.album !== undefined) {

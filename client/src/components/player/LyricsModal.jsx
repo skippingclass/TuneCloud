@@ -73,7 +73,8 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     setIsLyricsOpen,
   } = usePlayer();
 
-  const { isTrackStarred, toggleTrackStar } = useFavorites();
+  const { isTrackStarred, toggleFavoriteTrack, toggleTrackStar } = useFavorites();
+  const handleToggleFavorite = toggleFavoriteTrack || toggleTrackStar;
 
   const [loading, setLoading] = useState(true);
   const [loadedTrackId, setLoadedTrackId] = useState(null);
@@ -222,7 +223,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     }
   }, [activeIndex]);
 
-  // Volume slider drag handler
+  // Volume slider click/drag handler
   const handleVolumeBarClick = (e) => {
     if (!volumeBarRef.current) return;
     const rect = volumeBarRef.current.getBoundingClientRect();
@@ -231,6 +232,23 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     const nextVol = Math.max(0, Math.min(1, offsetY / height));
     setVolume(nextVol);
   };
+
+  // Volume slider mouse-wheel adjustment
+  useEffect(() => {
+    const el = volumeBarRef.current;
+    if (!el) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const step = 0.05;
+      const delta = e.deltaY < 0 ? step : -step;
+      setVolume((prev) => Math.min(1, Math.max(0, Math.round((prev + delta) * 100) / 100)));
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+    };
+  }, [setVolume, isLyricsOpen]);
 
   if (!isLyricsOpen || !currentTrack) return null;
 
@@ -354,7 +372,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                 <div className="w-8" />
                 {/* Big Heart button */}
                 <button
-                  onClick={() => toggleTrackStar(currentTrack.id)}
+                  onClick={() => handleToggleFavorite?.(currentTrack.id)}
                   title={isStarred ? 'Remove from favorites' : 'Add to favorites'}
                   className="p-4 rounded-full bg-white/[0.1] hover:bg-white/[0.2] border border-white/15 text-white transition-all transform active:scale-90 hover:scale-110"
                 >
@@ -370,6 +388,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                   <div
                     ref={volumeBarRef}
                     onClick={handleVolumeBarClick}
+                    title="Click or scroll mouse wheel to change volume"
                     className="w-2.5 h-24 bg-white/20 hover:bg-white/30 rounded-full relative cursor-pointer overflow-hidden"
                   >
                     <div

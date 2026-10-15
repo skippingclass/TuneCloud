@@ -124,6 +124,7 @@ export function FavoritesProvider({ children }) {
         isAlbumStarred,
         isArtistStarred,
         toggleFavoriteTrack,
+        toggleTrackStar: toggleFavoriteTrack,
         toggleFavoriteAlbum,
         toggleFavoriteArtist,
         reloadFavorites: loadFavorites,

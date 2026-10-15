@@ -60,16 +60,30 @@ export function ArtistDetailView({
 
   useEffect(() => {
     setLoading(true);
+    const primaryName = (artist.name || '').split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim();
     const fetchPromise = artist.id
       ? api.artist(artist.id)
-      : api.artistByName(artist.name);
+      : api.artistByName(primaryName || artist.name);
+
+    let isMounted = true;
 
     fetchPromise
       .then((res) => {
+        if (!isMounted) return;
         if (res && res.artist) {
           setResolvedArtist(res.artist);
           setAlbums(res.albums || []);
           setTracks(res.tracks || []);
+          if (res.artist.name && res.artist.name !== initialQuery) {
+            api
+              .spotifyArtist(res.artist.name)
+              .then((data) => {
+                if (isMounted && data?.found && data.artist) {
+                  setArtistMeta(data.artist);
+                }
+              })
+              .catch(() => {});
+          }
         } else if (Array.isArray(res)) {
           setTracks(res);
         }
@@ -77,19 +91,25 @@ export function ArtistDetailView({
       .catch((err) => {
         console.error('Failed to load artist details:', err);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
 
-    const nameToQuery = artist.name || resolvedArtist?.name;
-    if (nameToQuery) {
+    const initialQuery = primaryName || artist.name;
+    if (initialQuery) {
       api
-        .spotifyArtist(nameToQuery)
+        .spotifyArtist(initialQuery)
         .then((data) => {
-          if (data?.found && data.artist) {
+          if (isMounted && data?.found && data.artist) {
             setArtistMeta(data.artist);
           }
         })
         .catch(() => {});
     }
+
+    return () => {
+      isMounted = false;
+    };
   }, [artist.id, artist.name]);
 
   const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
