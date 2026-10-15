@@ -28,13 +28,6 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function formatFollowers(num) {
-  if (!num || num <= 0) return null;
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M followers`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K followers`;
-  return `${num} followers`;
-}
-
 export function ArtistDetailView({
   artist,
   onBack,
@@ -301,11 +294,6 @@ export function ArtistDetailView({
                 <Sparkles className="w-3 h-3 fill-current" />
                 Artist
               </span>
-              {artistMeta?.followers > 0 && (
-                <span className="text-xs text-surface-400 font-medium">
-                  {formatFollowers(artistMeta.followers)}
-                </span>
-              )}
             </div>
 
             <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-none drop-shadow-md">
@@ -413,6 +401,7 @@ export function ArtistDetailView({
                         key={track.id}
                         track={track}
                         index={idx}
+                        displayIndex={idx + 1}
                         onPlay={(t) => playTrack(t, popularTracks)}
                         isPlaying={currentTrack?.id === track.id}
                         user={user}

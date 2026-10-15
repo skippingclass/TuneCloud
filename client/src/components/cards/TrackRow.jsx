@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus } from 'lucide-react';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { usePlayer } from '../../context/PlayerContext.jsx';
+import { ArtistLinks } from '../common/ArtistLinks.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -16,6 +17,7 @@ export function TrackRow({
   onPlay,
   isPlaying,
   index,
+  displayIndex,
   user,
   onEditTags,
   onGoToAlbum,
@@ -82,7 +84,7 @@ export function TrackRow({
             isPlaying ? 'text-accent' : 'text-surface-500'
           } ${hover && canPlay ? 'invisible' : ''}`}
         >
-          {track.track_number || (index != null ? index + 1 : '')}
+          {displayIndex != null ? displayIndex : (track.track_number || (index != null ? index + 1 : ''))}
         </span>
         {canPlay && (
           <button
@@ -125,16 +127,11 @@ export function TrackRow({
         </span>
         {track.artist && (
           <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
-            <span
-              onClick={(e) => {
-                e.stopPropagation();
-                const primaryName = track.primary_artist || track.artist_name || (track.artist ? track.artist.split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim() : '');
-                onGoToArtist?.({ id: track.artist_id, name: primaryName || track.artist });
-              }}
-              className="hover:underline hover:text-white cursor-pointer transition-colors"
-            >
-              {track.artist}
-            </span>
+            <ArtistLinks
+              artist={track.artist}
+              primaryArtistId={track.artist_id}
+              onGoToArtist={onGoToArtist}
+            />
           </div>
         )}
       </td>
@@ -142,17 +139,11 @@ export function TrackRow({
       {/* Artist */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden sm:table-cell">
         {track.artist ? (
-          <span
-            onClick={(e) => {
-              e.stopPropagation();
-              const primaryName = track.primary_artist || track.artist_name || (track.artist ? track.artist.split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim() : '');
-              onGoToArtist?.({ id: track.artist_id, name: primaryName || track.artist });
-            }}
-            className="hover:underline hover:text-white cursor-pointer transition-colors"
-            title={`Go to artist: ${track.artist}`}
-          >
-            {track.artist}
-          </span>
+          <ArtistLinks
+            artist={track.artist}
+            primaryArtistId={track.artist_id}
+            onGoToArtist={onGoToArtist}
+          />
         ) : (
           '—'
         )}
