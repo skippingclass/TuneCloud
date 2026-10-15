@@ -110,13 +110,20 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/albums/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const { rows } = await query(
-      `SELECT t.*, COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id, al.title as album,
+      `SELECT t.*,
+              COALESCE(t.track_artist_credit, a.name) as artist,
+              a.name as primary_artist,
+              a.id as artist_id,
+              al.title as album,
+              al.artist_id as album_artist_id,
+              al_a.name as album_artist,
               COALESCE(t.cover_path, al.cover_path) as cover_path
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-        WHERE t.album_id = $1
-        ORDER BY t.disc_number, COALESCE(t.track_number, 999), t.file_name`,
+       LEFT JOIN artists al_a ON al.artist_id = al_a.id
+       WHERE t.album_id = $1
+       ORDER BY t.disc_number, COALESCE(t.track_number, 999), t.file_name`,
       [id]
     );
     return rows;
@@ -188,12 +195,13 @@ export default async function trackRoutes(fastify) {
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
     const albumsRes = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
+              (al.artist_id = $1) as is_primary_album,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
               (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
        WHERE al.artist_id = $1 OR al.id = ANY($2::int[])
-       ORDER BY al.year DESC NULLS LAST, al.title ASC`,
+       ORDER BY (al.artist_id = $1) DESC, al.year DESC NULLS LAST, al.title ASC`,
       [artist.id, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
     );
 
@@ -243,12 +251,13 @@ export default async function trackRoutes(fastify) {
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
     const albumsRes = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
+              (al.artist_id = $1) as is_primary_album,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
               (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
        WHERE al.artist_id = $1 OR al.id = ANY($2::int[])
-       ORDER BY al.year DESC NULLS LAST, al.title ASC`,
+       ORDER BY (al.artist_id = $1) DESC, al.year DESC NULLS LAST, al.title ASC`,
       [artistId, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
     );
 
