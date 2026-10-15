@@ -140,6 +140,9 @@ export function ArtistDetailView({
         cover_path: alb.cover_path,
         year: alb.year,
         genre: alb.genre,
+        artist: alb.artist,
+        artist_id: alb.artist_id,
+        is_primary_album: alb.is_primary_album,
         track_count: alb.track_count || 0,
         duration: alb.duration || 0,
         tracks: [],
@@ -163,6 +166,8 @@ export function ArtistDetailView({
             cover_path: t.cover_path,
             year: t.year,
             genre: t.genre,
+            artist: t.primary_artist || t.artist,
+            artist_id: t.artist_id,
             tracks: [],
           };
           list.push(found);
@@ -184,12 +189,23 @@ export function ArtistDetailView({
     return list;
   }, [albums, tracks]);
 
-  // Categorize releases: Full Albums vs Singles & EPs
-  const { fullAlbums, singlesAndEPs } = useMemo(() => {
+  // Categorize releases: Full Albums vs Singles & EPs vs Appears On (Features)
+  const { fullAlbums, singlesAndEPs, appearsOn } = useMemo(() => {
     const full = [];
     const singles = [];
+    const appears = [];
 
     for (const alb of albumGroups) {
+      const isAppearsOn =
+        alb.is_primary_album === false ||
+        (alb.artist_id && artistDbId && Number(alb.artist_id) !== Number(artistDbId)) ||
+        (alb.artist && displayName && alb.artist.toLowerCase() !== displayName.toLowerCase());
+
+      if (isAppearsOn) {
+        appears.push(alb);
+        continue;
+      }
+
       const isSingle =
         alb.track_count <= 3 ||
         alb.title.toLowerCase().includes(' - single') ||
@@ -205,14 +221,15 @@ export function ArtistDetailView({
       }
     }
 
-    return { fullAlbums: full, singlesAndEPs: singles };
-  }, [albumGroups]);
+    return { fullAlbums: full, singlesAndEPs: singles, appearsOn: appears };
+  }, [albumGroups, artistDbId, displayName]);
 
   const filteredReleases = useMemo(() => {
     if (discographyTab === 'albums') return fullAlbums;
     if (discographyTab === 'singles') return singlesAndEPs;
+    if (discographyTab === 'appears_on') return appearsOn;
     return albumGroups;
-  }, [discographyTab, fullAlbums, singlesAndEPs, albumGroups]);
+  }, [discographyTab, fullAlbums, singlesAndEPs, appearsOn, albumGroups]);
 
   const handlePlayAll = () => {
     if (tracks.length > 0) {
@@ -462,6 +479,18 @@ export function ArtistDetailView({
                       Singles & EPs ({singlesAndEPs.length})
                     </button>
                   )}
+                  {appearsOn.length > 0 && (
+                    <button
+                      onClick={() => setDiscographyTab('appears_on')}
+                      className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
+                        discographyTab === 'appears_on'
+                          ? 'bg-accent/20 text-accent shadow-sm'
+                          : 'text-surface-400 hover:text-white'
+                      }`}
+                    >
+                      Appears On ({appearsOn.length})
+                    </button>
+                  )}
                 </div>
 
                 {/* View Mode Toggle (Grid vs List) */}
@@ -506,8 +535,8 @@ export function ArtistDetailView({
                       id: alb.album_id || alb.id,
                       title: alb.title,
                       cover_path: alb.cover_path,
-                      artist: displayName,
-                      artist_id: artistDbId,
+                      artist: alb.artist || displayName,
+                      artist_id: alb.artist_id || artistDbId,
                       year: alb.year,
                       track_count: alb.track_count,
                     }}
@@ -516,6 +545,8 @@ export function ArtistDetailView({
                         onGoToAlbum?.({
                           id: alb.album_id,
                           title: alb.title,
+                          artist: alb.artist || displayName,
+                          artist_id: alb.artist_id || artistDbId,
                           cover_path: alb.cover_path,
                         });
                       }
@@ -531,9 +562,16 @@ export function ArtistDetailView({
                     <div className="flex items-center justify-between px-1">
                       <div className="flex items-center gap-3">
                         <Disc className="w-4 h-4 text-accent" />
-                        <h3 className="text-base font-bold text-white tracking-tight">
-                          {group.title}
-                        </h3>
+                        <div>
+                          <h3 className="text-base font-bold text-white tracking-tight">
+                            {group.title}
+                          </h3>
+                          {group.artist && group.artist.toLowerCase() !== displayName.toLowerCase() && (
+                            <p className="text-xs text-surface-400">
+                              by {group.artist}
+                            </p>
+                          )}
+                        </div>
                         {group.year && (
                           <span className="text-xs text-surface-500 font-mono">
                             ({group.year})
@@ -550,6 +588,8 @@ export function ArtistDetailView({
                             onGoToAlbum?.({
                               id: group.album_id,
                               title: group.title,
+                              artist: group.artist || displayName,
+                              artist_id: group.artist_id || artistDbId,
                               cover_path: group.cover_path,
                             })
                           }

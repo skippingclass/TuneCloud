@@ -30,11 +30,22 @@ export function AlbumDetailView({
 
   const starred = isAlbumStarred(album.id);
 
+  const albumArtist =
+    tracks[0]?.album_artist ||
+    (album.artist && !album.artist.includes(',') ? album.artist : null) ||
+    tracks[0]?.primary_artist ||
+    (album.artist ? album.artist.split(',')[0].trim() : 'Unknown Artist');
+
+  const albumArtistId =
+    album.artist_id ||
+    tracks[0]?.album_artist_id ||
+    tracks[0]?.artist_id;
+
   const resolvedAlbum = {
     ...album,
     title: album.title || tracks[0]?.album || 'Album',
-    artist: album.artist || tracks[0]?.artist || 'Unknown Artist',
-    artist_id: album.artist_id || tracks[0]?.artist_id,
+    artist: albumArtist,
+    artist_id: albumArtistId,
     cover_path: album.cover_path || tracks[0]?.cover_path,
     year: album.year || tracks[0]?.year,
     genre: album.genre || tracks[0]?.genre,
