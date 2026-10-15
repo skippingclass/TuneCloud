@@ -110,6 +110,7 @@ async function main() {
   const { default: spotify } = await import('./routes/spotify.js');
   const { default: auth } = await import('./routes/auth.js');
   const { default: subsonic } = await import('./routes/subsonic.js');
+  const { default: playlists } = await import('./routes/playlists.js');
 
   browse(app);
   stream(app);
@@ -120,6 +121,7 @@ async function main() {
   spotify(app);
   auth(app);
   subsonic(app);
+  playlists(app);
 
   if (fs.existsSync(clientDist)) {
     app.setNotFoundHandler(async (req, reply) => {

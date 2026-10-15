@@ -14,6 +14,7 @@ import {
   X,
   Disc,
   Maximize2,
+  FolderPlus,
 } from 'lucide-react';
 import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
@@ -28,7 +29,7 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function Player({ onGoToAlbum, onGoToArtist }) {
+export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
   const {
     currentTrack,
     isPlaying,
@@ -159,6 +160,14 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
             title={starred ? 'Unlike' : 'Like'}
           >
             <Heart className={`w-4 h-4 ${starred ? 'fill-accent' : ''}`} />
+          </button>
+
+          <button
+            onClick={() => onAddToPlaylist?.(currentTrack)}
+            className="p-2 rounded-full transition-all shrink-0 text-surface-500 hover:text-accent hover:scale-110"
+            title="Add to Playlist"
+          >
+            <FolderPlus className="w-4 h-4" />
           </button>
         </div>
 

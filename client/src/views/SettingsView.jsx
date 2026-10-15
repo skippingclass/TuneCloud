@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Palette, RefreshCw, Check, Sparkles, Info, Shield } from 'lucide-react';
+import { Palette, RefreshCw, Check, Sparkles, Info, Shield, ExternalLink } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
 import { api } from '../api.js';
 import { toast } from '../components/layout/Toast.jsx';
@@ -163,6 +163,22 @@ export function SettingsView({ user, onScanComplete }) {
           <div className="bg-white/[0.02] p-3 rounded-xl border border-white/[0.04]">
             <span className="text-surface-500 block text-[11px]">Server</span>
             <span className="font-semibold text-white">TuneCloud 0.1.0</span>
+          </div>
+          <div className="bg-white/[0.02] p-3 rounded-xl border border-white/[0.04]">
+            <span className="text-surface-500 block text-[11px]">Author</span>
+            <span className="font-semibold text-white">skippingclass</span>
+          </div>
+          <div className="bg-white/[0.02] p-3 rounded-xl border border-white/[0.04]">
+            <span className="text-surface-500 block text-[11px]">Repository</span>
+            <a
+              href="https://github.com/skippingclass/TuneCloud"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold text-accent hover:underline inline-flex items-center gap-1.5 transition-colors"
+            >
+              <span>GitHub</span>
+              <ExternalLink className="w-3 h-3 shrink-0" />
+            </a>
           </div>
           <div className="bg-white/[0.02] p-3 rounded-xl border border-white/[0.04]">
             <span className="text-surface-500 block text-[11px]">Subsonic API</span>

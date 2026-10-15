@@ -11,6 +11,7 @@ export function BrowseView({
   onAlbumClick,
   onArtistClick,
   onEditTags,
+  onAddToPlaylist,
 }) {
   const [dirs, setDirs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +135,7 @@ export function BrowseView({
                         onEditTags={onEditTags}
                         onGoToAlbum={onAlbumClick}
                         onGoToArtist={onArtistClick}
+                        onAddToPlaylist={onAddToPlaylist}
                       />
                     ))}
                   </tbody>

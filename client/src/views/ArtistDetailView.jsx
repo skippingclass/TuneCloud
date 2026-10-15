@@ -35,6 +35,7 @@ export function ArtistDetailView({
   onGoToAlbum,
   onGoToArtist,
   onEditTags,
+  onAddToPlaylist,
 }) {
   const [resolvedArtist, setResolvedArtist] = useState(artist);
   const [albums, setAlbums] = useState([]);
@@ -408,6 +409,7 @@ export function ArtistDetailView({
                         onEditTags={onEditTags}
                         onGoToAlbum={onGoToAlbum}
                         onGoToArtist={onGoToArtist}
+                        onAddToPlaylist={onAddToPlaylist}
                       />
                     ))}
                   </tbody>
@@ -572,6 +574,7 @@ export function ArtistDetailView({
                               onEditTags={onEditTags}
                               onGoToAlbum={onGoToAlbum}
                               onGoToArtist={onGoToArtist}
+                              onAddToPlaylist={onAddToPlaylist}
                             />
                           ))}
                         </tbody>
