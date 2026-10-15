@@ -2,6 +2,7 @@ import { Play, Pause, Heart, Disc } from 'lucide-react';
 import { api } from '../../api.js';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { usePlayer } from '../../context/PlayerContext.jsx';
+import { ArtistLinks } from '../common/ArtistLinks.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -100,19 +101,12 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick }) {
         <h3 className="text-sm font-semibold truncate text-surface-100 group-hover:text-accent transition-colors">
           {album.title}
         </h3>
-        <p
-          onClick={(e) => {
-            if (album.artist && onArtistClick) {
-              e.stopPropagation();
-              onArtistClick({ id: album.artist_id, name: album.artist });
-            }
-          }}
-          className={`text-xs text-surface-400 truncate mt-0.5 ${
-            album.artist && onArtistClick ? 'hover:underline hover:text-white cursor-pointer' : ''
-          }`}
-          title={album.artist ? `Go to artist: ${album.artist}` : ''}
-        >
-          {album.artist || 'Unknown Artist'}
+        <p className="text-xs text-surface-400 truncate mt-0.5">
+          <ArtistLinks
+            artist={album.artist}
+            primaryArtistId={album.artist_id}
+            onGoToArtist={onArtistClick}
+          />
         </p>
         <div className="flex items-center justify-between text-[11px] text-surface-500 mt-2 font-medium">
           <span>{album.year || (album.track_count ? `${album.track_count} tracks` : '')}</span>

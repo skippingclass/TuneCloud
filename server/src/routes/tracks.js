@@ -153,50 +153,49 @@ export default async function trackRoutes(fastify) {
 
     let artist = artistRes.rows[0];
 
-    if (!artist) {
-      const fallbackRes = await query(
-        `SELECT a.*,
-                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
-         FROM tracks t
-         JOIN artists a ON t.artist_id = a.id
-         WHERE a.name ILIKE $1 OR t.track_artist_credit ILIKE $1
-         LIMIT 1`,
-        [`%${trimmed}%`]
-      );
-      artist = fallbackRes.rows[0];
-    }
+    const tracksRes = await query(
+      `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              COALESCE(t.play_count, 0) as play_count, t.last_played_at,
+              COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
+              al.title as album, al.id as album_id,
+              COALESCE(t.cover_path, al.cover_path) as cover_path
+       FROM tracks t
+       LEFT JOIN artists a ON t.artist_id = a.id
+       LEFT JOIN albums al ON t.album_id = al.id
+       WHERE (a.name ILIKE $1) OR (t.track_artist_credit ILIKE $2)
+       ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
+      [trimmed, `%${trimmed}%`]
+    );
 
-    if (!artist) {
+    if (!artist && tracksRes.rows.length === 0) {
       return reply.status(404).send({ error: 'Artist not found' });
     }
 
-    const [albumsRes, tracksRes] = await Promise.all([
-      query(
-        `SELECT al.*, a.name as artist, a.id as artist_id,
-                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-                (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
-         FROM albums al
-         LEFT JOIN artists a ON al.artist_id = a.id
-         WHERE al.artist_id = $1
-         ORDER BY al.year DESC NULLS LAST, al.title ASC`,
-        [artist.id]
-      ),
-      query(
-        `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
-                t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
-                COALESCE(t.play_count, 0) as play_count, t.last_played_at,
-                COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
-                al.title as album, al.id as album_id,
-                COALESCE(t.cover_path, al.cover_path) as cover_path
-         FROM tracks t
-         LEFT JOIN artists a ON t.artist_id = a.id
-         LEFT JOIN albums al ON t.album_id = al.id
-         WHERE t.artist_id = $1 OR t.track_artist_credit ILIKE $2
-         ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-        [artist.id, `%${artist.name}%`]
-      ),
-    ]);
+    if (!artist) {
+      const ins = await query(
+        `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id, name`,
+        [trimmed]
+      );
+      artist = {
+        id: ins.rows[0].id,
+        name: ins.rows[0].name,
+        track_count: tracksRes.rows.length,
+        album_count: new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean)).size,
+      };
+    }
+
+    const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
+    const albumsRes = await query(
+      `SELECT al.*, a.name as artist, a.id as artist_id,
+              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
+              (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+       FROM albums al
+       LEFT JOIN artists a ON al.artist_id = a.id
+       WHERE al.artist_id = $1 OR al.id = ANY($2::int[])
+       ORDER BY al.year DESC NULLS LAST, al.title ASC`,
+      [artist.id, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
+    );
 
     return {
       artist,
@@ -226,32 +225,32 @@ export default async function trackRoutes(fastify) {
       return reply.status(404).send({ error: 'Artist not found' });
     }
 
-    const [albumsRes, tracksRes] = await Promise.all([
-      query(
-        `SELECT al.*, a.name as artist, a.id as artist_id,
-                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-                (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
-         FROM albums al
-         LEFT JOIN artists a ON al.artist_id = a.id
-         WHERE al.artist_id = $1
-         ORDER BY al.year DESC NULLS LAST, al.title ASC`,
-        [artistId]
-      ),
-      query(
-        `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
-                t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
-                COALESCE(t.play_count, 0) as play_count, t.last_played_at,
-                COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
-                al.title as album, al.id as album_id,
-                COALESCE(t.cover_path, al.cover_path) as cover_path
-         FROM tracks t
-         LEFT JOIN artists a ON t.artist_id = a.id
-         LEFT JOIN albums al ON t.album_id = al.id
-         WHERE t.artist_id = $1 OR t.track_artist_credit ILIKE $2
-         ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-        [artistId, `%${artist.name}%`]
-      ),
-    ]);
+    const tracksRes = await query(
+      `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              COALESCE(t.play_count, 0) as play_count, t.last_played_at,
+              COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
+              al.title as album, al.id as album_id,
+              COALESCE(t.cover_path, al.cover_path) as cover_path
+       FROM tracks t
+       LEFT JOIN artists a ON t.artist_id = a.id
+       LEFT JOIN albums al ON t.album_id = al.id
+       WHERE t.artist_id = $1 OR t.track_artist_credit ILIKE $2
+       ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
+      [artistId, `%${artist.name}%`]
+    );
+
+    const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
+    const albumsRes = await query(
+      `SELECT al.*, a.name as artist, a.id as artist_id,
+              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
+              (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+       FROM albums al
+       LEFT JOIN artists a ON al.artist_id = a.id
+       WHERE al.artist_id = $1 OR al.id = ANY($2::int[])
+       ORDER BY al.year DESC NULLS LAST, al.title ASC`,
+      [artistId, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
+    );
 
     return {
       artist,

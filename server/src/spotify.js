@@ -121,7 +121,6 @@ async function searchDeezerArtist(name) {
           name: match.name,
           image,
           thumbnail: match.picture_medium || match.picture_small || image,
-          followers: match.nb_fan || 0,
           genres: [],
           source: 'deezer',
         };

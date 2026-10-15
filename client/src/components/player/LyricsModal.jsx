@@ -21,6 +21,7 @@ import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { extractPalette } from '../../utils/palette.js';
+import { ArtistLinks } from '../common/ArtistLinks.jsx';
 
 function formatTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00';
@@ -502,24 +503,14 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                 {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
               </h2>
               <p className="text-sm sm:text-base text-white/60 font-medium truncate tracking-tight">
-                <span
-                  onClick={() => {
-                    if (currentTrack.artist || currentTrack.artist_id) {
-                      onGoToArtist?.({
-                        id: currentTrack.artist_id,
-                        name: currentTrack.artist,
-                      });
-                      setIsLyricsOpen(false);
-                    }
-                  }}
-                  className={
-                    currentTrack.artist
-                      ? 'hover:text-white hover:underline cursor-pointer transition-colors'
-                      : ''
-                  }
-                >
-                  {currentTrack.artist || 'Unknown Artist'}
-                </span>
+                <ArtistLinks
+                  artist={currentTrack.artist}
+                  primaryArtistId={currentTrack.artist_id}
+                  onGoToArtist={onGoToArtist}
+                  onBeforeNavigate={() => setIsLyricsOpen(false)}
+                  linkClassName="hover:text-white hover:underline cursor-pointer transition-colors"
+                  delimiterClassName="text-white/40"
+                />
               </p>
             </div>
           </div>

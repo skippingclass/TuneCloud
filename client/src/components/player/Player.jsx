@@ -19,6 +19,7 @@ import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { CoverModal } from '../modals/CoverModal.jsx';
+import { ArtistLinks } from '../common/ArtistLinks.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -139,22 +140,12 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
             >
               {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
             </p>
-            <p
-              onClick={() => {
-                if (currentTrack.artist || currentTrack.artist_id) {
-                  const primaryName = currentTrack.primary_artist || currentTrack.artist_name || (currentTrack.artist ? currentTrack.artist.split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim() : '');
-                  onGoToArtist?.({
-                    id: currentTrack.artist_id,
-                    name: primaryName || currentTrack.artist,
-                  });
-                }
-              }}
-              className={`text-[11px] sm:text-xs text-surface-400 truncate mt-0.5 ${
-                currentTrack.artist ? 'hover:underline hover:text-white cursor-pointer' : ''
-              }`}
-              title={currentTrack.artist ? `Go to artist: ${currentTrack.artist}` : ''}
-            >
-              {currentTrack.artist || 'Unknown Artist'}
+            <p className="text-[11px] sm:text-xs text-surface-400 truncate mt-0.5">
+              <ArtistLinks
+                artist={currentTrack.artist}
+                primaryArtistId={currentTrack.artist_id}
+                onGoToArtist={onGoToArtist}
+              />
             </p>
           </div>
 
