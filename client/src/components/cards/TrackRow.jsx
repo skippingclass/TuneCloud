@@ -128,7 +128,8 @@ export function TrackRow({
             <span
               onClick={(e) => {
                 e.stopPropagation();
-                onGoToArtist?.({ id: track.artist_id, name: track.artist });
+                const primaryName = track.primary_artist || track.artist_name || (track.artist ? track.artist.split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim() : '');
+                onGoToArtist?.({ id: track.artist_id, name: primaryName || track.artist });
               }}
               className="hover:underline hover:text-white cursor-pointer transition-colors"
             >
@@ -144,7 +145,8 @@ export function TrackRow({
           <span
             onClick={(e) => {
               e.stopPropagation();
-              onGoToArtist?.({ id: track.artist_id, name: track.artist });
+              const primaryName = track.primary_artist || track.artist_name || (track.artist ? track.artist.split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim() : '');
+              onGoToArtist?.({ id: track.artist_id, name: primaryName || track.artist });
             }}
             className="hover:underline hover:text-white cursor-pointer transition-colors"
             title={`Go to artist: ${track.artist}`}

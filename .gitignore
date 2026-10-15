@@ -15,3 +15,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Project context documentation (local only)
+PROJECT_CONTEXT.md

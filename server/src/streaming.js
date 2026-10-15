@@ -28,12 +28,17 @@ export function pipeWithTracking(fileStream, res) {
     if (done) return;
     done = true;
     streamClosed(bytes);
+    if (!fileStream.destroyed) {
+      fileStream.destroy();
+    }
   };
   res.on('finish', finish);
   res.on('close', finish);
   fileStream.on('error', () => {
     finish();
-    res.end();
+    if (!res.writableEnded) {
+      res.end();
+    }
   });
   fileStream.pipe(res);
 }

@@ -142,9 +142,10 @@ export function Player({ onGoToAlbum, onGoToArtist }) {
             <p
               onClick={() => {
                 if (currentTrack.artist || currentTrack.artist_id) {
+                  const primaryName = currentTrack.primary_artist || currentTrack.artist_name || (currentTrack.artist ? currentTrack.artist.split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim() : '');
                   onGoToArtist?.({
                     id: currentTrack.artist_id,
-                    name: currentTrack.artist,
+                    name: primaryName || currentTrack.artist,
                   });
                 }
               }}

@@ -14,8 +14,7 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks', { preHandler: requireAuth }, async (req, reply) => {
     const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id } = req.query;
 
-    const isFiltered = artist_id || artist || album_id;
-    const maxLimit = isFiltered ? 10000 : 200;
+    const maxLimit = 10000;
     const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), maxLimit);
     const safeOffset = Math.max(0, parseInt(offset, 10) || 0);
 

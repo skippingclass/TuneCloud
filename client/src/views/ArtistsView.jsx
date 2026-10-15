@@ -32,7 +32,7 @@ export function ArtistsView({ onArtistClick }) {
       .then((list) => {
         setArtists(list);
         const cache = loadArtistImageCache();
-        const missing = list.filter((a) => !cache[a.name]);
+        const missing = list.filter((a) => !(a.name in cache));
         if (missing.length > 0) {
           (async () => {
             const BATCH_SIZE = 5;
@@ -45,9 +45,14 @@ export function ArtistsView({ onArtistClick }) {
                     const data = await api.spotifyArtist(a.name);
                     if (data?.found && data.artist?.image) {
                       cache[a.name] = data.artist.image;
-                      chunkChanged = true;
+                    } else {
+                      cache[a.name] = 'none';
                     }
-                  } catch {}
+                    chunkChanged = true;
+                  } catch {
+                    cache[a.name] = 'none';
+                    chunkChanged = true;
+                  }
                 })
               );
               if (chunkChanged) {
@@ -105,7 +110,7 @@ export function ArtistsView({ onArtistClick }) {
             <ArtistCard
               key={artist.id}
               artist={artist}
-              image={artistImages[artist.name]}
+              image={artistImages[artist.name] && artistImages[artist.name] !== 'none' ? artistImages[artist.name] : null}
               onClick={onArtistClick}
             />
           ))}

@@ -250,9 +250,14 @@ async function resolveCoverPath(rawId) {
     return rows[0]?.cover_path || null;
   }
   if ((m = id.match(/^ar-(\d+)$/))) {
+    const artistId = m[1];
+    const artistCover = `artist_${artistId}.jpg`;
+    if (fs.existsSync(path.join(COVERS_DIR, artistCover))) {
+      return artistCover;
+    }
     const { rows } = await query(
       'SELECT cover_path FROM albums WHERE artist_id = $1 AND cover_path IS NOT NULL ORDER BY id LIMIT 1',
-      [m[1]]
+      [artistId]
     );
     return rows[0]?.cover_path || null;
   }

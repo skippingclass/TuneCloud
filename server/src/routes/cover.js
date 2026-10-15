@@ -21,7 +21,14 @@ function serveCover(reply, filename) {
     'Cache-Control': 'max-age=86400',
     'Cross-Origin-Resource-Policy': 'cross-origin',
   });
-  fs.createReadStream(filepath).pipe(reply.raw);
+  const stream = fs.createReadStream(filepath);
+  reply.raw.on('close', () => {
+    if (!stream.destroyed) stream.destroy();
+  });
+  stream.on('error', () => {
+    if (!reply.raw.writableEnded) reply.raw.end();
+  });
+  stream.pipe(reply.raw);
 }
 
 export default async function coverRoutes(fastify) {
