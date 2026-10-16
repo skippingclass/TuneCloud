@@ -104,7 +104,51 @@ export default async function authRoutes(fastify) {
   });
 
   fastify.get('/api/auth/users', { preHandler: requireAdmin }, async (req, reply) => {
-    const { rows } = await query('SELECT id, username, is_admin, created_at FROM users ORDER BY created_at');
-    return rows;
+    const { rows } = await query('SELECT id, username, is_admin, subsonic_secret, created_at FROM users ORDER BY created_at ASC');
+    return rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      is_admin: r.is_admin,
+      created_at: r.created_at,
+      password: decryptSubsonicSecret(r.subsonic_secret),
+    }));
+  });
+
+  fastify.put('/api/auth/users/:id/password', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params;
+    const { password } = req.body || {};
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return reply.status(400).send({ error: 'Password must be at least 8 characters' });
+    }
+    const hash = await hashPassword(password);
+    const enc = encryptSubsonicSecret(password);
+    const res = await query(
+      'UPDATE users SET password_hash = $1, subsonic_secret = $2 WHERE id = $3 RETURNING id, username, is_admin',
+      [hash, enc, id]
+    );
+    if (res.rows.length === 0) return reply.status(404).send({ error: 'User not found' });
+    return { success: true, message: 'Password updated', user: res.rows[0] };
+  });
+
+  fastify.patch('/api/auth/users/:id/admin', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params;
+    const { is_admin } = req.body || {};
+    const userId = parseInt(id, 10);
+    if (typeof is_admin !== 'boolean') return reply.status(400).send({ error: 'is_admin must be a boolean' });
+    if (req.user?.id === userId && !is_admin) {
+      return reply.status(400).send({ error: 'Cannot remove admin privileges from yourself' });
+    }
+    const res = await query('UPDATE users SET is_admin = $1 WHERE id = $2 RETURNING id, username, is_admin', [is_admin, userId]);
+    if (res.rows.length === 0) return reply.status(404).send({ error: 'User not found' });
+    return { success: true, user: res.rows[0] };
+  });
+
+  fastify.delete('/api/auth/users/:id', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params;
+    const userId = parseInt(id, 10);
+    if (req.user?.id === userId) return reply.status(400).send({ error: 'Cannot delete your own account' });
+    const res = await query('DELETE FROM users WHERE id = $1 RETURNING id, username', [userId]);
+    if (res.rows.length === 0) return reply.status(404).send({ error: 'User not found' });
+    return { success: true, message: `User "${res.rows[0].username}" deleted` };
   });
 }

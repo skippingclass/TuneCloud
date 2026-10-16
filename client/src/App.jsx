@@ -281,7 +281,7 @@ function MainLayout({ user, onLogout }) {
                 onScanComplete={() => setScanVersion((v) => v + 1)}
               />
             )}
-            {view === 'admin' && <AdminView />}
+            {view === 'admin' && <AdminView user={user} />}
           </main>
         </div>
       </div>
