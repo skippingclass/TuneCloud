@@ -62,6 +62,12 @@ export const api = {
   register: (username, password) => fetchJson('/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }),
   me: () => fetchJson('/auth/me'),
   adminUsers: () => fetchJson('/auth/users'),
+  adminChangePassword: (id, password) =>
+    fetchJson(`/auth/users/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  adminToggleAdmin: (id, is_admin) =>
+    fetchJson(`/auth/users/${id}/admin`, { method: 'PATCH', body: JSON.stringify({ is_admin }) }),
+  adminDeleteUser: (id) =>
+    fetchJson(`/auth/users/${id}`, { method: 'DELETE' }),
   favorites: () => fetchJson('/favorites'),
   toggleFavoriteTrack: (id) => fetchJson(`/favorites/track/${id}`, { method: 'POST' }),
   toggleFavoriteAlbum: (id) => fetchJson(`/favorites/album/${id}`, { method: 'POST' }),
