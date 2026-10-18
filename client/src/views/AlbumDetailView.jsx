@@ -71,15 +71,6 @@ export function AlbumDetailView({
 
   const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
 
-  const hasMultipleArtists = useMemo(() => {
-    if (!tracks || tracks.length === 0 || !resolvedAlbum.artist) return false;
-    const normMain = resolvedAlbum.artist.trim().toLowerCase();
-    return tracks.some((t) => {
-      if (!t.artist) return false;
-      return t.artist.trim().toLowerCase() !== normMain;
-    });
-  }, [tracks, resolvedAlbum.artist]);
-
   const handlePlayAll = () => {
     if (isThisAlbum) {
       togglePlay();
@@ -230,9 +221,7 @@ export function AlbumDetailView({
                   <th className="px-3 sm:px-4 py-3 text-center w-12">#</th>
                   <th className="w-8 px-1 py-3 text-center"></th>
                   <th className="px-3 sm:px-4 py-3">Title</th>
-                  {hasMultipleArtists && (
-                    <th className="px-3 sm:px-4 py-3 hidden sm:table-cell">Artist</th>
-                  )}
+                  <th className="px-3 sm:px-4 py-3 hidden sm:table-cell">Artist</th>
                   <th className="px-3 sm:px-4 py-3 text-right hidden sm:table-cell">Duration</th>
                   <th className="px-2 py-3 text-center hidden lg:table-cell">Format</th>
                   <th className="w-9 px-2 py-3"></th>
@@ -245,7 +234,7 @@ export function AlbumDetailView({
                     track={track}
                     index={idx}
                     showAlbum={false}
-                    showArtist={hasMultipleArtists}
+                    showArtist={true}
                     albumArtist={resolvedAlbum.artist}
                     onPlay={(t) => playTrack(t, tracks)}
                     isPlaying={currentTrack?.id === track.id}

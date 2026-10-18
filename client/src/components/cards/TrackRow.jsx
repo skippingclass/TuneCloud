@@ -135,10 +135,10 @@ export function TrackRow({
         <span className={isPlaying ? 'text-accent font-semibold' : 'text-surface-100'}>
           {track.title || track.file_name}
         </span>
-        {track.artist && (showArtist || isDifferentArtist) && (
+        {(track.artist || albumArtist) && (showArtist || isDifferentArtist) && (
           <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
             <ArtistLinks
-              artist={track.artist}
+              artist={track.artist || albumArtist}
               primaryArtistId={track.artist_id}
               onGoToArtist={onGoToArtist}
             />
