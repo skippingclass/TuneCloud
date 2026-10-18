@@ -33,9 +33,69 @@
 
 ---
 
-## 📸 Interface
+## 📸 Interface & UI/UX Showcase
 
-![Скриншот интерфейса](pictures/screenshot.png)
+<div align="center">
+  <p><b>TuneCloud</b> features a refined <b>Midnight OLED</b> glassmorphic interface inspired by Spotify, crafted with responsive layouts, smooth micro-interactions, ambient cover glow, and live synchronized karaoke lyrics.</p>
+</div>
+
+### 🎬 Live Demonstrations
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <b>Dynamic Home Hub & Floating Player Bar</b><br/>
+      <sub>Spotify-style 2×4 «On Repeat» quick grid, Spotlight with Ambient Glow & smooth scrolling</sub><br/><br/>
+      <a href="pictures/01_home_hub.png"><img src="pictures/home_demo.gif" alt="Dynamic Home Hub Demo" width="100%"/></a>
+    </td>
+    <td width="50%" align="center">
+      <b>Real-Time Fullscreen Karaoke Lyrics</b><br/>
+      <sub>Live synchronized LRCLIB tracking, active line glow & clean typography</sub><br/><br/>
+      <a href="pictures/06_karaoke_lyrics.png"><img src="pictures/lyrics_demo.gif" alt="Karaoke Lyrics Demo" width="100%"/></a>
+    </td>
+  </tr>
+</table>
+
+### 🖼️ High-Resolution Views
+
+<table>
+  <tr>
+    <td width="50%">
+      <h4 align="center">🏠 Spotify-Inspired Home Hub</h4>
+      <a href="pictures/01_home_hub.png"><img src="pictures/01_home_hub.png" alt="Dynamic Home Hub" width="100%"/></a>
+      <p align="center"><sub>Interactive 2×4 «On Repeat» quick grid, «Album of the Moment» hero card with ambient backglow, and algorithmic «Jump back in» history.</sub></p>
+    </td>
+    <td width="50%">
+      <h4 align="center">🎵 Floating Player Bar</h4>
+      <a href="pictures/02_floating_player.png"><img src="pictures/02_floating_player.png" alt="Floating Player Bar" width="100%"/></a>
+      <p align="center"><sub>High-contrast frosted glass capsule, volume scroll wheel, draggable scrubber, queue drawer, and misclick-guarded close divider.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h4 align="center">🎤 Fullscreen Karaoke Lyrics</h4>
+      <a href="pictures/06_karaoke_lyrics.png"><img src="pictures/06_karaoke_lyrics.png" alt="Fullscreen Karaoke Lyrics" width="100%"/></a>
+      <p align="center"><sub>Real-time synchronized lyric scrolling via LRCLIB & embedded tags, Google Sans Flex font, active line scaling, and dynamic cover art glow.</sub></p>
+    </td>
+    <td width="50%">
+      <h4 align="center">💿 Album Deep Dive View</h4>
+      <a href="pictures/05_album_detail.png"><img src="pictures/05_album_detail.png" alt="Album Detail View" width="100%"/></a>
+      <p align="center"><sub>Clean tracklist omitting redundant album column, automatic guest feature highlighting (<code>feat.</code>), lossless FLAC/bitrate badges, and instant play queue.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <h4 align="center">📚 Albums Library — Sticky Toolbar</h4>
+      <a href="pictures/03_albums_toolbar.png"><img src="pictures/03_albums_toolbar.png" alt="Albums Toolbar Standard Density" width="100%"/></a>
+      <p align="center"><sub>Sticky header with total album count badge, instant search, genre and release year dropdown filters, and multi-mode sorting.</sub></p>
+    </td>
+    <td width="50%">
+      <h4 align="center">⚡ High-Density Compact Grid</h4>
+      <a href="pictures/04_compact_grid.png"><img src="pictures/04_compact_grid.png" alt="Albums Compact Grid" width="100%"/></a>
+      <p align="center"><sub>8-column compact view for large music collections with optimized typography and tight card margins.</sub></p>
+    </td>
+  </tr>
+</table>
 
 ---
 
