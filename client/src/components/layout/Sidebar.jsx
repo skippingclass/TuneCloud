@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Home,
   Disc,
@@ -28,6 +28,30 @@ export function Sidebar({
 }) {
   const [scanning, setScanning] = useState(false);
 
+  useEffect(() => {
+    let timer = null;
+    let mounted = true;
+
+    const check = async () => {
+      try {
+        const st = await api.scanStatus();
+        if (!mounted) return;
+        if (st.isScanning) {
+          setScanning(true);
+          timer = setTimeout(check, 1200);
+        } else {
+          setScanning(false);
+        }
+      } catch {}
+    };
+
+    check();
+    return () => {
+      mounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   const mainLinks = [
     { id: 'home', label: 'Home', icon: Home },
     { id: 'albums', label: 'Albums', icon: Disc },
@@ -48,12 +72,36 @@ export function Sidebar({
     if (scanning) return;
     setScanning(true);
     try {
-      const res = await api.scan({ full: false });
-      toast(`Scan complete: ${res.result?.processed || 0} processed, ${res.result?.covers || 0} covers`, 'success');
-      onScanComplete?.();
+      await api.scan({ full: false });
+
+      let active = true;
+      const poll = async () => {
+        if (!active) return;
+        try {
+          const st = await api.scanStatus();
+          if (st.isScanning) {
+            setTimeout(poll, 1200);
+          } else {
+            setScanning(false);
+            if (st.progress?.phase === 'error') {
+              toast(`Scan failed: ${st.progress.error}`, 'error');
+            } else {
+              const r = st.lastResult || {};
+              toast(
+                `Scan complete: ${r.processed || 0} tracks, ${r.covers || 0} covers in ${r.durationSeconds || 0}s`,
+                'success'
+              );
+              onScanComplete?.();
+            }
+          }
+        } catch {
+          setTimeout(poll, 2000);
+        }
+      };
+
+      setTimeout(poll, 800);
     } catch (err) {
-      toast(`Scan failed: ${err.message}`, 'error');
-    } finally {
+      toast(`Could not start scan: ${err.message}`, 'error');
       setScanning(false);
     }
   };

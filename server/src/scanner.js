@@ -446,9 +446,11 @@ async function removeOrphans(client) {
  * Scans musicDir. Incremental by default: only files whose mtime differs from
  * the stored one (or that are new) are parsed. `full: true` re-parses everything.
  */
-export async function scanDirectory(musicDir, { full = false, reextractCovers = false } = {}) {
+export async function scanDirectory(musicDir, { full = false, reextractCovers = false, onProgress = null } = {}) {
   const root = path.resolve(musicDir);
   const startedAt = Date.now();
+
+  onProgress?.({ phase: 'listing', total: 0, processed: 0 });
 
   const files = await listAudioFiles(root);
   console.log(`Found ${files.length} audio files (${full ? 'full' : 'incremental'} scan)`);
@@ -475,6 +477,14 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   const unchanged = files.length - toProcess.length;
   console.log(`Unchanged: ${unchanged}, to process: ${toProcess.length}`);
 
+  onProgress?.({
+    phase: 'processing',
+    total: files.length,
+    toProcess: toProcess.length,
+    processed: 0,
+    unchanged,
+  });
+
   const staleRows = known.filter((r) => !onDisk.has(r.file_path));
   const staleIds = staleRows.map((r) => r.id);
   for (const r of staleRows) {
@@ -490,7 +500,16 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       const parsed = await mapLimit(toProcess.slice(i, i + BATCH_SIZE), PARSE_CONCURRENCY, parseTrackFile);
       processed += await writeBatch(client, parsed, touchedAlbumIds);
       console.log(`Processed ${processed}/${toProcess.length}`);
+      onProgress?.({
+        phase: 'processing',
+        total: files.length,
+        toProcess: toProcess.length,
+        processed,
+        unchanged,
+      });
     }
+
+    onProgress?.({ phase: 'cleaning', total: files.length, processed, unchanged });
 
     for (let i = 0; i < staleIds.length; i += DELETE_CHUNK) {
       const chunk = staleIds.slice(i, i + DELETE_CHUNK);
@@ -509,8 +528,16 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   let coversExtracted = 0;
   let coversTotal = 0;
 
+  onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted: 0, coversTotal: 0 });
+
+  const coverProgressCallback = (extracted, total) => {
+    coversExtracted = extracted;
+    coversTotal = total;
+    onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted, coversTotal });
+  };
+
   if (full || reextractCovers) {
-    const covers = await extractAllMissingCovers({ force: true });
+    const covers = await extractAllMissingCovers({ force: true, onProgress: coverProgressCallback });
     coversExtracted = covers.extracted;
     coversTotal = covers.total;
   } else {
@@ -519,12 +546,13 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       const touchedCovers = await extractAllMissingCovers({
         albumIds: [...touchedAlbumIds],
         force: true,
+        onProgress: coverProgressCallback,
       });
       coversExtracted += touchedCovers.extracted;
       coversTotal += touchedCovers.total;
     }
     // 2. Extract for any other albums still missing covers
-    const missingCovers = await extractAllMissingCovers({ force: false });
+    const missingCovers = await extractAllMissingCovers({ force: false, onProgress: coverProgressCallback });
     coversExtracted += missingCovers.extracted;
     coversTotal += missingCovers.total;
   }
@@ -533,7 +561,9 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
   console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
-  return { total: files.length, processed, unchanged, removed, covers: coversExtracted, durationSeconds };
+  const finalResult = { total: files.length, processed, unchanged, removed, covers: coversExtracted, durationSeconds };
+  onProgress?.({ phase: 'complete', ...finalResult });
+  return finalResult;
 }
 
 export async function scanSingleFile(filePath) {

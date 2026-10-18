@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Palette, RefreshCw, Check, Sparkles, Info, Shield, ExternalLink } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Palette, RefreshCw, Check, Sparkles, Info, Shield, ExternalLink, Loader2 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
 import { api } from '../api.js';
 import { toast } from '../components/layout/Toast.jsx';
@@ -7,22 +7,77 @@ import { toast } from '../components/layout/Toast.jsx';
 export function SettingsView({ user, onScanComplete }) {
   const { theme, setTheme, themes } = useTheme();
   const [scanning, setScanning] = useState(false); // false | 'incremental' | 'full'
+  const [progress, setProgress] = useState(null);
+
+  // Auto-detect ongoing scan on mount
+  useEffect(() => {
+    let timer = null;
+    let mounted = true;
+
+    const checkStatus = async () => {
+      try {
+        const data = await api.scanStatus();
+        if (!mounted) return;
+        if (data.isScanning) {
+          setScanning(data.progress?.full ? 'full' : 'incremental');
+          setProgress(data.progress);
+          timer = setTimeout(checkStatus, 1200);
+        } else {
+          setScanning(false);
+          setProgress(null);
+        }
+      } catch {}
+    };
+
+    checkStatus();
+    return () => {
+      mounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   const handleRescan = async ({ full = false, reextractCovers = false } = {}) => {
     if (scanning) return;
     const mode = full ? 'full' : 'incremental';
     setScanning(mode);
+    setProgress({ phase: 'starting', total: 0, processed: 0 });
+
     try {
-      const res = await api.scan({ full, reextractCovers });
-      toast(
-        `Scan complete: ${res.result?.processed || 0} files processed, ${res.result?.covers || 0} covers`,
-        'success'
-      );
-      onScanComplete?.();
+      await api.scan({ full, reextractCovers });
+
+      // Poll until background scan completes
+      let active = true;
+      const poll = async () => {
+        if (!active) return;
+        try {
+          const st = await api.scanStatus();
+          if (st.isScanning) {
+            setProgress(st.progress);
+            setTimeout(poll, 1200);
+          } else {
+            setScanning(false);
+            setProgress(null);
+            if (st.progress?.phase === 'error') {
+              toast(`Scan failed: ${st.progress.error}`, 'error');
+            } else {
+              const r = st.lastResult || {};
+              toast(
+                `Scan complete: ${r.processed || 0} tracks, ${r.covers || 0} covers in ${r.durationSeconds || 0}s`,
+                'success'
+              );
+              onScanComplete?.();
+            }
+          }
+        } catch {
+          setTimeout(poll, 2000);
+        }
+      };
+
+      setTimeout(poll, 800);
     } catch (err) {
-      toast(`Scan failed: ${err.message}`, 'error');
-    } finally {
+      toast(`Could not start scan: ${err.message}`, 'error');
       setScanning(false);
+      setProgress(null);
     }
   };
 
@@ -101,6 +156,63 @@ export function SettingsView({ user, onScanComplete }) {
             </p>
           </div>
         </div>
+
+        {/* Live scanning progress banner */}
+        {scanning && (
+          <div className="p-4 sm:p-5 rounded-2xl bg-accent/10 border border-accent/30 space-y-3 animate-fade-in">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Loader2 className="w-4 h-4 animate-spin text-accent" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  {scanning === 'full' ? 'Full Library Rescan in Progress' : 'Incremental Rescan in Progress'}
+                </span>
+              </div>
+              {progress?.phase && (
+                <span className="text-[11px] font-mono text-accent uppercase px-2 py-0.5 rounded-md bg-accent/15 border border-accent/20">
+                  {progress.phase}
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs text-surface-300">
+                <span>
+                  {progress?.phase === 'listing' && 'Discovering audio files on disk...'}
+                  {progress?.phase === 'processing' &&
+                    `Parsing tags: ${progress.processed || 0} / ${progress.toProcess || progress.total || 0} files`}
+                  {progress?.phase === 'cleaning' && 'Pruning deleted files & updating orphan records...'}
+                  {progress?.phase === 'covers' &&
+                    `Extracting album art: ${progress.coversExtracted || 0} / ${progress.coversTotal || 0} covers`}
+                  {(!progress?.phase || progress?.phase === 'starting') && 'Initializing scanner...'}
+                </span>
+                {progress?.phase === 'processing' && (progress.toProcess || progress.total) > 0 && (
+                  <span className="font-mono text-[11px] text-surface-400">
+                    {Math.round(((progress.processed || 0) / (progress.toProcess || progress.total)) * 100)}%
+                  </span>
+                )}
+                {progress?.phase === 'covers' && progress.coversTotal > 0 && (
+                  <span className="font-mono text-[11px] text-surface-400">
+                    {Math.round(((progress.coversExtracted || 0) / progress.coversTotal) * 100)}%
+                  </span>
+                )}
+              </div>
+
+              <div className="w-full h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-accent to-accent-hover transition-all duration-300 rounded-full"
+                  style={{
+                    width:
+                      progress?.phase === 'processing' && (progress.toProcess || progress.total) > 0
+                        ? `${Math.min(100, Math.round(((progress.processed || 0) / (progress.toProcess || progress.total)) * 100))}%`
+                        : progress?.phase === 'covers' && progress.coversTotal > 0
+                        ? `${Math.min(100, Math.round(((progress.coversExtracted || 0) / progress.coversTotal) * 100))}%`
+                        : '100%',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
           {/* Incremental Scan Card */}

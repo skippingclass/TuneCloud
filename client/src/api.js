@@ -55,6 +55,7 @@ export const api = {
   coverUrl: (path) => path ? (path.startsWith('/api/') ? path : `${BASE}${path}`) : null,
   scan: ({ full = false, reextractCovers = false } = {}) =>
     fetchJson('/scan', { method: 'POST', body: JSON.stringify({ full, reextractCovers }) }),
+  scanStatus: () => fetchJson('/scan/status'),
   tags: (id) => fetchJson(`/tags/${id}`),
   updateTags: (id, data) => fetchJson(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   spotifyArtist: (name) => fetchJson(`/spotify/artist?name=${encodeURIComponent(name)}`),

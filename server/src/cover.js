@@ -211,12 +211,14 @@ export async function extractCoverForTrack(trackId) {
 export async function extractAllMissingCovers(optionsOrIds = null) {
   let albumIds = null;
   let force = false;
+  let onProgress = null;
 
   if (Array.isArray(optionsOrIds)) {
     albumIds = optionsOrIds;
   } else if (optionsOrIds && typeof optionsOrIds === 'object') {
     albumIds = optionsOrIds.albumIds || null;
     force = Boolean(optionsOrIds.force);
+    onProgress = typeof optionsOrIds.onProgress === 'function' ? optionsOrIds.onProgress : null;
   }
 
   if (albumIds && albumIds.length === 0) return { total: 0, extracted: 0 };
@@ -245,6 +247,7 @@ export async function extractAllMissingCovers(optionsOrIds = null) {
       } catch (err) {
         console.error(`Cover extraction failed for album ${album.id}: ${err.message}`);
       }
+      onProgress?.(extracted, albums.length);
     }
   };
   await Promise.all(Array.from({ length: Math.min(COVER_CONCURRENCY, albums.length) }, worker));

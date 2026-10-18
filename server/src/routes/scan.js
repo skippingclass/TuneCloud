@@ -10,25 +10,67 @@ import path from 'path';
 let isScanning = false;
 let lastResult = null;
 let lastScanAt = null;
+let scanProgress = {
+  phase: 'idle', // 'idle' | 'listing' | 'processing' | 'cleaning' | 'covers' | 'complete' | 'error'
+  total: 0,
+  processed: 0,
+  toProcess: 0,
+  unchanged: 0,
+  removed: 0,
+  coversExtracted: 0,
+  coversTotal: 0,
+  durationSeconds: 0,
+  error: null,
+  full: false,
+  startedAt: null,
+};
 
 export function getScanState() {
-  return { isScanning, lastResult, lastScanAt };
+  return { isScanning, lastResult, lastScanAt, progress: scanProgress };
 }
 
 export function startScanInBackground({ full = false, reextractCovers = false } = {}) {
   const musicDir = process.env.MUSIC_DIR;
   if (!musicDir || !fs.existsSync(musicDir) || isScanning) return false;
   isScanning = true;
+  scanProgress = {
+    phase: 'listing',
+    total: 0,
+    processed: 0,
+    toProcess: 0,
+    unchanged: 0,
+    removed: 0,
+    coversExtracted: 0,
+    coversTotal: 0,
+    durationSeconds: 0,
+    error: null,
+    full,
+    startedAt: new Date().toISOString(),
+  };
+
   (async () => {
     try {
       const start = Date.now();
       const covers = reextractCovers || full;
-      const result = await scanDirectory(musicDir, { full, reextractCovers: covers });
+      const result = await scanDirectory(musicDir, {
+        full,
+        reextractCovers: covers,
+        onProgress: (p) => {
+          scanProgress = { ...scanProgress, ...p };
+        },
+      });
       recordScan(result, Math.round((Date.now() - start) / 1000));
       lastResult = result;
       lastScanAt = new Date().toISOString();
+      scanProgress = {
+        phase: 'complete',
+        ...result,
+        durationSeconds: Math.round((Date.now() - start) / 1000),
+        error: null,
+      };
     } catch (err) {
       console.error('[Scanner] Scan failed:', err);
+      scanProgress = { ...scanProgress, phase: 'error', error: err.message };
     } finally {
       isScanning = false;
     }
@@ -44,25 +86,65 @@ export default async function scanRoutes(fastify) {
       return reply.status(400).send({ error: `Music directory not found: ${musicDir}` });
     }
     if (isScanning) {
-      return reply.status(409).send({ error: 'Scan already in progress' });
+      return reply.status(409).send({
+        error: 'Scan already in progress',
+        isScanning: true,
+        progress: scanProgress,
+      });
     }
 
     const full = req.body?.full === true || req.query?.full === '1' || req.query?.full === 'true';
-    const reextractCovers = req.body?.reextractCovers === true || req.query?.reextractCovers === '1' || req.query?.reextractCovers === 'true' || (full && req.body?.reextractCovers !== false);
-    isScanning = true;
-    try {
-      const start = Date.now();
-      const result = await scanDirectory(musicDir, { full, reextractCovers });
-      recordScan(result, Math.round((Date.now() - start) / 1000));
-      lastResult = result;
-      lastScanAt = new Date().toISOString();
-      return { message: 'Scan completed', result };
-    } catch (err) {
-      req.log.error(err);
-      return reply.status(500).send({ error: err.message });
-    } finally {
-      isScanning = false;
+    const reextractCovers =
+      req.body?.reextractCovers === true ||
+      req.query?.reextractCovers === '1' ||
+      req.query?.reextractCovers === 'true' ||
+      (full && req.body?.reextractCovers !== false);
+
+    // If synchronous mode is explicitly requested (e.g. CLI script or testing)
+    if (req.query?.sync === 'true') {
+      isScanning = true;
+      scanProgress = {
+        phase: 'listing',
+        total: 0,
+        processed: 0,
+        full,
+        startedAt: new Date().toISOString(),
+      };
+      try {
+        const start = Date.now();
+        const result = await scanDirectory(musicDir, {
+          full,
+          reextractCovers,
+          onProgress: (p) => {
+            scanProgress = { ...scanProgress, ...p };
+          },
+        });
+        recordScan(result, Math.round((Date.now() - start) / 1000));
+        lastResult = result;
+        lastScanAt = new Date().toISOString();
+        scanProgress = { phase: 'complete', ...result };
+        return { message: 'Scan completed', result };
+      } catch (err) {
+        req.log.error(err);
+        scanProgress = { ...scanProgress, phase: 'error', error: err.message };
+        return reply.status(500).send({ error: err.message });
+      } finally {
+        isScanning = false;
+      }
     }
+
+    // Default: non-blocking asynchronous scan to prevent proxy & client timeouts
+    const started = startScanInBackground({ full, reextractCovers });
+    if (!started) {
+      return reply.status(409).send({ error: 'Could not start scan: already in progress' });
+    }
+
+    return reply.status(202).send({
+      message: 'Scan started in background',
+      isScanning: true,
+      full,
+      reextractCovers,
+    });
   });
 
   fastify.post('/api/scan/covers', { preHandler: requireAdmin }, async (req, reply) => {
@@ -127,6 +209,7 @@ export default async function scanRoutes(fastify) {
       isScanning,
       lastScanAt,
       lastResult,
+      progress: scanProgress,
       totalFiles,
       indexedTracks: indexed,
       remaining: totalFiles == null ? null : Math.max(totalFiles - indexed, 0),
