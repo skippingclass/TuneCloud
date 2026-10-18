@@ -39,19 +39,21 @@
   <p><b>TuneCloud</b> features a refined <b>Midnight OLED</b> glassmorphic interface inspired by Spotify, crafted with responsive layouts, smooth micro-interactions, ambient cover glow, and live synchronized karaoke lyrics.</p>
 </div>
 
-### 🎬 Live Demonstrations
+### 🎬 Live Demonstrations (1080p Full HD)
 
 <table>
   <tr>
     <td width="50%" align="center">
       <b>Dynamic Home Hub & Floating Player Bar</b><br/>
       <sub>Spotify-style 2×4 «On Repeat» quick grid, Spotlight with Ambient Glow & smooth scrolling</sub><br/><br/>
-      <a href="pictures/01_home_hub.png"><img src="pictures/home_demo.gif" alt="Dynamic Home Hub Demo" width="100%"/></a>
+      <a href="pictures/home_demo.mp4"><img src="pictures/home_demo.gif" alt="Dynamic Home Hub Demo 1080p" width="100%"/></a><br/>
+      <sub><b>Full HD 1080p:</b> <a href="pictures/home_demo.mp4">▶ MP4</a> · <a href="pictures/home_demo.webm">WebM</a></sub>
     </td>
     <td width="50%" align="center">
       <b>Real-Time Fullscreen Karaoke Lyrics</b><br/>
       <sub>Live synchronized LRCLIB tracking, active line glow & clean typography</sub><br/><br/>
-      <a href="pictures/06_karaoke_lyrics.png"><img src="pictures/lyrics_demo.gif" alt="Karaoke Lyrics Demo" width="100%"/></a>
+      <a href="pictures/lyrics_demo.mp4"><img src="pictures/lyrics_demo.gif" alt="Karaoke Lyrics Demo 1080p" width="100%"/></a><br/>
+      <sub><b>Full HD 1080p:</b> <a href="pictures/lyrics_demo.mp4">▶ MP4</a> · <a href="pictures/lyrics_demo.webm">WebM</a></sub>
     </td>
   </tr>
 </table>
