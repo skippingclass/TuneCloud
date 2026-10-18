@@ -25,6 +25,8 @@ export function TrackRow({
   onAddToPlaylist,
   onRemoveFromPlaylist,
   reorderControls,
+  showAlbum = true,
+  albumArtist = null,
 }) {
   const [hover, setHover] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -38,6 +40,10 @@ export function TrackRow({
   const canPlay = track.id != null;
   const isAdmin = user?.is_admin;
   const canEditTags = track.format?.toLowerCase() === 'mp3';
+
+  const trackArtist = (track.artist || '').trim();
+  const baseArtist = (albumArtist || '').trim();
+  const isDifferentArtist = !albumArtist || (trackArtist.toLowerCase() !== baseArtist.toLowerCase());
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -128,7 +134,7 @@ export function TrackRow({
         <span className={isPlaying ? 'text-accent font-semibold' : 'text-surface-100'}>
           {track.title || track.file_name}
         </span>
-        {track.artist && (
+        {track.artist && isDifferentArtist && (
           <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
             <ArtistLinks
               artist={track.artist}
@@ -139,41 +145,45 @@ export function TrackRow({
         )}
       </td>
 
-      {/* Artist */}
+      {/* Artist - only display if different from album artist or if albumArtist is not specified */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden sm:table-cell">
-        {track.artist ? (
+        {isDifferentArtist && track.artist ? (
           <ArtistLinks
             artist={track.artist}
             primaryArtistId={track.artist_id}
             onGoToArtist={onGoToArtist}
           />
+        ) : albumArtist ? (
+          <span className="text-surface-600">—</span>
         ) : (
           '—'
         )}
       </td>
 
-      {/* Album */}
-      <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden md:table-cell">
-        {track.album ? (
-          <span
-            onClick={(e) => {
-              e.stopPropagation();
-              onGoToAlbum?.({
-                id: track.album_id,
-                title: track.album,
-                artist: track.artist,
-                cover_path: track.cover_path,
-              });
-            }}
-            className="hover:underline hover:text-white cursor-pointer transition-colors"
-            title={`Go to album: ${track.album}`}
-          >
-            {track.album}
-          </span>
-        ) : (
-          '—'
-        )}
-      </td>
+      {/* Album (optional, hidden on album view) */}
+      {showAlbum && (
+        <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden md:table-cell">
+          {track.album ? (
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                onGoToAlbum?.({
+                  id: track.album_id,
+                  title: track.album,
+                  artist: track.artist,
+                  cover_path: track.cover_path,
+                });
+              }}
+              className="hover:underline hover:text-white cursor-pointer transition-colors"
+              title={`Go to album: ${track.album}`}
+            >
+              {track.album}
+            </span>
+          ) : (
+            '—'
+          )}
+        </td>
+      )}
 
       {/* Duration */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-500 text-right font-mono hidden sm:table-cell">

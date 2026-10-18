@@ -172,7 +172,7 @@ function MainLayout({ user, onLogout }) {
             currentViewTitle={viewTitles[view]}
           />
 
-          <main className="flex-1 overflow-y-auto p-4 sm:p-7 pb-28 sm:pb-32 bg-black/15">
+          <main className="flex-1 overflow-y-auto p-4 sm:p-7 pb-[120px] sm:pb-[140px] bg-black/15">
             {view === 'home' && (
               <HomeView
                 key={scanVersion}

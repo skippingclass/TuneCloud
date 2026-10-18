@@ -12,7 +12,7 @@ import {
 
 export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks', { preHandler: requireAuth }, async (req, reply) => {
-    const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id } = req.query;
+    const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id, genre } = req.query;
 
     const maxLimit = 10000;
     const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), maxLimit);
@@ -26,6 +26,9 @@ export default async function trackRoutes(fastify) {
       duration: `t.duration ${dir}`,
       created_at: `t.created_at ${dir}`,
       track_number: `t.disc_number, COALESCE(t.track_number, 999) ${dir}, t.file_name`,
+      play_count: `COALESCE(t.play_count, 0) ${dir}, t.title ASC`,
+      last_played_at: `t.last_played_at ${dir} NULLS LAST`,
+      random: `RANDOM()`,
     };
     const orderClause = sortMap[sort] || 't.title ASC';
 
@@ -45,6 +48,11 @@ export default async function trackRoutes(fastify) {
       conditions.push(`t.album_id = $${params.length}`);
     }
 
+    if (genre) {
+      params.push(`%${genre}%`);
+      conditions.push(`t.genre ILIKE $${params.length}`);
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const limitParamIndex = params.length + 1;
     const offsetParamIndex = params.length + 2;
@@ -53,6 +61,7 @@ export default async function trackRoutes(fastify) {
     const { rows } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              COALESCE(t.play_count, 0)::int as play_count, t.last_played_at,
               COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
               al.title as album, al.id as album_id,
               COALESCE(t.cover_path, al.cover_path) as cover_path
@@ -98,10 +107,22 @@ export default async function trackRoutes(fastify) {
   fastify.get('/api/albums', { preHandler: requireAuth }, async (req, reply) => {
     const { rows } = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
-              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-              (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+              COALESCE(ts.track_count, 0)::int as track_count,
+              COALESCE(ts.duration, 0)::real as duration,
+              ts.last_played_at,
+              COALESCE(ts.play_count, 0)::int as play_count
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
+       LEFT JOIN (
+         SELECT album_id,
+                COUNT(*) as track_count,
+                SUM(duration) as duration,
+                MAX(last_played_at) as last_played_at,
+                SUM(play_count) as play_count
+         FROM tracks
+         WHERE album_id IS NOT NULL
+         GROUP BY album_id
+       ) ts ON ts.album_id = al.id
        ORDER BY al.title`
     );
     return rows;

@@ -90,7 +90,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
   };
 
   return (
-    <div className="fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0b12]/92 backdrop-blur-2xl border border-white/[0.1] rounded-2xl sm:rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.65)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
+    <div className="fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/[0.12] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
       <div className="w-full h-full flex items-center justify-between gap-3 sm:gap-4">
         {/* Left: Track artwork & metadata */}
         <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-3 shrink-0">
@@ -152,10 +152,10 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
 
           <button
             onClick={() => toggleFavoriteTrack(currentTrack.id)}
-            className={`p-2 rounded-full transition-all shrink-0 ${
+            className={`p-2 rounded-full transition-all shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
               starred
                 ? 'text-accent scale-110'
-                : 'text-surface-500 hover:text-accent hover:scale-110'
+                : 'text-surface-400 hover:text-accent hover:scale-110'
             }`}
             title={starred ? 'Unlike' : 'Like'}
           >
@@ -164,7 +164,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
 
           <button
             onClick={() => onAddToPlaylist?.(currentTrack)}
-            className="p-2 rounded-full transition-all shrink-0 text-surface-500 hover:text-accent hover:scale-110"
+            className="p-2 rounded-full transition-all shrink-0 text-surface-400 hover:text-accent hover:scale-110 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
             title="Add to Playlist"
           >
             <FolderPlus className="w-4 h-4" />
@@ -177,10 +177,10 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
           <div className="flex items-center gap-3 sm:gap-4 mb-1.5">
             <button
               onClick={toggleShuffle}
-              className={`p-2 rounded-lg transition-all ${
+              className={`p-2 rounded-lg transition-all drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
                 shuffle
                   ? 'text-accent bg-accent/15 shadow-glow'
-                  : 'text-surface-400 hover:text-white'
+                  : 'text-surface-300 hover:text-white'
               }`}
               title="Shuffle"
             >
@@ -190,7 +190,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
             <button
               onClick={prev}
               disabled={!hasPrev}
-              className={`p-2 rounded-lg transition-colors ${
+              className={`p-2 rounded-lg transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
                 hasPrev
                   ? 'text-surface-200 hover:text-white'
                   : 'text-surface-600 cursor-default'
@@ -215,7 +215,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
             <button
               onClick={next}
               disabled={!hasNext}
-              className={`p-2 rounded-lg transition-colors ${
+              className={`p-2 rounded-lg transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
                 hasNext
                   ? 'text-surface-200 hover:text-white'
                   : 'text-surface-600 cursor-default'
@@ -227,10 +227,10 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
 
             <button
               onClick={toggleRepeat}
-              className={`p-2 rounded-lg transition-all relative ${
+              className={`p-2 rounded-lg transition-all relative drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
                 repeat !== 'none'
                   ? 'text-accent bg-accent/15 shadow-glow'
-                  : 'text-surface-400 hover:text-white'
+                  : 'text-surface-300 hover:text-white'
               }`}
               title={`Repeat: ${repeat}`}
             >
@@ -245,7 +245,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
 
           {/* Timeline progress slider */}
           <div className="w-full flex items-center gap-3 text-[11px] text-surface-400 font-mono select-none">
-            <span className="w-10 text-right tabular-nums text-surface-400">
+            <span className="w-10 text-right tabular-nums text-surface-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
               {formatDuration(currentTime)}
             </span>
             <div
@@ -261,21 +261,21 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
                 style={{ left: `calc(${progressPct}% - 7px)` }}
               />
             </div>
-            <span className="w-10 text-left tabular-nums text-surface-400">
+            <span className="w-10 text-left tabular-nums text-surface-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
               {formatDuration(duration)}
             </span>
           </div>
         </div>
 
-        {/* Right: Lyrics, Queue, Volume & Close */}
+        {/* Right: Lyrics, Queue, Volume & Close (Protected from misclicks) */}
         <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-1.5 sm:gap-2 shrink-0 justify-end">
           {/* Lyrics toggle */}
           <button
             onClick={() => setIsLyricsOpen((v) => !v)}
-            className={`p-2 rounded-xl transition-all ${
+            className={`p-2 rounded-xl transition-all drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
               isLyricsOpen
                 ? 'text-accent bg-accent/15 border border-accent/25 shadow-glow'
-                : 'text-surface-400 hover:text-white hover:bg-white/[0.05]'
+                : 'text-surface-300 hover:text-white hover:bg-white/[0.05]'
             }`}
             title="Lyrics"
           >
@@ -285,10 +285,10 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
           {/* Queue toggle */}
           <button
             onClick={() => setIsQueueOpen((v) => !v)}
-            className={`p-2 rounded-xl transition-all ${
+            className={`p-2 rounded-xl transition-all drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
               isQueueOpen
                 ? 'text-accent bg-accent/15 border border-accent/25 shadow-glow'
-                : 'text-surface-400 hover:text-white hover:bg-white/[0.05]'
+                : 'text-surface-300 hover:text-white hover:bg-white/[0.05]'
             }`}
             title="Queue"
           >
@@ -298,18 +298,18 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
           {/* Volume slider with native mousewheel adjustment */}
           <div
             ref={setVolumeNode}
-            className="hidden sm:flex items-center gap-2 text-surface-400 pl-2 py-2 cursor-pointer select-none"
+            className="hidden sm:flex items-center gap-2 text-surface-300 pl-2 py-2 cursor-pointer select-none"
             title="Scroll mouse wheel to change volume"
           >
             <button
               onClick={toggleMute}
-              className="hover:text-white transition-colors"
+              className="hover:text-white transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
               title={muted ? 'Unmute' : 'Mute'}
             >
               {muted || volume === 0 ? (
                 <VolumeX className="w-4 h-4 text-surface-500" />
               ) : (
-                <Volume2 className="w-4 h-4 text-surface-300" />
+                <Volume2 className="w-4 h-4 text-surface-200" />
               )}
             </button>
             <input
@@ -319,14 +319,17 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
               step="0.01"
               value={muted ? 0 : volume}
               onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="w-20 sm:w-24 lg:w-28 h-1 appearance-none bg-surface-700/80 rounded-full cursor-pointer accent-accent"
+              className="w-16 sm:w-20 lg:w-24 h-1 appearance-none bg-surface-700/80 rounded-full cursor-pointer accent-accent"
             />
           </div>
+
+          {/* Anti-misclick separator: 16px margin-left + 1px solid rgba(255,255,255,0.1) */}
+          <div className="h-6 w-px bg-white/10 ml-4 mr-1 shrink-0 hidden sm:block" />
 
           {/* Close player */}
           <button
             onClick={clearQueue}
-            className="p-2 text-surface-500 hover:text-rose-400 rounded-xl transition-colors ml-1"
+            className="p-2 text-surface-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
             title="Close Player"
           >
             <X className="w-4 h-4" />
