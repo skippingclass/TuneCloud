@@ -557,8 +557,8 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                         isActive
                           ? 'scale-[1.02] origin-left text-white'
                           : isPast
-                          ? 'text-white/30 hover:text-white/75 hover:bg-white/[0.02]'
-                          : 'text-white/40 hover:text-white/80 hover:bg-white/[0.02]'
+                          ? 'text-white/30 hover:text-white/75'
+                          : 'text-white/40 hover:text-white/80'
                       }`}
                     >
                       <p
