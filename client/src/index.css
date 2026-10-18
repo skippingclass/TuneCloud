@@ -137,6 +137,10 @@
     background-color: var(--theme-glow);
     color: #ffffff;
   }
+  :focus:not(:focus-visible) {
+    outline: none !important;
+    box-shadow: none !important;
+  }
 }
 
 @layer components {

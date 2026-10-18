@@ -222,7 +222,6 @@ export function AlbumDetailView({
                   <th className="w-8 px-1 py-3 text-center"></th>
                   <th className="px-3 sm:px-4 py-3">Title</th>
                   <th className="px-3 sm:px-4 py-3 hidden sm:table-cell">Artist</th>
-                  <th className="px-3 sm:px-4 py-3 hidden md:table-cell">Album</th>
                   <th className="px-3 sm:px-4 py-3 text-right hidden sm:table-cell">Duration</th>
                   <th className="px-2 py-3 text-center hidden lg:table-cell">Format</th>
                   <th className="w-9 px-2 py-3"></th>
@@ -234,6 +233,8 @@ export function AlbumDetailView({
                     key={track.id}
                     track={track}
                     index={idx}
+                    showAlbum={false}
+                    albumArtist={resolvedAlbum.artist}
                     onPlay={(t) => playTrack(t, tracks)}
                     isPlaying={currentTrack?.id === track.id}
                     user={user}
