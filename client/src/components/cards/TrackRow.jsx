@@ -26,6 +26,7 @@ export function TrackRow({
   onRemoveFromPlaylist,
   reorderControls,
   showAlbum = true,
+  showArtist = true,
   albumArtist = null,
 }) {
   const [hover, setHover] = useState(false);
@@ -134,7 +135,7 @@ export function TrackRow({
         <span className={isPlaying ? 'text-accent font-semibold' : 'text-surface-100'}>
           {track.title || track.file_name}
         </span>
-        {track.artist && isDifferentArtist && (
+        {track.artist && (showArtist || isDifferentArtist) && (
           <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
             <ArtistLinks
               artist={track.artist}
@@ -145,20 +146,20 @@ export function TrackRow({
         )}
       </td>
 
-      {/* Artist - only display if different from album artist or if albumArtist is not specified */}
-      <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden sm:table-cell">
-        {isDifferentArtist && track.artist ? (
-          <ArtistLinks
-            artist={track.artist}
-            primaryArtistId={track.artist_id}
-            onGoToArtist={onGoToArtist}
-          />
-        ) : albumArtist ? (
-          <span className="text-surface-600">—</span>
-        ) : (
-          '—'
-        )}
-      </td>
+      {/* Artist (optional, hidden when showArtist is false) */}
+      {showArtist && (
+        <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm text-surface-400 truncate hidden sm:table-cell">
+          {track.artist || albumArtist ? (
+            <ArtistLinks
+              artist={track.artist || albumArtist}
+              primaryArtistId={track.artist_id}
+              onGoToArtist={onGoToArtist}
+            />
+          ) : (
+            <span className="text-surface-600">—</span>
+          )}
+        </td>
+      )}
 
       {/* Album (optional, hidden on album view) */}
       {showAlbum && (
