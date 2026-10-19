@@ -51,12 +51,12 @@ function renderElement(name, obj) {
       textContent = escapeXml(renderValue(v));
     } else if (name === 'line' && k === 'value') {
       textContent = escapeXml(renderValue(v));
-    } else if (k === 'artists' && Array.isArray(v)) {
+    } else if ((k === 'artists' || k === 'albumArtists') && Array.isArray(v)) {
       let inner = '';
       for (const item of v) {
         inner += isPrimitive(item) ? `<artist>${escapeXml(renderValue(item))}</artist>` : renderElement('artist', item);
       }
-      children += `<artists>${inner}</artists>`;
+      children += `<${k}>${inner}</${k}>`;
     } else if (isPrimitive(v)) {
       attrs += ` ${k}="${escapeXml(renderValue(v))}"`;
     } else {
