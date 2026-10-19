@@ -54,6 +54,7 @@ export function splitArtistNames(str) {
  * Row: { id, title, year, genre, cover_path, created_at, artist_id, artist_name, song_count, duration, starred_at, user_rating }
  */
 export function formatAlbum(row) {
+  const albumArtists = row.artist_id && row.artist_name ? [{ id: String(row.artist_id), name: row.artist_name }] : undefined;
   return compact({
     id: String(row.id),
     name: row.title,
@@ -63,6 +64,8 @@ export function formatAlbum(row) {
     displayArtist: row.artist_name || '',
     displayAlbumArtist: row.artist_name || '',
     artistId: str(row.artist_id),
+    artists: albumArtists,
+    albumArtists,
     coverArt: row.cover_path ? `al-${row.id}` : undefined,
     songCount: Number(row.song_count || 0),
     duration: Math.round(Number(row.duration || 0)),
@@ -91,6 +94,13 @@ export function formatSong(row) {
     name,
   })) : undefined;
 
+  const albumArtistName = row.album_artist_name || (row.album_compilation ? 'Various Artists' : (row.artist_name || ''));
+  const albumArtistId = row.album_artist_id ? String(row.album_artist_id) : (row.artist_id ? String(row.artist_id) : undefined);
+  const albumArtistNames = splitArtistNames(albumArtistName);
+  const albumArtists = albumArtistNames.length > 0
+    ? albumArtistNames.map((name) => ({ id: albumArtistId || '0', name }))
+    : (albumArtistName ? [{ id: albumArtistId || '0', name: albumArtistName }] : undefined);
+
   return compact({
     id: String(row.id),
     parent: str(row.album_id),
@@ -100,6 +110,9 @@ export function formatSong(row) {
     artist: trackArtist,
     displayArtist: trackArtist,
     artists,
+    albumArtist: albumArtistName || undefined,
+    displayAlbumArtist: albumArtistName || undefined,
+    albumArtists,
     track: row.track_number || 1,
     year: row.year || row.album_year || undefined,
     genre: row.genre || row.album_genre || undefined,
@@ -146,10 +159,14 @@ export const SONG_SELECT = `
          t.track_artist_credit,
          al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
          al.cover_path AS album_cover,
-         a.name AS artist_name
+         al.artist_id AS album_artist_id,
+         al.compilation AS album_compilation,
+         a.name AS artist_name,
+         ala.name AS album_artist_name
   FROM tracks t
   LEFT JOIN albums al ON t.album_id = al.id
-  LEFT JOIN artists a ON t.artist_id = a.id`;
+  LEFT JOIN artists a ON t.artist_id = a.id
+  LEFT JOIN artists ala ON al.artist_id = ala.id`;
 
 export function songSelectSql(userId = null) {
   if (!userId) return SONG_SELECT;
@@ -161,12 +178,16 @@ export function songSelectSql(userId = null) {
            t.track_artist_credit,
            al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
            al.cover_path AS album_cover,
+           al.artist_id AS album_artist_id,
+           al.compilation AS album_compilation,
            a.name AS artist_name,
+           ala.name AS album_artist_name,
            st.created_at AS starred_at,
            ur.rating AS user_rating
     FROM tracks t
     LEFT JOIN albums al ON t.album_id = al.id
     LEFT JOIN artists a ON t.artist_id = a.id
+    LEFT JOIN artists ala ON al.artist_id = ala.id
     LEFT JOIN user_starred_tracks st ON st.track_id = t.id AND st.user_id = ${uid}
     LEFT JOIN user_ratings ur ON ur.entity_type = 'track' AND ur.entity_id = t.id AND ur.user_id = ${uid}`;
 }
