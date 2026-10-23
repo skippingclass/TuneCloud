@@ -28,9 +28,38 @@ export function PlayerProvider({ children }) {
     }
   });
   const [muted, setMuted] = useState(false);
+  const [playbackKey, setPlaybackKey] = useState(0);
   const scrobbledRef = useRef(false);
+  const playRequestIdRef = useRef(0);
 
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
+
+  const safePlay = useCallback((el) => {
+    if (!el || typeof el.play !== 'function') return;
+    const reqId = ++playRequestIdRef.current;
+    try {
+      const playPromise = el.play();
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise
+          .then(() => {
+            if (reqId === playRequestIdRef.current) {
+              setIsPlaying(true);
+            }
+          })
+          .catch(() => {
+            if (reqId === playRequestIdRef.current) {
+              setIsPlaying(false);
+            }
+          });
+      } else {
+        setIsPlaying(true);
+      }
+    } catch {
+      if (reqId === playRequestIdRef.current) {
+        setIsPlaying(false);
+      }
+    }
+  }, []);
 
   // Sync volume with audio element immediately whenever volume, muted, or track changes
   useEffect(() => {
@@ -94,12 +123,14 @@ export function PlayerProvider({ children }) {
       } catch {}
     }
 
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: currentTrack.title || currentTrack.file_name || currentTrack.fileName || 'Unknown Track',
-      artist: currentTrack.artist || 'Unknown Artist',
-      album: currentTrack.album || '',
-      artwork,
-    });
+    if (typeof MediaMetadata !== 'undefined') {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title || currentTrack.file_name || currentTrack.fileName || 'Unknown Track',
+        artist: currentTrack.artist || 'Unknown Artist',
+        album: currentTrack.album || '',
+        artwork,
+      });
+    }
   }, [currentTrack]);
 
   useEffect(() => {
@@ -141,42 +172,67 @@ export function PlayerProvider({ children }) {
     return prevIdx;
   }, [queue.length, queueIndex, shuffle, repeat]);
 
+  const selectQueueIndex = useCallback((idx) => {
+    scrobbledRef.current = false;
+    setCurrentTime(0);
+    setQueueIndex(idx);
+    setPlaybackKey((k) => k + 1);
+  }, []);
+
   const next = useCallback(() => {
     const idx = pickNext();
-    if (idx >= 0) setQueueIndex(idx);
+    if (idx >= 0) {
+      scrobbledRef.current = false;
+      setCurrentTime(0);
+      setQueueIndex(idx);
+      setPlaybackKey((k) => k + 1);
+    }
   }, [pickNext]);
 
   const prev = useCallback(() => {
     const idx = pickPrev();
-    if (idx >= 0) setQueueIndex(idx);
+    if (idx >= 0) {
+      scrobbledRef.current = false;
+      setCurrentTime(0);
+      setQueueIndex(idx);
+      setPlaybackKey((k) => k + 1);
+    }
   }, [pickPrev]);
 
   const seek = useCallback((time) => {
     const el = audioRef.current;
+    const safeTime = Number.isFinite(time) ? Math.max(0, time) : 0;
     if (el) {
-      el.currentTime = time;
-      setCurrentTime(time);
+      const maxDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null;
+      const targetTime = maxDur !== null ? Math.min(safeTime, maxDur) : safeTime;
+      el.currentTime = targetTime;
+      setCurrentTime(targetTime);
       if (
         'mediaSession' in navigator &&
         'setPositionState' in navigator.mediaSession &&
-        el.duration > 0 &&
-        !isNaN(el.duration)
+        maxDur !== null
       ) {
         try {
           navigator.mediaSession.setPositionState({
-            duration: el.duration,
+            duration: maxDur,
             playbackRate: el.playbackRate || 1,
-            position: Math.max(0, Math.min(time, el.duration)),
+            position: targetTime,
           });
         } catch {}
       }
+    } else {
+      setCurrentTime(safeTime);
     }
   }, []);
 
   const clearQueue = useCallback(() => {
+    playRequestIdRef.current += 1;
+    scrobbledRef.current = false;
     setQueue([]);
     setQueueIndex(-1);
     setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
@@ -196,8 +252,11 @@ export function PlayerProvider({ children }) {
       } catch {}
     };
 
-    setAction('play', () => audioRef.current?.play());
-    setAction('pause', () => audioRef.current?.pause());
+    setAction('play', () => safePlay(audioRef.current));
+    setAction('pause', () => {
+      playRequestIdRef.current += 1;
+      audioRef.current?.pause();
+    });
     setAction('previoustrack', prev);
     setAction('nexttrack', next);
     setAction('seekto', (details) => {
@@ -208,12 +267,12 @@ export function PlayerProvider({ children }) {
     setAction('seekbackward', (details) => {
       const offset = details?.seekOffset || 10;
       const el = audioRef.current;
-      if (el) seek(Math.max(0, el.currentTime - offset));
+      if (el) seek(Math.max(0, (el.currentTime || 0) - offset));
     });
     setAction('seekforward', (details) => {
       const offset = details?.seekOffset || 10;
       const el = audioRef.current;
-      if (el) seek(Math.min(el.duration || 0, el.currentTime + offset));
+      if (el) seek(Math.min(Number.isFinite(el.duration) ? el.duration : 0, (el.currentTime || 0) + offset));
     });
     setAction('stop', () => {
       clearQueue();
@@ -232,108 +291,213 @@ export function PlayerProvider({ children }) {
       ];
       actions.forEach((act) => setAction(act, null));
     };
-  }, [next, prev, seek, clearQueue]);
+  }, [next, prev, seek, clearQueue, safePlay]);
 
-  const playTrack = useCallback((track, trackList = null) => {
-    const list = trackList || queue;
-    const idx = list.findIndex((t) => t.id === track.id);
-    setQueue(list);
-    setQueueIndex(idx >= 0 ? idx : 0);
-    setIsPlaying(true);
-    scrobbledRef.current = false;
-  }, [queue]);
+  const playTrack = useCallback(
+    (track, trackList = null) => {
+      if (!track) return;
+      const list = trackList || (queue.some(t => t.id === track.id) ? queue : [track]);
+      const idx = list.findIndex((t) => t.id === track.id);
+      const targetIdx = idx >= 0 ? idx : 0;
+      const isSameTrack = currentTrack?.id != null && currentTrack.id === track.id;
+
+      setQueue(list);
+      setQueueIndex(targetIdx);
+
+      if (isSameTrack) {
+        const el = audioRef.current;
+        if (el) {
+          safePlay(el);
+        }
+        return;
+      }
+
+      scrobbledRef.current = false;
+      setCurrentTime(0);
+      setDuration(Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
+      setPlaybackKey((k) => k + 1);
+    },
+    [queue, currentTrack?.id, safePlay]
+  );
 
   const togglePlay = useCallback(() => {
     const el = audioRef.current;
     if (!el) return;
-    if (el.paused) el.play();
-    else el.pause();
-  }, []);
-
-  const addToQueue = useCallback((track) => {
-    setQueue((prev) => [...prev, track]);
-    if (queueIndex === -1) {
-      setQueueIndex(0);
-      setIsPlaying(true);
+    if (el.paused) {
+      safePlay(el);
+    } else {
+      playRequestIdRef.current += 1;
+      el.pause();
+      setIsPlaying(false);
     }
-  }, [queueIndex]);
+  }, [safePlay]);
 
-  const removeFromQueue = useCallback((index) => {
-    setQueue((prev) => prev.filter((_, i) => i !== index));
-    if (index === queueIndex) {
-      if (queue.length <= 1) {
-        setQueueIndex(-1);
-        setIsPlaying(false);
-      } else if (index >= queue.length - 1) {
-        setQueueIndex(queue.length - 2);
+  const addToQueue = useCallback(
+    (track) => {
+      setQueue((prev) => [...prev, track]);
+      if (queueIndex === -1) {
+        scrobbledRef.current = false;
+        setCurrentTime(0);
+        setDuration(Number.isFinite(track?.duration) && track.duration > 0 ? track.duration : 0);
+        setQueueIndex(0);
+        setPlaybackKey((k) => k + 1);
       }
-    } else if (index < queueIndex) {
-      setQueueIndex((i) => i - 1);
+    },
+    [queueIndex]
+  );
+
+  const removeFromQueue = useCallback(
+    (index) => {
+      setQueue((prev) => prev.filter((_, i) => i !== index));
+      if (index === queueIndex) {
+        scrobbledRef.current = false;
+        setCurrentTime(0);
+        if (queue.length <= 1) {
+          playRequestIdRef.current += 1;
+          setQueueIndex(-1);
+          setIsPlaying(false);
+          setDuration(0);
+        } else if (index >= queue.length - 1) {
+          setQueueIndex(queue.length - 2);
+          setPlaybackKey((k) => k + 1);
+        } else {
+          setPlaybackKey((k) => k + 1);
+        }
+      } else if (index < queueIndex) {
+        setQueueIndex((i) => i - 1);
+      }
+    },
+    [queue.length, queueIndex]
+  );
+
+  // Start playback and reset per-play state when active track or playbackKey changes
+  useEffect(() => {
+    if (!currentTrack) {
+      scrobbledRef.current = false;
+      setCurrentTime(0);
+      setDuration(0);
+      setIsPlaying(false);
+      return;
     }
-  }, [queue.length, queueIndex]);
+
+    scrobbledRef.current = false;
+    setCurrentTime(0);
+    setDuration(
+      Number.isFinite(currentTrack.duration) && currentTrack.duration > 0
+        ? currentTrack.duration
+        : 0
+    );
+
+    const el = audioRef.current;
+    if (el) {
+      try {
+        el.currentTime = 0;
+      } catch {}
+      safePlay(el);
+    }
+  }, [currentTrack?.id, playbackKey, safePlay]);
 
   // Audio listeners
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
 
+    const getEffectiveDuration = () => {
+      if (Number.isFinite(el.duration) && el.duration > 0) return el.duration;
+      if (Number.isFinite(currentTrack?.duration) && currentTrack.duration > 0) {
+        return currentTrack.duration;
+      }
+      return 0;
+    };
+
     const syncMediaSessionPosition = () => {
+      const effDur = getEffectiveDuration();
       if (
         'mediaSession' in navigator &&
         'setPositionState' in navigator.mediaSession &&
-        el.duration > 0 &&
-        !isNaN(el.duration)
+        effDur > 0
       ) {
         try {
+          const pos = Number.isFinite(el.currentTime) ? Math.max(0, Math.min(el.currentTime, effDur)) : 0;
           navigator.mediaSession.setPositionState({
-            duration: el.duration,
+            duration: effDur,
             playbackRate: el.playbackRate || 1,
-            position: Math.max(0, Math.min(el.currentTime, el.duration)),
+            position: pos,
           });
         } catch {}
       }
     };
 
     const onTime = () => {
-      setCurrentTime(el.currentTime);
+      const cur = Number.isFinite(el.currentTime) && el.currentTime >= 0 ? el.currentTime : 0;
+      setCurrentTime(cur);
+      const effDur = getEffectiveDuration();
+      if (effDur > 0) {
+        setDuration(effDur);
+      }
       syncMediaSessionPosition();
       // Scrobble after 50% or 30s
-      if (!scrobbledRef.current && currentTrack?.id && el.duration > 0) {
-        if (el.currentTime >= Math.min(el.duration * 0.5, 30)) {
+      if (!scrobbledRef.current && currentTrack?.id && effDur > 0) {
+        if (cur >= Math.min(effDur * 0.5, 30)) {
           scrobbledRef.current = true;
           api.scrobble(currentTrack.id).catch(() => {});
         }
       }
     };
+
     const onMeta = () => {
-      setDuration(el.duration);
+      const effDur = getEffectiveDuration();
+      setDuration(effDur);
       syncMediaSessionPosition();
     };
+
     const onEnd = () => {
+      scrobbledRef.current = false;
       if (repeat === 'one') {
-        el.currentTime = 0;
-        el.play();
+        try {
+          el.currentTime = 0;
+        } catch {}
+        setCurrentTime(0);
+        safePlay(el);
         return;
       }
-      next();
+      const nextIdx = pickNext();
+      if (nextIdx >= 0) {
+        setCurrentTime(0);
+        setQueueIndex(nextIdx);
+        setPlaybackKey((k) => k + 1);
+      } else {
+        playRequestIdRef.current += 1;
+        setIsPlaying(false);
+        setCurrentTime(0);
+      }
     };
+
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
+    const onError = () => {
+      playRequestIdRef.current += 1;
+      setIsPlaying(false);
+    };
 
     el.addEventListener('timeupdate', onTime);
     el.addEventListener('loadedmetadata', onMeta);
+    el.addEventListener('durationchange', onMeta);
     el.addEventListener('ended', onEnd);
     el.addEventListener('play', onPlay);
     el.addEventListener('pause', onPause);
+    el.addEventListener('error', onError);
 
     return () => {
       el.removeEventListener('timeupdate', onTime);
       el.removeEventListener('loadedmetadata', onMeta);
+      el.removeEventListener('durationchange', onMeta);
       el.removeEventListener('ended', onEnd);
       el.removeEventListener('play', onPlay);
       el.removeEventListener('pause', onPause);
+      el.removeEventListener('error', onError);
     };
-  }, [currentTrack, repeat, next]);
+  }, [currentTrack, repeat, pickNext, safePlay]);
 
   return (
     <PlayerContext.Provider
@@ -342,7 +506,7 @@ export function PlayerProvider({ children }) {
         currentTrack,
         queue,
         queueIndex,
-        setQueueIndex,
+        setQueueIndex: selectQueueIndex,
         isPlaying,
         currentTime,
         duration,
@@ -377,8 +541,6 @@ export function PlayerProvider({ children }) {
             audioRef.current = el;
             if (el) el.volume = muted ? 0 : volume;
           }}
-          key={currentTrack.id}
-          autoPlay
           onLoadedMetadata={(e) => {
             e.currentTarget.volume = muted ? 0 : volume;
           }}

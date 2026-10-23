@@ -6,7 +6,8 @@
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",
     "build": "cd client && npm run build",
-    "db:migrate": "cd server && node src/db.js"
+    "db:migrate": "cd server && node scripts/migrate.js",
+    "test": "npm test --prefix server && npm test --prefix client"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

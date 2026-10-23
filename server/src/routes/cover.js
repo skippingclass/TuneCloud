@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const COVERS_DIR = path.resolve(__dirname, '../../covers');
+const COVERS_DIR = path.resolve(process.env.COVERS_DIR || path.join(__dirname, '../../covers'));
 
 function serveCover(reply, filename) {
   const safe = path.basename(filename);

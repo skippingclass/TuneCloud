@@ -185,8 +185,12 @@ export default async function scanRoutes(fastify) {
       return reply.status(400).send({ error: 'filePath required' });
     }
 
-    const resolvedPath = path.resolve(filePath);
-    const musicDir = path.resolve(process.env.MUSIC_DIR);
+    if (typeof filePath !== 'string' || !process.env.MUSIC_DIR) return reply.status(400).send({ error: 'Invalid music path' });
+    let resolvedPath, musicDir;
+    try {
+      resolvedPath = await fs.promises.realpath(filePath);
+      musicDir = await fs.promises.realpath(process.env.MUSIC_DIR);
+    } catch { return reply.status(404).send({ error: 'File not found' }); }
 
     if (resolvedPath !== musicDir && !resolvedPath.startsWith(musicDir + path.sep)) {
       return reply.status(403).send({ error: 'File must be within music directory' });

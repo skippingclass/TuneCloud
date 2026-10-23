@@ -43,6 +43,8 @@ export function Header({
   const [results, setResults] = useState({ tracks: [], albums: [], artists: [] });
   const [loading, setLoading] = useState(false);
   const searchContainerRef = useRef(null);
+  const requestIdRef = useRef(0);
+  const abortRef = useRef(null);
 
   const closeAndBlur = () => {
     setIsFocused(false);
@@ -75,6 +77,12 @@ export function Header({
 
   // Debounced search query fetching (strictly bound to user typing)
   useEffect(() => {
+    const reqId = ++requestIdRef.current;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+
     const q = (searchQuery || '').trim();
     if (!q || currentView === 'search') {
       setResults({ tracks: [], albums: [], artists: [] });
@@ -85,29 +93,48 @@ export function Header({
 
     setLoading(true);
     const timer = setTimeout(() => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       api
-        .search(q)
+        .search(q, { signal: controller.signal })
         .then((data) => {
+          if (reqId !== requestIdRef.current || controller.signal.aborted) return;
           setResults({
-            tracks: data.tracks?.slice(0, 4) || [],
-            albums: data.albums?.slice(0, 3) || [],
-            artists: data.artists?.slice(0, 3) || [],
+            tracks: data?.tracks?.slice(0, 4) || [],
+            albums: data?.albums?.slice(0, 3) || [],
+            artists: data?.artists?.slice(0, 3) || [],
           });
           // ONLY open dropdown if input is currently focused by user
           if (isFocusedRef.current) {
             setDropdownOpen(true);
           }
         })
-        .catch(() => {
+        .catch((err) => {
+          if (
+            err?.name === 'AbortError' ||
+            reqId !== requestIdRef.current ||
+            controller.signal.aborted
+          ) {
+            return;
+          }
           setResults({ tracks: [], albums: [], artists: [] });
         })
         .finally(() => {
-          setLoading(false);
+          if (reqId === requestIdRef.current && !controller.signal.aborted) {
+            setLoading(false);
+          }
         });
     }, 180);
 
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+    return () => {
+      clearTimeout(timer);
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
+  }, [searchQuery, currentView]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
@@ -122,6 +149,12 @@ export function Header({
   };
 
   const handleClear = () => {
+    requestIdRef.current += 1;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setLoading(false);
     closeAndBlur();
     onSearchChange?.('');
     setResults({ tracks: [], albums: [], artists: [] });

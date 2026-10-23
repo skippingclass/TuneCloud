@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tunecloud}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tunecloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-tunecloud}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -23,18 +23,23 @@ services:
     container_name: tunecloud-server
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-tunecloud}:${POSTGRES_PASSWORD:-tunecloud}@db:5432/${POSTGRES_DB:-tunecloud}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tunecloud}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tunecloud}
       MUSIC_DIR: /music
       PORT: 4000
       HOST: 0.0.0.0
       NODE_ENV: production
-      JWT_SECRET: ${JWT_SECRET:-tunecloud-default-secret-replace-me}
+      JWT_SECRET: ${JWT_SECRET:?Set a unique random JWT_SECRET}
+      # Restrict trust to the private container network; nginx discards supplied X-Forwarded-For.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-uniquelocal}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TAG_EDITING_ENABLED: ${TAG_EDITING_ENABLED:-false}
+      SUBSONIC_ENCRYPTION_KEY: ${SUBSONIC_ENCRYPTION_KEY:-}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique ADMIN_PASSWORD}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
     volumes:
-      - ${MUSIC_DIR}:/music:ro
+      - ${MUSIC_DIR}:/music:${MUSIC_MOUNT_MODE:-ro}
       - covers_data:/app/covers
     networks:
       default:
@@ -46,7 +51,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/ready').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5

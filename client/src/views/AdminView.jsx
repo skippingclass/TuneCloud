@@ -7,8 +7,6 @@ import {
   KeyRound,
   Eye,
   EyeOff,
-  Copy,
-  Check,
   Trash2,
   X,
   Loader2,
@@ -27,12 +25,6 @@ export function AdminView({ user: currentUser }) {
   const [newIsAdmin, setNewIsAdmin] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
-
-  // Password visibility map (userId -> boolean)
-  const [showPasswordMap, setShowPasswordMap] = useState({});
-
-  // Password copied feedback map (userId -> boolean)
-  const [copiedMap, setCopiedMap] = useState({});
 
   // Change password modal state
   const [passwordModalUser, setPasswordModalUser] = useState(null);
@@ -58,24 +50,6 @@ export function AdminView({ user: currentUser }) {
   useEffect(() => {
     loadUsers();
   }, []);
-
-  const handleTogglePassword = (userId) => {
-    setShowPasswordMap((prev) => ({ ...prev, [userId]: !prev[userId] }));
-  };
-
-  const handleCopyPassword = (userId, password) => {
-    if (!password) {
-      toast('No plaintext password available for this account', 'error');
-      return;
-    }
-    navigator.clipboard.writeText(password).then(() => {
-      setCopiedMap((prev) => ({ ...prev, [userId]: true }));
-      toast('Password copied to clipboard', 'success');
-      setTimeout(() => {
-        setCopiedMap((prev) => ({ ...prev, [userId]: false }));
-      }, 2000);
-    });
-  };
 
   const handleCreateUser = async (e) => {
     e.preventDefault();
@@ -183,7 +157,7 @@ export function AdminView({ user: currentUser }) {
             <span>Admin — User Management</span>
           </h1>
           <p className="text-xs text-surface-400 mt-1">
-            Manage TuneCloud accounts, view or change passwords, and configure access permissions.
+            Manage TuneCloud accounts, reset passwords, and configure access permissions.
           </p>
         </div>
 
@@ -223,9 +197,9 @@ export function AdminView({ user: currentUser }) {
             <KeyRound className="w-5 h-5" />
           </div>
           <div>
-            <span className="text-[11px] text-surface-400 block font-medium">Subsonic Secrets</span>
+            <span className="text-[11px] text-surface-400 block font-medium">Web & Subsonic</span>
             <span className="text-xl font-bold text-white tracking-tight">
-              {users.filter((u) => !!u.password).length} Active
+              {users.length} Active
             </span>
           </div>
         </div>
@@ -256,8 +230,6 @@ export function AdminView({ user: currentUser }) {
           <div className="space-y-2.5">
             {users.map((u) => {
               const isCurrent = currentUser?.id === u.id;
-              const isPasswordVisible = !!showPasswordMap[u.id];
-              const isCopied = !!copiedMap[u.id];
 
               return (
                 <div
@@ -290,30 +262,6 @@ export function AdminView({ user: currentUser }) {
                         Created {new Date(u.created_at).toLocaleDateString()}
                       </span>
                     </div>
-                  </div>
-
-                  {/* Middle: Plaintext password view & copy */}
-                  <div className="flex items-center gap-2 bg-black/35 px-3 py-1.5 rounded-xl border border-white/[0.06] text-xs self-start md:self-auto">
-                    <KeyRound className="w-3.5 h-3.5 text-surface-400 shrink-0" />
-                    <span className="font-mono text-surface-300 min-w-[100px] select-all">
-                      {isPasswordVisible
-                        ? u.password || '<not available>'
-                        : '••••••••••••'}
-                    </span>
-                    <button
-                      onClick={() => handleTogglePassword(u.id)}
-                      title={isPasswordVisible ? 'Hide password' : 'Show password'}
-                      className="p-1 rounded-lg text-surface-400 hover:text-white hover:bg-white/[0.08] transition-colors"
-                    >
-                      {isPasswordVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                    <button
-                      onClick={() => handleCopyPassword(u.id, u.password)}
-                      title="Copy password to clipboard"
-                      className="p-1 rounded-lg text-surface-400 hover:text-white hover:bg-white/[0.08] transition-colors"
-                    >
-                      {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    </button>
                   </div>
 
                   {/* Right: Actions (Change Password, Toggle Admin, Delete) */}

@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { query } from '../db.js';
+import { query, transaction } from '../db.js';
+import { appendTracks, checkTracks, lockPlaylist, ids, badRequest } from '../services/playlists.js';
 import { authenticate } from '../subsonic/auth.js';
 import { sendOk, sendError, ErrorCode } from '../subsonic/response.js';
 import {
@@ -25,7 +26,7 @@ import { sendAudioFile } from '../streaming.js';
 import { getScanState, startScanInBackground } from './scan.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const COVERS_DIR = path.resolve(__dirname, '../../covers');
+const COVERS_DIR = path.resolve(process.env.COVERS_DIR || path.join(__dirname, '../../covers'));
 
 const MUSIC_FOLDER_ID = 1;
 
@@ -59,17 +60,20 @@ function resolveMusicDirPath(relPath) {
   const musicDir = process.env.MUSIC_DIR;
   if (!musicDir) return null;
   const resolvedRoot = path.resolve(musicDir);
-  if (!relPath) return resolvedRoot;
-  const target = path.resolve(resolvedRoot, relPath);
+  const target = path.resolve(resolvedRoot, relPath || '');
   const rel = path.relative(resolvedRoot, target);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  try {
+    const physicalRel = path.relative(fs.realpathSync(resolvedRoot), fs.realpathSync(target));
+    if (physicalRel.startsWith('..') || path.isAbsolute(physicalRel)) return null;
+  } catch { return null; }
   return target;
 }
 
 function parseId(v) {
   if (v === undefined || v === null || v === '') return null;
   const s = String(v);
-  return /^\d+$/.test(s) ? parseInt(s, 10) : NaN;
+  return /^[1-9]\d*$/.test(s) && Number(s) <= 2147483647 ? Number(s) : NaN;
 }
 
 function parseIdList(v) {
@@ -81,6 +85,10 @@ function parseIdList(v) {
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function playlistSongIds(value) {
+  return ids(value == null || value === '' ? [] : Array.isArray(value) ? value : String(value).split(','));
 }
 
 function parseLrc(content) {
@@ -293,7 +301,8 @@ export default async function subsonicRoutes(fastify) {
         return await handler(req, reply, params);
       } catch (err) {
         req.log.error(err);
-        if (!reply.sent) return sendError(reply, req, ErrorCode.GENERIC, 'Internal server error');
+        if (!reply.sent) return sendError(reply, req, err.statusCode === 404 ? ErrorCode.NOT_FOUND : ErrorCode.GENERIC,
+          err.statusCode && err.statusCode < 500 ? err.message : 'Internal server error');
       }
     };
     for (const url of [`/rest/${name}`, `/rest/${name}.view`]) {
@@ -961,9 +970,9 @@ export default async function subsonicRoutes(fastify) {
        JOIN users u ON u.id = p.owner_id
        LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
        LEFT JOIN tracks t ON t.id = pt.track_id
-       WHERE p.id = $1 AND (p.owner_id = $2 OR p.is_public = true)
+       WHERE p.id = $1 AND (p.owner_id = $2 OR p.is_public = true OR $3 = true)
        GROUP BY p.id, p.name, p.comment, p.is_public, p.created_at, p.updated_at, u.username`,
-      [id, userId]
+      [id, userId, Boolean(req.subsonicUser.is_admin)]
     );
 
     const playlist = pRows[0];
@@ -973,7 +982,7 @@ export default async function subsonicRoutes(fastify) {
       `${songSelectSql(userId)}
        JOIN playlist_tracks pt ON pt.track_id = t.id
        WHERE pt.playlist_id = $1
-       ORDER BY pt.track_order ASC`,
+       ORDER BY pt.track_order ASC, pt.id ASC`,
       [id]
     );
 
@@ -987,26 +996,24 @@ export default async function subsonicRoutes(fastify) {
     if (!name) return missing(reply, req, 'name');
 
     const userId = req.subsonicUser.id;
-    const songIds = parseIdList(params.songId);
+    const songIds = playlistSongIds(params.songId);
 
-    const { rows } = await query(
-      'INSERT INTO playlists (name, owner_id, is_public) VALUES ($1, $2, $3) RETURNING id, name, comment, is_public, created_at, updated_at',
-      [name, userId, Boolean(params.public)]
-    );
-    const pl = rows[0];
-
-    for (let idx = 0; idx < songIds.length; idx++) {
-      await query(
-        'INSERT INTO playlist_tracks (playlist_id, track_id, track_order) VALUES ($1, $2, $3)',
-        [pl.id, songIds[idx], idx + 1]
-      );
-    }
+    if (name.length > 200) return sendError(reply, req, ErrorCode.GENERIC, 'Playlist name too long');
+    const pl = await transaction(async client => {
+      ids(songIds);
+      await checkTracks(client, songIds);
+      const { rows } = await client.query(
+        'INSERT INTO playlists (name, owner_id, is_public) VALUES ($1, $2, $3) RETURNING *',
+        [name, userId, params.public === true || params.public === 'true']);
+      await appendTracks(client, rows[0].id, songIds);
+      return rows[0];
+    });
 
     const { rows: songRows } = await query(
       `${songSelectSql(userId)}
        JOIN playlist_tracks pt ON pt.track_id = t.id
        WHERE pt.playlist_id = $1
-       ORDER BY pt.track_order ASC`,
+       ORDER BY pt.track_order ASC, pt.id ASC`,
       [pl.id]
     );
 
@@ -1019,51 +1026,35 @@ export default async function subsonicRoutes(fastify) {
     const playlistId = parseId(params.playlistId);
     if (!playlistId) return missing(reply, req, 'playlistId');
 
-    const userId = req.subsonicUser.id;
-    const check = await query(
-      'SELECT id, owner_id FROM playlists WHERE id = $1 AND (owner_id = $2 OR $3 = true)',
-      [playlistId, userId, Boolean(req.subsonicUser.is_admin)]
-    );
-    if (check.rows.length === 0) return notFound(reply, req, 'Playlist');
-
-    if (params.name) {
-      await query('UPDATE playlists SET name = $1, updated_at = NOW() WHERE id = $2', [params.name.trim(), playlistId]);
-    }
-    if (params.comment !== undefined) {
-      await query('UPDATE playlists SET comment = $1, updated_at = NOW() WHERE id = $2', [params.comment, playlistId]);
-    }
-    if (params.public !== undefined) {
-      await query('UPDATE playlists SET is_public = $1, updated_at = NOW() WHERE id = $2', [Boolean(params.public), playlistId]);
-    }
-
-    const toRemove = parseIdList(params.songIndexToRemove);
-    if (toRemove.length > 0) {
-      const { rows: currentTracks } = await query(
-        'SELECT id, track_order FROM playlist_tracks WHERE playlist_id = $1 ORDER BY track_order ASC',
-        [playlistId]
-      );
-      const removeSet = new Set(toRemove);
-      const idsToDelete = currentTracks.filter((_, idx) => removeSet.has(idx)).map((r) => r.id);
-      if (idsToDelete.length > 0) {
-        await query('DELETE FROM playlist_tracks WHERE id = ANY($1::int[])', [idsToDelete]);
+    await transaction(async client => {
+      await lockPlaylist(client, playlistId, req.subsonicUser);
+      if (params.name !== undefined && params.name !== '') {
+        if (typeof params.name !== 'string' || !params.name.trim() || params.name.length > 200) {
+          throw Object.assign(new Error('Invalid playlist name'), { statusCode: 400 });
+        }
+        await client.query('UPDATE playlists SET name = $1 WHERE id = $2', [params.name.trim(), playlistId]);
       }
-    }
-
-    const toAdd = parseIdList(params.songIdToAdd);
-    if (toAdd.length > 0) {
-      const { rows: maxRows } = await query(
-        'SELECT COALESCE(MAX(track_order), 0)::int AS max_order FROM playlist_tracks WHERE playlist_id = $1',
-        [playlistId]
-      );
-      let order = maxRows[0].max_order;
-      for (const trackId of toAdd) {
-        await query(
-          'INSERT INTO playlist_tracks (playlist_id, track_id, track_order) VALUES ($1, $2, $3)',
-          [playlistId, trackId, ++order]
-        );
+      if (params.comment !== undefined) {
+        if (typeof params.comment !== 'string' || params.comment.length > 5000) throw badRequest('Invalid comment');
+        await client.query('UPDATE playlists SET comment = $1 WHERE id = $2', [params.comment, playlistId]);
       }
-      await query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
-    }
+      if (params.public !== undefined) {
+        if (![true, false, 'true', 'false'].includes(params.public)) throw badRequest('Invalid public flag');
+        await client.query('UPDATE playlists SET is_public = $1 WHERE id = $2', [params.public === true || params.public === 'true', playlistId]);
+      }
+      // Subsonic indices are zero-based, unlike entity IDs.
+      const raw = params.songIndexToRemove;
+      const toRemove = raw == null || raw === '' ? [] : (Array.isArray(raw) ? raw : String(raw).split(',')).map(Number);
+      if (toRemove.some(i => !Number.isSafeInteger(i) || i < 0)) throw badRequest('Invalid track index');
+      if (toRemove.length) {
+        const { rows } = await client.query('SELECT id FROM playlist_tracks WHERE playlist_id = $1 ORDER BY track_order, id', [playlistId]);
+        if (toRemove.some(i => i >= rows.length)) throw badRequest('Invalid track index');
+        await client.query('DELETE FROM playlist_tracks WHERE id = ANY($1::int[])', [toRemove.map(i => rows[i].id)]);
+      }
+      const toAdd = playlistSongIds(params.songIdToAdd);
+      await appendTracks(client, playlistId, toAdd);
+      await client.query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    });
 
     return sendOk(reply, req);
   });
@@ -1144,7 +1135,7 @@ export default async function subsonicRoutes(fastify) {
     if (!rows[0] || !fs.existsSync(rows[0].file_path)) {
       return reply.status(404).send('Not found');
     }
-    sendAudioFile(req, reply, rows[0].file_path, rows[0].format);
+    return sendAudioFile(req, reply, rows[0].file_path, rows[0].format);
   };
 
   endpoint('stream', streamHandler);

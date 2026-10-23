@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../tailwind.config.js";
 
 :root, .theme-peach {
   --theme-primary-rgb: 255 183 178;
@@ -122,7 +121,18 @@
   --theme-panel-bg: rgba(19, 14, 8, 0.75);
 }
 
+@theme {
+  --default-ring-width: 3px;
+  --default-ring-color: var(--color-blue-500);
+  --radius-sm: 0.125rem;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --blur-sm: 4px;
+}
+
 @layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button { border-color: var(--color-gray-200, currentColor); }
+  button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+  input::placeholder, textarea::placeholder { color: var(--color-gray-400); }
   body {
     @apply bg-surface-950 text-surface-100 antialiased;
     background-color: var(--theme-bg, #0a0b10);
@@ -143,11 +153,12 @@
   }
 }
 
+/* Shared button utility remains composable with @apply in Tailwind 4. */
+@utility btn {
+  @apply px-4 py-2 rounded-xl font-medium transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center gap-2 text-sm;
+}
+
 @layer components {
-  /* Buttons */
-  .btn {
-    @apply px-4 py-2 rounded-xl font-medium transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none inline-flex items-center justify-center gap-2 text-sm;
-  }
   .btn-primary {
     @apply btn bg-gradient-to-r from-accent to-accent-hover text-surface-950 font-semibold shadow-glow hover:shadow-glow-lg hover:brightness-105;
   }
@@ -170,7 +181,7 @@
     @apply px-3.5 py-1.5 rounded-full text-xs font-medium bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-white/[0.15] backdrop-blur-md transition-all duration-200;
   }
   .glass-input {
-    @apply bg-white/[0.03] border border-white/[0.08] focus:border-accent focus:ring-2 focus:ring-accent/20 rounded-xl px-3.5 py-2 text-sm text-surface-100 placeholder-surface-500 backdrop-blur-md outline-none transition-all duration-200;
+    @apply bg-white/[0.03] border border-white/[0.08] focus:border-accent focus:ring-2 focus:ring-accent/20 rounded-xl px-3.5 py-2 text-sm text-surface-100 placeholder-surface-500 backdrop-blur-md outline-hidden transition-all duration-200;
   }
 }
 

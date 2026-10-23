@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Search, Disc, Users, Music2, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
@@ -16,28 +16,67 @@ export function SearchView({
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState(null);
   const [searching, setSearching] = useState(false);
+  const requestIdRef = useRef(0);
+  const abortRef = useRef(null);
   const { currentTrack, playTrack } = usePlayer();
 
   useEffect(() => {
-    if (initialQuery) setQuery(initialQuery);
+    setQuery(initialQuery || '');
   }, [initialQuery]);
 
   useEffect(() => {
-    if (!query.trim()) {
+    const reqId = ++requestIdRef.current;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+
+    const q = query.trim();
+    if (!q) {
       setResults(null);
       setSearching(false);
       return;
     }
+
     setSearching(true);
     const timer = setTimeout(() => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       api
-        .search(query)
-        .then(setResults)
-        .catch(console.error)
-        .finally(() => setSearching(false));
+        .search(q, { signal: controller.signal })
+        .then((data) => {
+          if (reqId !== requestIdRef.current || controller.signal.aborted) return;
+          setResults({
+            tracks: Array.isArray(data?.tracks) ? data.tracks : [],
+            albums: Array.isArray(data?.albums) ? data.albums : [],
+            artists: Array.isArray(data?.artists) ? data.artists : [],
+          });
+        })
+        .catch((err) => {
+          if (
+            err?.name === 'AbortError' ||
+            reqId !== requestIdRef.current ||
+            controller.signal.aborted
+          ) {
+            return;
+          }
+          setResults({ tracks: [], albums: [], artists: [] });
+        })
+        .finally(() => {
+          if (reqId === requestIdRef.current && !controller.signal.aborted) {
+            setSearching(false);
+          }
+        });
     }, 280);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+    };
   }, [query]);
 
   return (

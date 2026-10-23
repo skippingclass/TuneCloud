@@ -5,13 +5,14 @@ import rateLimit from '@fastify/rate-limit';
 import staticFiles from '@fastify/static';
 import fastifyMetrics from 'fastify-metrics';
 import fs from 'fs';
-import { initDb, query } from './db.js';
+import pool, { initDb, query } from './db.js';
 import { initCoversDir } from './cover.js';
 import { setupCustomMetrics } from './metrics.js';
-import { hashPassword, verifyPassword, encryptSubsonicSecret, decryptSubsonicSecret } from './auth.js';
+import { hashPassword, verifyPassword, encryptSubsonicSecret, decryptSubsonicSecret, migrateSubsonicEncryption } from './auth.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
+import { validateSecurityConfig, trustedProxies, safeRequestSerializer } from './security.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,19 +20,20 @@ async function seedAdmin() {
   const username = process.env.ADMIN_USERNAME || 'admin';
   const password = process.env.ADMIN_PASSWORD;
   if (!password) {
-    console.log('ADMIN_PASSWORD not set — skipping admin user creation. Register via /api/auth/register');
+    console.log('ADMIN_PASSWORD not set — skipping admin user creation. Set ADMIN_PASSWORD to create the initial administrator');
     return;
   }
   const { rows } = await query('SELECT id, is_admin, password_hash, subsonic_secret FROM users WHERE username = $1', [username]);
   if (rows.length > 0) {
     if (!rows[0].is_admin) {
-      await query('UPDATE users SET is_admin = true WHERE id = $1', [rows[0].id]);
+      if (!(await verifyPassword(password, rows[0].password_hash))) throw new Error('ADMIN_PASSWORD does not match the existing account; refusing to promote it');
+      await query('UPDATE users SET is_admin = true, auth_version = auth_version + 1 WHERE id = $1', [rows[0].id]);
       console.log(`Admin privileges granted to existing user "${username}"`);
     } else {
       console.log(`Admin user "${username}" already exists`);
     }
     if (
-      decryptSubsonicSecret(rows[0].subsonic_secret) !== password &&
+      (process.env.SUBSONIC_ENCRYPTION_KEY || decryptSubsonicSecret(rows[0].subsonic_secret) !== password) &&
       await verifyPassword(password, rows[0].password_hash)
     ) {
       await query('UPDATE users SET subsonic_secret = $1 WHERE id = $2', [encryptSubsonicSecret(password), rows[0].id]);
@@ -47,20 +49,17 @@ async function seedAdmin() {
   console.log(`Admin user "${username}" created`);
 }
 
-async function main() {
-  if (process.env.NODE_ENV === 'production') {
-    if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'change-me-in-production') {
-      throw new Error('FATAL: JWT_SECRET must be set to a strong secret in production mode!');
-    }
-  }
-
-  await initDb();
-  await initCoversDir();
-  await seedAdmin();
-
+export async function buildApp() {
   const app = Fastify({
-    logger: true,
-    trustProxy: true,
+    logger: { serializers: { req: safeRequestSerializer },
+      redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers.set-cookie'] },
+    trustProxy: trustedProxies(),
+  });
+
+  app.addHook('preValidation', async (req, reply) => {
+    if (req.params?.id !== undefined && (!/^[1-9]\d*$/.test(req.params.id) || Number(req.params.id) > 2147483647)) {
+      return reply.status(400).send({ error: 'Invalid ID' });
+    }
   });
 
   await app.register(helmet, {
@@ -70,11 +69,11 @@ async function main() {
 
   const corsOrigin = process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
-    : true;
+    : false;
 
   await app.register(cors, {
     origin: corsOrigin,
-    credentials: true,
+    credentials: false,
   });
 
   await app.register(rateLimit, {
@@ -83,7 +82,6 @@ async function main() {
     allowList: (req) => {
       return (
         req.url === '/metrics' ||
-        req.url.startsWith('/metrics') ||
         req.url === '/api/health' ||
         req.url.startsWith('/api/stream/')
       );
@@ -119,16 +117,16 @@ async function main() {
   const { default: subsonic } = await import('./routes/subsonic.js');
   const { default: playlists } = await import('./routes/playlists.js');
 
-  browse(app);
-  stream(app);
-  tracks(app);
-  scan(app);
-  tags(app);
-  cover(app);
-  spotify(app);
-  auth(app);
-  subsonic(app);
-  playlists(app);
+  await browse(app);
+  await stream(app);
+  await tracks(app);
+  await scan(app);
+  await tags(app);
+  await cover(app);
+  await spotify(app);
+  await auth(app);
+  await subsonic(app);
+  await playlists(app);
 
   if (fs.existsSync(clientDist)) {
     app.setNotFoundHandler(async (req, reply) => {
@@ -139,16 +137,29 @@ async function main() {
     });
   }
 
-  const port = parseInt(process.env.PORT || '4000', 10);
-  const host = process.env.HOST || '0.0.0.0';
-
-  try {
-    await app.listen({ port, host });
-    console.log(`Server running at http://${host}:${port}`);
-  } catch (err) {
-    app.log.error(err);
-    process.exit(1);
-  }
+  app.get('/api/ready', async (req, reply) => {
+    try { await query('SELECT 1'); return { status: 'ok' }; }
+    catch { return reply.status(503).send({ status: 'unavailable' }); }
+  });
+  return app;
 }
 
-main();
+async function main() {
+  validateSecurityConfig();
+  await initDb();
+  await migrateSubsonicEncryption();
+  await initCoversDir();
+  await seedAdmin();
+  const app = await buildApp();
+  const port = parseInt(process.env.PORT || '4000', 10);
+  const host = process.env.HOST || '0.0.0.0';
+  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, async () => {
+    await app.close();
+    await pool.end();
+  });
+  await app.listen({ port, host });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(err => { console.error(err.message); process.exit(1); });
+}
