@@ -3,12 +3,11 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import pkg from 'music-metadata';
-const { parseFile } = pkg;
+import { parseFile } from 'music-metadata';
 import { query } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const COVERS_DIR = path.resolve(__dirname, '../covers');
+const COVERS_DIR = path.resolve(process.env.COVERS_DIR || path.join(__dirname, '../covers'));
 const COVER_NAMES = [
   'cover.jpg', 'cover.jpeg', 'cover.png', 'Cover.jpg', 'Cover.png',
   'folder.jpg', 'folder.png', 'Folder.jpg', 'Folder.png',
@@ -72,7 +71,7 @@ async function setAlbumCover(albumId, url) {
 export async function extractCoversForAlbum(albumId) {
   if (!albumId) return null;
   const { rows: tracks } = await query(
-    'SELECT id, file_path FROM tracks WHERE album_id = $1 ORDER BY track_number ASC, file_path ASC',
+    'SELECT id, file_path FROM tracks WHERE album_id = $1 AND missing_since IS NULL ORDER BY track_number ASC, file_path ASC',
     [albumId]
   );
   if (tracks.length === 0) return null;
@@ -99,12 +98,14 @@ export async function extractCoversForAlbum(albumId) {
   }
 
   // 2. Scan tracks for embedded artwork
+  const readableTracks = new Set();
   const trackPictures = new Map(); // trackId -> { buffer, format, hash }
   const hashCounts = new Map();   // hash -> { count, buffer, format }
 
   for (const t of tracks) {
     try {
       const meta = await parseFile(t.file_path, { skipCovers: false });
+      readableTracks.add(t.id);
       const pic = meta.common?.picture?.[0];
       if (pic && pic.data && pic.data.length > 0) {
         const hash = crypto.createHash('md5').update(pic.data).digest('hex');
@@ -150,6 +151,7 @@ export async function extractCoversForAlbum(albumId) {
 
   // 4. Classify track-level covers:
   for (const t of tracks) {
+    if (!readableTracks.has(t.id)) continue; // Preserve cached artwork for offline/unreadable files.
     const pic = trackPictures.get(t.id);
     if (!pic) {
       // No embedded art -> inherits album cover

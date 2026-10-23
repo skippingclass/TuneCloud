@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Radio, Lock, User, ArrowRight } from 'lucide-react';
 import { api, setAuthToken } from '../api.js';
 
-export function LoginView({ onLogin }) {
+export function LoginView({ onLogin, notice }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
@@ -45,7 +45,8 @@ export function LoginView({ onLogin }) {
 
         {/* Glass form card */}
         <div className="glass-panel p-6 sm:p-7 rounded-3xl border border-white/[0.08] shadow-glass-lg space-y-5">
-          <form onSubmit={handleSubmit} className="space-y-4">
+          {notice && <p role="status" className="text-xs text-surface-300 mb-4">{notice}</p>}
+        <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-surface-400 mb-1.5">
                 Username

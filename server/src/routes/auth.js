@@ -3,11 +3,16 @@ import {
   hashPassword,
   verifyPassword,
   signToken,
-  verifyToken,
+  sessionUser,
+  bearerToken,
+  validPassword,
+  setStreamCookie,
+  clearStreamCookie,
   requireAdmin,
   encryptSubsonicSecret,
   decryptSubsonicSecret,
 } from '../auth.js';
+import { accountLoginAllowed, recordLoginFailure } from '../security.js';
 
 export default async function authRoutes(fastify) {
   fastify.post('/api/auth/register', { preHandler: requireAdmin }, async (req, reply) => {
@@ -21,8 +26,8 @@ export default async function authRoutes(fastify) {
       return reply.status(400).send({ error: 'Username must be 3-32 characters (letters, numbers, _, -, .)' });
     }
 
-    if (typeof password !== 'string' || password.length < 8) {
-      return reply.status(400).send({ error: 'Password must be at least 8 characters' });
+    if (!validPassword(password)) {
+      return reply.status(400).send({ error: 'Password must be at least 8 characters and at most 72 UTF-8 bytes' });
     }
 
     const existing = await query('SELECT id FROM users WHERE username = $1', [cleanUsername]);
@@ -55,19 +60,23 @@ export default async function authRoutes(fastify) {
         return reply.status(400).send({ error: 'username and password required' });
       }
 
+      if (!validPassword(password, 1)) return reply.status(401).send({ error: 'Invalid username or password' });
+      if (!accountLoginAllowed(username)) return reply.status(429).send({ error: 'Too many login attempts for this account' });
       const { rows } = await query('SELECT * FROM users WHERE username = $1', [username.trim()]);
       if (rows.length === 0) {
+        recordLoginFailure(username);
         return reply.status(401).send({ error: 'Invalid username or password' });
       }
 
       const user = rows[0];
       const valid = await verifyPassword(password, user.password_hash);
       if (!valid) {
+        recordLoginFailure(username);
         return reply.status(401).send({ error: 'Invalid username or password' });
       }
 
       // Backfill (or refresh after JWT_SECRET rotation) the Subsonic secret.
-      if (decryptSubsonicSecret(user.subsonic_secret) !== password) {
+      if (process.env.SUBSONIC_ENCRYPTION_KEY || decryptSubsonicSecret(user.subsonic_secret) !== password) {
         await query('UPDATE users SET subsonic_secret = $1 WHERE id = $2', [
           encryptSubsonicSecret(password),
           user.id,
@@ -75,55 +84,60 @@ export default async function authRoutes(fastify) {
       }
 
       const token = signToken(user);
+      setStreamCookie(req, reply, user);
       return { token, user: { id: user.id, username: user.username, is_admin: user.is_admin } };
     }
   );
 
   fastify.get('/api/auth/me', async (req, reply) => {
-    let token = null;
-    const header = req.headers.authorization;
-    if (header && header.startsWith('Bearer ')) {
-      token = header.slice(7);
-    } else if (req.query?.token) {
-      token = String(req.query.token);
-    } else if (req.query?.jwt) {
-      token = String(req.query.jwt);
-    }
-
-    if (!token) {
-      return { authenticated: false };
-    }
+    reply.header('Cache-Control', 'no-store');
+    const token = bearerToken(req);
+    if (!token) return { authenticated: false };
     try {
-      const payload = verifyToken(token);
-      const { rows } = await query('SELECT id, username, is_admin FROM users WHERE id = $1', [payload.id]);
-      if (rows.length === 0) return { authenticated: false };
-      return { authenticated: true, user: rows[0] };
-    } catch {
-      return { authenticated: false };
+      const user = await sessionUser(token);
+      if (!user) { clearStreamCookie(req, reply); return { authenticated: false }; }
+      setStreamCookie(req, reply, user);
+      return { authenticated: true, user: { id: user.id, username: user.username, is_admin: user.is_admin } };
+    } catch (err) {
+      if (['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(err.name) || err.message === 'Invalid session') {
+        clearStreamCookie(req, reply);
+        return { authenticated: false };
+      }
+      return reply.status(503).send({ error: 'Authentication temporarily unavailable' });
     }
   });
 
+  fastify.post('/api/auth/logout', { preHandler: async (req, reply) => {
+    // Clear even when the supplied access token is already expired.
+    clearStreamCookie(req, reply);
+    const { requireAuth } = await import('../auth.js');
+    return requireAuth(req, reply);
+  } }, async (req) => {
+    await query('UPDATE users SET auth_version = auth_version + 1 WHERE id = $1', [req.user.id]);
+    return { success: true };
+  });
+
   fastify.get('/api/auth/users', { preHandler: requireAdmin }, async (req, reply) => {
-    const { rows } = await query('SELECT id, username, is_admin, subsonic_secret, created_at FROM users ORDER BY created_at ASC');
+    reply.header('Cache-Control', 'no-store');
+    const { rows } = await query('SELECT id, username, is_admin, created_at FROM users ORDER BY created_at ASC');
     return rows.map((r) => ({
       id: r.id,
       username: r.username,
       is_admin: r.is_admin,
       created_at: r.created_at,
-      password: decryptSubsonicSecret(r.subsonic_secret),
     }));
   });
 
   fastify.put('/api/auth/users/:id/password', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params;
     const { password } = req.body || {};
-    if (!password || typeof password !== 'string' || password.length < 8) {
-      return reply.status(400).send({ error: 'Password must be at least 8 characters' });
+    if (!password || !validPassword(password)) {
+      return reply.status(400).send({ error: 'Password must be at least 8 characters and at most 72 UTF-8 bytes' });
     }
     const hash = await hashPassword(password);
     const enc = encryptSubsonicSecret(password);
     const res = await query(
-      'UPDATE users SET password_hash = $1, subsonic_secret = $2 WHERE id = $3 RETURNING id, username, is_admin',
+      'UPDATE users SET password_hash = $1, subsonic_secret = $2, auth_version = auth_version + 1 WHERE id = $3 RETURNING id, username, is_admin',
       [hash, enc, id]
     );
     if (res.rows.length === 0) return reply.status(404).send({ error: 'User not found' });
@@ -138,7 +152,7 @@ export default async function authRoutes(fastify) {
     if (req.user?.id === userId && !is_admin) {
       return reply.status(400).send({ error: 'Cannot remove admin privileges from yourself' });
     }
-    const res = await query('UPDATE users SET is_admin = $1 WHERE id = $2 RETURNING id, username, is_admin', [is_admin, userId]);
+    const res = await query('UPDATE users SET is_admin = $1, auth_version = auth_version + 1 WHERE id = $2 RETURNING id, username, is_admin', [is_admin, userId]);
     if (res.rows.length === 0) return reply.status(404).send({ error: 'User not found' });
     return { success: true, user: res.rows[0] };
   });

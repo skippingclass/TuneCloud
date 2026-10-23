@@ -1,5 +1,7 @@
-import { query } from '../db.js';
+import { query, transaction } from '../db.js';
 import { requireAuth } from '../auth.js';
+
+import { badRequest, ids, checkTracks, lockPlaylist, appendTracks } from '../services/playlists.js';
 
 export default async function playlistRoutes(fastify) {
   // GET /api/playlists — list playlists accessible by user
@@ -110,32 +112,22 @@ export default async function playlistRoutes(fastify) {
   fastify.post('/api/playlists', { preHandler: requireAuth }, async (req, reply) => {
     const { name, comment = null, is_public = false, trackIds = [] } = req.body || {};
     const trimmedName = String(name || '').trim();
-    if (!trimmedName) {
+    if (!trimmedName || trimmedName.length > 200) {
       return reply.status(400).send({ error: 'Playlist name is required' });
     }
 
-    const userId = req.user.id;
-
-    const { rows } = await query(
-      `INSERT INTO playlists (name, comment, is_public, owner_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
-       RETURNING id, name, comment, is_public, owner_id, created_at, updated_at`,
-      [trimmedName, comment ? String(comment).trim() : null, Boolean(is_public), userId]
-    );
-
-    const playlist = rows[0];
-
-    const safeTrackIds = Array.isArray(trackIds)
-      ? trackIds.map((id) => parseInt(id, 10)).filter((id) => !isNaN(id))
-      : [];
-
-    for (let i = 0; i < safeTrackIds.length; i++) {
-      await query(
-        `INSERT INTO playlist_tracks (playlist_id, track_id, track_order, created_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [playlist.id, safeTrackIds[i], i + 1]
-      );
+    if (trimmedName.length > 200 || (comment != null && (typeof comment !== 'string' || comment.length > 5000)) || typeof is_public !== 'boolean') {
+      throw badRequest('Invalid playlist metadata');
     }
+    const safeTrackIds = ids(trackIds);
+    const playlist = await transaction(async client => {
+      await checkTracks(client, safeTrackIds);
+      const { rows } = await client.query(
+        `INSERT INTO playlists (name, comment, is_public, owner_id) VALUES ($1, $2, $3, $4) RETURNING *`,
+        [trimmedName, comment?.trim() || null, is_public, req.user.id]);
+      await appendTracks(client, rows[0].id, safeTrackIds);
+      return rows[0];
+    });
 
     return reply.status(201).send({
       ...playlist,
@@ -170,7 +162,7 @@ export default async function playlistRoutes(fastify) {
 
     if (name !== undefined) {
       const trimmedName = String(name || '').trim();
-      if (!trimmedName) {
+      if (!trimmedName || trimmedName.length > 200) {
         return reply.status(400).send({ error: 'Playlist name cannot be empty' });
       }
       params.push(trimmedName);
@@ -178,12 +170,14 @@ export default async function playlistRoutes(fastify) {
     }
 
     if (comment !== undefined) {
+      if (comment !== null && (typeof comment !== 'string' || comment.length > 5000)) throw badRequest('Invalid playlist comment');
       params.push(comment ? String(comment).trim() : null);
       updates.push(`comment = $${params.length}`);
     }
 
     if (is_public !== undefined) {
-      params.push(Boolean(is_public));
+      if (typeof is_public !== 'boolean') throw badRequest('is_public must be boolean');
+      params.push(is_public);
       updates.push(`is_public = $${params.length}`);
     }
 
@@ -226,46 +220,14 @@ export default async function playlistRoutes(fastify) {
       return reply.status(400).send({ error: 'Invalid playlist ID' });
     }
 
-    const userId = req.user.id;
-    const isAdmin = Boolean(req.user.is_admin);
-
-    const check = await query(
-      'SELECT id FROM playlists WHERE id = $1 AND (owner_id = $2 OR $3 = true)',
-      [playlistId, userId, isAdmin]
-    );
-    if (check.rows.length === 0) {
-      return reply.status(403).send({ error: 'Not permitted or playlist not found' });
-    }
-
     const { trackId, trackIds } = req.body || {};
-    let toAdd = [];
-    if (Array.isArray(trackIds)) {
-      toAdd = trackIds.map((id) => parseInt(id, 10)).filter((id) => !isNaN(id));
-    } else if (trackId != null) {
-      const parsed = parseInt(trackId, 10);
-      if (!isNaN(parsed)) toAdd = [parsed];
-    }
-
-    if (toAdd.length === 0) {
-      return reply.status(400).send({ error: 'No valid track ID provided' });
-    }
-
-    const { rows: maxRows } = await query(
-      'SELECT COALESCE(MAX(track_order), 0)::int AS max_order FROM playlist_tracks WHERE playlist_id = $1',
-      [playlistId]
-    );
-    let order = maxRows[0].max_order;
-
-    for (const tId of toAdd) {
-      order += 1;
-      await query(
-        `INSERT INTO playlist_tracks (playlist_id, track_id, track_order, created_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [playlistId, tId, order]
-      );
-    }
-
-    await query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    const toAdd = ids(trackIds ?? (trackId != null ? [trackId] : []));
+    if (!toAdd.length) throw badRequest('No track IDs provided');
+    await transaction(async client => {
+      await lockPlaylist(client, playlistId, req.user);
+      await appendTracks(client, playlistId, toAdd);
+      await client.query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    });
 
     return { success: true, added: toAdd.length };
   });
@@ -278,27 +240,12 @@ export default async function playlistRoutes(fastify) {
       return reply.status(400).send({ error: 'Invalid parameters' });
     }
 
-    const userId = req.user.id;
-    const isAdmin = Boolean(req.user.is_admin);
-
-    const check = await query(
-      'SELECT id FROM playlists WHERE id = $1 AND (owner_id = $2 OR $3 = true)',
-      [playlistId, userId, isAdmin]
-    );
-    if (check.rows.length === 0) {
-      return reply.status(403).send({ error: 'Not permitted or playlist not found' });
-    }
-
-    const res = await query(
-      'DELETE FROM playlist_tracks WHERE id = $1 AND playlist_id = $2',
-      [playlistTrackId, playlistId]
-    );
-
-    if (res.rowCount === 0) {
-      return reply.status(404).send({ error: 'Track entry not found in playlist' });
-    }
-
-    await query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    await transaction(async client => {
+      await lockPlaylist(client, playlistId, req.user);
+      const res = await client.query('DELETE FROM playlist_tracks WHERE id = $1 AND playlist_id = $2', [playlistTrackId, playlistId]);
+      if (!res.rowCount) throw badRequest('Track entry not found', 404);
+      await client.query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    });
 
     return { success: true };
   });
@@ -310,33 +257,18 @@ export default async function playlistRoutes(fastify) {
       return reply.status(400).send({ error: 'Invalid playlist ID' });
     }
 
-    const userId = req.user.id;
-    const isAdmin = Boolean(req.user.is_admin);
-
-    const check = await query(
-      'SELECT id FROM playlists WHERE id = $1 AND (owner_id = $2 OR $3 = true)',
-      [playlistId, userId, isAdmin]
-    );
-    if (check.rows.length === 0) {
-      return reply.status(403).send({ error: 'Not permitted or playlist not found' });
-    }
-
-    const { playlistTrackIds } = req.body || {};
-    if (!Array.isArray(playlistTrackIds) || playlistTrackIds.length === 0) {
-      return reply.status(400).send({ error: 'playlistTrackIds array is required' });
-    }
-
-    for (let i = 0; i < playlistTrackIds.length; i++) {
-      const ptId = parseInt(playlistTrackIds[i], 10);
-      if (!isNaN(ptId)) {
-        await query(
-          'UPDATE playlist_tracks SET track_order = $1 WHERE id = $2 AND playlist_id = $3',
-          [i + 1, ptId, playlistId]
-        );
-      }
-    }
-
-    await query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    const playlistTrackIds = ids(req.body?.playlistTrackIds);
+    await transaction(async client => {
+      await lockPlaylist(client, playlistId, req.user);
+      const { rows } = await client.query('SELECT id FROM playlist_tracks WHERE playlist_id = $1', [playlistId]);
+      const existing = new Set(rows.map(r => r.id));
+      if (new Set(playlistTrackIds).size !== playlistTrackIds.length || playlistTrackIds.length !== existing.size ||
+          playlistTrackIds.some(id => !existing.has(id))) throw badRequest('Reorder must contain every playlist entry exactly once');
+      await client.query(`UPDATE playlist_tracks pt SET track_order = entries.position::int
+        FROM unnest($2::int[]) WITH ORDINALITY AS entries(id, position)
+        WHERE pt.playlist_id = $1 AND pt.id = entries.id`, [playlistId, playlistTrackIds]);
+      await client.query('UPDATE playlists SET updated_at = NOW() WHERE id = $1', [playlistId]);
+    });
 
     return { success: true };
   });

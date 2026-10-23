@@ -23,6 +23,14 @@ export default async function browseRoutes(fastify) {
       }
     }
 
+    // Resolve symlinks too; a lexical path check alone cannot contain the walk.
+    try {
+      const root = await fs.promises.realpath(resolvedMusicDir);
+      const physical = await fs.promises.realpath(targetDir);
+      const rel = path.relative(root, physical);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return reply.status(403).send({ error: 'Access denied' });
+    } catch { return reply.status(404).send({ error: 'Directory not found' }); }
+
     let entries;
     try {
       entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
@@ -83,12 +91,12 @@ export default async function browseRoutes(fastify) {
        ORDER BY al.title, t.disc_number, COALESCE(t.track_number, 999), t.file_name`
     );
 
-    const albums = {};
+    const albums = Object.create(null);
     for (const track of rows) {
-      const albumKey = track.album || 'Unknown';
+      const albumKey = String(track.album_id ?? 'unknown');
       if (!albums[albumKey]) {
         albums[albumKey] = {
-          title: albumKey,
+          title: track.album || 'Unknown',
           artist: track.artist,
           tracks: [],
         };

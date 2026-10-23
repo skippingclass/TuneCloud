@@ -2,7 +2,6 @@ import { query } from '../db.js';
 import { requireAuth } from '../auth.js';
 import fs from 'fs';
 import path from 'path';
-import jwt from 'jsonwebtoken';
 import {
   cleanTrackTitle,
   readLocalLyrics,
@@ -12,9 +11,9 @@ import {
 
 export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks', { preHandler: requireAuth }, async (req, reply) => {
-    const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id, genre } = req.query;
+    const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id, genre, q } = req.query;
 
-    const maxLimit = 10000;
+    const maxLimit = 200;
     const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 50), maxLimit);
     const safeOffset = Math.max(0, parseInt(offset, 10) || 0);
 
@@ -30,9 +29,12 @@ export default async function trackRoutes(fastify) {
       last_played_at: `t.last_played_at ${dir} NULLS LAST`,
       random: `RANDOM()`,
     };
-    const orderClause = sortMap[sort] || 't.title ASC';
+    const orderClause = `${sortMap[sort] || 't.title ASC'}, t.id ASC`;
 
     const conditions = [];
+    if (typeof q === 'string' && q.trim()) {
+      if (q.length > 500) return reply.status(400).send({ error: 'Search query too long' });
+    }
     const params = [];
 
     if (artist_id) {
@@ -51,6 +53,12 @@ export default async function trackRoutes(fastify) {
     if (genre) {
       params.push(`%${genre}%`);
       conditions.push(`t.genre ILIKE $${params.length}`);
+    }
+
+    if (typeof q === 'string' && q.trim()) {
+      params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      const n = params.length;
+      conditions.push(`(t.title ILIKE $${n} OR COALESCE(t.track_artist_credit, a.name) ILIKE $${n} OR al.title ILIKE $${n})`);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -77,8 +85,9 @@ export default async function trackRoutes(fastify) {
     const countResult = await query(
       `SELECT COUNT(*) FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
+       LEFT JOIN albums al ON t.album_id = al.id
        ${whereClause}`,
-      params.slice(0, conditions.length)
+      params.slice(0, -2)
     );
     const total = parseInt(countResult.rows[0].count, 10);
 

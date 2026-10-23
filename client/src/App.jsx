@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api, setAuthToken, getAuthToken } from './api.js';
+import { api, setAuthToken, getAuthToken, onAuthExpired } from './api.js';
 import { ThemeProvider } from './context/ThemeContext.jsx';
 import { FavoritesProvider } from './context/FavoritesContext.jsx';
 import { PlayerProvider, usePlayer } from './context/PlayerContext.jsx';
@@ -333,28 +333,74 @@ function MainLayout({ user, onLogout }) {
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState(() => !!getAuthToken());
+  const [authError, setAuthError] = useState(null);
+  const [sessionNotice, setSessionNotice] = useState(null);
 
-  useEffect(() => {
-    if (getAuthToken()) {
-      api
-        .me()
-        .then((data) => {
-          if (data.authenticated) setUser(data.user);
-          else setAuthToken(null);
-        })
-        .catch(() => setAuthToken(null))
-        .finally(() => setAuthLoading(false));
-    } else {
+  const verifyAuth = useCallback(async () => {
+    if (!getAuthToken()) {
+      setUser(null);
+      setAuthError(null);
+      setAuthLoading(false);
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const data = await api.me();
+      if (data && data.authenticated && data.user) {
+        setUser(data.user);
+        setAuthError(null);
+      } else {
+        setAuthToken(null);
+        setUser(null);
+        setAuthError(null);
+      }
+    } catch (err) {
+      if (err?.status === 401) {
+        setAuthToken(null);
+        setUser(null);
+        setAuthError(null);
+      } else {
+        setAuthError(err?.message || 'Unable to connect to TuneCloud server');
+      }
+    } finally {
       setAuthLoading(false);
     }
   }, []);
 
-  const handleLogin = (userData) => setUser(userData);
-  const handleLogout = () => {
-    setUser(null);
-    setAuthToken(null);
+  useEffect(() => {
+    verifyAuth();
+  }, [verifyAuth]);
+
+  useEffect(() => {
+    return onAuthExpired(() => {
+      setSessionNotice('Your session expired. Please sign in again.');
+      setAuthToken(null);
+      setUser(null);
+      setAuthError(null);
+    });
+  }, []);
+
+  const handleLogin = (userData) => {
+    setSessionNotice(null);
+    setAuthError(null);
+    setUser(userData);
   };
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await api.logout();
+      setSessionNotice(null);
+    } catch {
+      setSessionNotice('Signed out on this device. Server sign-out could not be confirmed.');
+    } finally {
+      setAuthToken(null);
+      setUser(null);
+      setAuthError(null);
+    }
+  }, []);
 
   if (authLoading) {
     return (
@@ -367,10 +413,30 @@ export default function App() {
     );
   }
 
+  if (authError && !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 bg-surface-950">
+        <div className="glass-panel max-w-sm w-full p-6 sm:p-7 rounded-3xl border border-white/[0.08] text-center space-y-4">
+          <p className="text-sm font-semibold text-white">Unable to reach server</p>
+          <p className="text-xs text-surface-400">{authError}</p>
+          <div className="flex items-center justify-center gap-3 pt-1">
+            <button
+              type="button"
+              onClick={verifyAuth}
+              className="btn-primary px-5 py-2 text-xs"
+            >
+              <span>Retry</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return (
       <ThemeProvider>
-        <LoginView onLogin={handleLogin} />
+        <LoginView onLogin={handleLogin} notice={sessionNotice} />
       </ThemeProvider>
     );
   }

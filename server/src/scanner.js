@@ -1,15 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { glob } from 'glob';
-import pkg from 'music-metadata';
-const { parseFile } = pkg;
+import { parseFile } from 'music-metadata';
 import { query, getClient } from './db.js';
-import { extractAllMissingCovers, deleteTrackCover } from './cover.js';
+import { extractAllMissingCovers } from './cover.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
 const BATCH_SIZE = 300;
 const PARSE_CONCURRENCY = 12;
-const DELETE_CHUNK = 500;
 const PG_INT_MAX = 2147483647;
 
 function isAudioFile(filePath) {
@@ -313,6 +311,7 @@ async function flushTrackBatch(client, items) {
        sample_rate = EXCLUDED.sample_rate,
        format = EXCLUDED.format,
        mtime = EXCLUDED.mtime,
+       missing_since = NULL,
        track_artist_credit = EXCLUDED.track_artist_credit,
        updated_at = NOW()`,
     cols
@@ -412,23 +411,23 @@ async function parseTrackFile({ path: filePath, size, mtime }) {
 
 /** Lists audio files with size/mtime in a single directory walk (stat follows symlinks). */
 async function listAudioFiles(musicDir) {
+  const physicalRoot = await fs.realpath(musicDir);
   const pattern = path.join(musicDir, '**/*').replace(/\\/g, '/');
   const entries = await glob(pattern, { withFileTypes: true, stat: true, nodir: true, nocase: true });
 
-  const files = [];
-  for (const e of entries) {
-    if (!isAudioFile(e.name)) continue;
-    let { size, mtime } = e;
-    if (e.isSymbolicLink() || !mtime) {
-      try {
-        ({ size, mtime } = await fs.stat(e.fullpath()));
-      } catch {
-        continue; // dangling symlink
-      }
-    }
-    files.push({ path: e.fullpath(), size, mtime });
-  }
-  return files;
+  const candidates = entries.filter(e => isAudioFile(e.name) && (e.isFile() || e.isSymbolicLink()));
+  const files = await mapLimit(candidates, PARSE_CONCURRENCY, async e => {
+    try {
+      // Parents may themselves be symlinks even when the entry is a regular file.
+      const physical = await fs.realpath(e.fullpath());
+      const rel = path.relative(physicalRoot, physical);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      const stat = await fs.stat(physical);
+      if (!stat.isFile()) return null;
+      return { path: e.fullpath(), size: stat.size, mtime: stat.mtime };
+    } catch { return null; }
+  });
+  return files.filter(Boolean);
 }
 
 async function removeOrphans(client) {
@@ -448,6 +447,9 @@ async function removeOrphans(client) {
  */
 export async function scanDirectory(musicDir, { full = false, reextractCovers = false, onProgress = null } = {}) {
   const root = path.resolve(musicDir);
+  const rootStat = await fs.stat(root);
+  if (!rootStat.isDirectory()) throw new Error('Music directory is unavailable');
+  await fs.access(root);
   const startedAt = Date.now();
 
   onProgress?.({ phase: 'listing', total: 0, processed: 0 });
@@ -457,7 +459,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const prefix = root.endsWith(path.sep) ? root : root + path.sep;
   const { rows: known } = await query(
-    'SELECT id, file_path, album_id, mtime FROM tracks WHERE starts_with(file_path, $1)',
+    'SELECT id, file_path, album_id, mtime, missing_since FROM tracks WHERE starts_with(file_path, $1)',
     [prefix]
   );
   const knownByPath = new Map(known.map((r) => [r.file_path, r]));
@@ -469,7 +471,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   for (const f of files) {
     onDisk.add(f.path);
     const k = knownByPath.get(f.path);
-    if (full || !k || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null) {
+    if (full || !k || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
     }
@@ -487,9 +489,6 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const staleRows = known.filter((r) => !onDisk.has(r.file_path));
   const staleIds = staleRows.map((r) => r.id);
-  for (const r of staleRows) {
-    if (r.album_id) touchedAlbumIds.add(r.album_id);
-  }
 
   let processed = 0;
   let removed = 0;
@@ -511,13 +510,15 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
     onProgress?.({ phase: 'cleaning', total: files.length, processed, unchanged });
 
-    for (let i = 0; i < staleIds.length; i += DELETE_CHUNK) {
-      const chunk = staleIds.slice(i, i + DELETE_CHUNK);
-      const res = await client.query('DELETE FROM tracks WHERE id = ANY($1::int[])', [chunk]);
-      removed += res.rowCount;
-      for (const id of chunk) deleteTrackCover(id).catch(() => {});
+    // A disappearing mount is indistinguishable from deletion during one walk.
+    // Retain track IDs and dependent favorites/playlists/history indefinitely.
+    if (staleIds.length) {
+      await client.query('UPDATE tracks SET missing_since = COALESCE(missing_since, NOW()) WHERE id = ANY($1::int[])', [staleIds]);
+      console.warn(`Marked ${staleIds.length} missing tracks; no user data deleted`);
     }
-    if (removed > 0) console.log(`Removed ${removed} stale track(s) from DB`);
+    if (files.length) {
+      await client.query('UPDATE tracks SET missing_since = NULL WHERE file_path = ANY($1::text[]) AND missing_since IS NOT NULL', [files.map(f => f.path)]);
+    }
 
     // Clean up empty albums/artists
     await removeOrphans(client);
@@ -561,7 +562,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
   console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
-  const finalResult = { total: files.length, processed, unchanged, removed, covers: coversExtracted, durationSeconds };
+  const finalResult = { total: files.length, processed, unchanged, removed, missing: staleIds.length, covers: coversExtracted, durationSeconds };
   onProgress?.({ phase: 'complete', ...finalResult });
   return finalResult;
 }

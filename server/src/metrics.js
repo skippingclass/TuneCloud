@@ -62,6 +62,7 @@ export function setupCustomMetrics(fastify) {
   refreshLibraryStats();
   const timer = setInterval(refreshLibraryStats, LIBRARY_REFRESH_MS);
   timer.unref?.();
+  fastify.addHook('onClose', async () => clearInterval(timer));
 }
 
 export async function refreshLibraryStats() {

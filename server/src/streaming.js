@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'node:path';
 import { streamOpened, streamClosed } from './metrics.js';
 
 export const MIME_TYPES = {
@@ -73,8 +74,18 @@ export function parseRange(header, size) {
 /**
  * Streams an audio file with HTTP Range support. Assumes the file exists.
  */
-export function sendAudioFile(req, reply, filePath, format) {
-  const fileSize = fs.statSync(filePath).size;
+export async function sendAudioFile(req, reply, filePath, format) {
+  let stat;
+  try {
+    const physical = await fs.promises.realpath(filePath);
+    const root = await fs.promises.realpath(process.env.MUSIC_DIR);
+    const rel = path.relative(root, physical);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return reply.status(403).send({ error: 'File outside music library' });
+    stat = await fs.promises.stat(physical);
+    if (!stat.isFile()) return reply.status(404).send({ error: 'Audio file not found' });
+    filePath = physical;
+  } catch { return reply.status(404).send({ error: 'Audio file not found' }); }
+  const fileSize = stat.size;
   const contentType = contentTypeFor(format);
   const range = parseRange(req.headers.range, fileSize);
 
@@ -93,6 +104,7 @@ export function sendAudioFile(req, reply, filePath, format) {
       'Accept-Ranges': 'bytes',
       'Content-Length': end - start + 1,
       'Content-Type': contentType,
+      'Cache-Control': 'private, no-store',
     });
     pipeWithTracking(fs.createReadStream(filePath, { start, end }), reply.raw);
     return;
@@ -101,6 +113,7 @@ export function sendAudioFile(req, reply, filePath, format) {
   reply.raw.writeHead(200, {
     'Content-Length': fileSize,
     'Content-Type': contentType,
+    'Cache-Control': 'private, no-store',
     'Accept-Ranges': 'bytes',
   });
   pipeWithTracking(fs.createReadStream(filePath), reply.raw);
