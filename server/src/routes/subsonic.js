@@ -128,25 +128,47 @@ function parseLrc(content) {
   return { synced: hasTime, lines: result };
 }
 
-async function loadTrackLyrics(filePath) {
-  if (!filePath) return null;
+function getSafeLyricsCandidate(filePath, ext) {
+  if (!filePath || typeof filePath !== 'string') return null;
   const dir = path.dirname(filePath);
   const base = path.basename(filePath, path.extname(filePath));
-  const lrcPath = path.join(dir, `${base}.lrc`);
-  const txtPath = path.join(dir, `${base}.txt`);
-
+  const candidatePath = path.join(dir, `${base}${ext}`);
   try {
-    if (fs.existsSync(lrcPath)) {
-      const content = await fs.promises.readFile(lrcPath, 'utf8');
-      return parseLrc(content);
+    if (!fs.existsSync(candidatePath)) return null;
+    const realCandidate = fs.realpathSync(candidatePath);
+    if (process.env.MUSIC_DIR) {
+      const realMusicDir = fs.realpathSync(process.env.MUSIC_DIR);
+      const rel = path.relative(realMusicDir, realCandidate);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    } else {
+      const realTrackDir = fs.realpathSync(dir);
+      const rel = path.relative(realTrackDir, realCandidate);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
     }
-    if (fs.existsSync(txtPath)) {
-      const content = await fs.promises.readFile(txtPath, 'utf8');
+    const stat = fs.statSync(realCandidate);
+    if (!stat.isFile() || stat.size > 128 * 1024) return null;
+    return realCandidate;
+  } catch {
+    return null;
+  }
+}
+
+async function loadTrackLyrics(filePath) {
+  if (!filePath) return null;
+  const safeLrc = getSafeLyricsCandidate(filePath, '.lrc');
+  if (safeLrc) {
+    try {
+      const content = await fs.promises.readFile(safeLrc, 'utf8');
+      return parseLrc(content);
+    } catch {}
+  }
+  const safeTxt = getSafeLyricsCandidate(filePath, '.txt');
+  if (safeTxt) {
+    try {
+      const content = await fs.promises.readFile(safeTxt, 'utf8');
       const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((v) => ({ value: v }));
       return { synced: false, lines };
-    }
-  } catch {
-    // Ignore error
+    } catch {}
   }
   return null;
 }
@@ -281,19 +303,68 @@ async function resolveCoverPath(rawId) {
   return null;
 }
 
+export function parseSubsonicFormData(body) {
+  if (typeof body !== 'string' || !body) return {};
+  const params = {};
+  const searchParams = new URLSearchParams(body);
+  for (const [key, value] of searchParams.entries()) {
+    if (Object.prototype.hasOwnProperty.call(params, key)) {
+      if (Array.isArray(params[key])) {
+        params[key].push(value);
+      } else {
+        params[key] = [params[key], value];
+      }
+    } else {
+      params[key] = value;
+    }
+  }
+  return params;
+}
+
+export function mergeSubsonicParams(query, body) {
+  const q = query && typeof query === 'object' ? query : {};
+  const b = body && typeof body === 'object' ? body : {};
+  const keys = new Set([...Object.keys(q), ...Object.keys(b)]);
+  const merged = {};
+  for (const key of keys) {
+    const hasQ = Object.prototype.hasOwnProperty.call(q, key);
+    const hasB = Object.prototype.hasOwnProperty.call(b, key);
+    if (hasQ && !hasB) {
+      merged[key] = q[key];
+    } else if (!hasQ && hasB) {
+      merged[key] = b[key];
+    } else {
+      const qVal = q[key];
+      const bVal = b[key];
+      if (qVal === bVal) {
+        merged[key] = bVal;
+      } else {
+        const qArr = Array.isArray(qVal) ? qVal : [qVal];
+        const bArr = Array.isArray(bVal) ? bVal : [bVal];
+        if (['songId', 'songIdToAdd', 'songIndexToRemove', 'id', 'albumId', 'artistId'].includes(key)) {
+          merged[key] = [...qArr, ...bArr];
+        } else {
+          merged[key] = bVal;
+        }
+      }
+    }
+  }
+  return merged;
+}
+
 export default async function subsonicRoutes(fastify) {
   if (!fastify.hasContentTypeParser('application/x-www-form-urlencoded')) {
     fastify.addContentTypeParser(
       'application/x-www-form-urlencoded',
       { parseAs: 'string' },
-      (req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body)))
+      (req, body, done) => done(null, parseSubsonicFormData(body))
     );
   }
 
   function endpoint(name, handler) {
     const run = async (req, reply) => {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const params = { ...body, ...req.query };
+      const params = mergeSubsonicParams(req.query, body);
       try {
         const auth = await authenticate(params);
         if (auth.error) return sendError(reply, req, auth.error.code, auth.error.message);
@@ -325,7 +396,6 @@ export default async function subsonicRoutes(fastify) {
       openSubsonicExtensions: [
         { name: 'formPost', versions: [1] },
         { name: 'songLyrics', versions: [1] },
-        { name: 'transcodeOffset', versions: [1] },
         { name: 'playQueue', versions: [1] },
         { name: 'topSongsByArtistId', versions: [1] },
         { name: 'playlistUpload', versions: [1] },
@@ -750,7 +820,7 @@ export default async function subsonicRoutes(fastify) {
 
     const sql = `
       ${songSelectSql(req.subsonicUser.id)}
-      WHERE (t.genre ILIKE $1 OR al.genre ILIKE $1)
+      WHERE (t.genre ILIKE $1 OR al.genre ILIKE $1) AND t.missing_since IS NULL
       ORDER BY a.name ASC NULLS LAST, al.title ASC NULLS LAST, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC
       LIMIT $2 OFFSET $3
     `;
@@ -1080,14 +1150,21 @@ export default async function subsonicRoutes(fastify) {
 
     const submission = params.submission !== 'false' && params.submission !== false;
     if (submission) {
-      await query(
-        'UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1',
-        [id]
-      );
-      await query(
-        'INSERT INTO play_history (user_id, track_id, played_at) VALUES ($1, $2, NOW())',
-        [req.subsonicUser.id, id]
-      );
+      await transaction(async (client) => {
+        const res = await client.query(
+          'UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1 RETURNING id',
+          [id]
+        );
+        if (res.rowCount === 0) {
+          const err = new Error('Song not found');
+          err.statusCode = 404;
+          throw err;
+        }
+        await client.query(
+          'INSERT INTO play_history (user_id, track_id, played_at) VALUES ($1, $2, NOW())',
+          [req.subsonicUser.id, id]
+        );
+      });
     }
 
     return sendOk(reply, req);
@@ -1131,8 +1208,8 @@ export default async function subsonicRoutes(fastify) {
     const id = requireId(reply, req, params, 'Song');
     if (id === null) return;
 
-    const { rows } = await query('SELECT file_path, format FROM tracks WHERE id = $1', [id]);
-    if (!rows[0] || !fs.existsSync(rows[0].file_path)) {
+    const { rows } = await query('SELECT file_path, format, missing_since FROM tracks WHERE id = $1', [id]);
+    if (!rows[0] || rows[0].missing_since || !fs.existsSync(rows[0].file_path)) {
       return reply.status(404).send('Not found');
     }
     return sendAudioFile(req, reply, rows[0].file_path, rows[0].format);
@@ -1282,7 +1359,7 @@ export default async function subsonicRoutes(fastify) {
     const fromYear = params.fromYear != null && params.fromYear !== '' ? parseInt(params.fromYear, 10) : null;
     const toYear = params.toYear != null && params.toYear !== '' ? parseInt(params.toYear, 10) : null;
 
-    const conds = [];
+    const conds = ['t.missing_since IS NULL'];
     const values = [size];
     let idx = 2;
 
@@ -1331,10 +1408,10 @@ export default async function subsonicRoutes(fastify) {
     const values = [count];
 
     if (Number.isFinite(artistId)) {
-      whereClause = 'WHERE t.artist_id = $2';
+      whereClause = 'WHERE t.artist_id = $2 AND t.missing_since IS NULL';
       values.push(artistId);
     } else {
-      whereClause = 'WHERE LOWER(a.name) = LOWER($2)';
+      whereClause = 'WHERE LOWER(a.name) = LOWER($2) AND t.missing_since IS NULL';
       values.push(artistName);
     }
 
@@ -1369,7 +1446,7 @@ export default async function subsonicRoutes(fastify) {
       if (aRows[0]) targetArtistId = aRows[0].id;
     }
 
-    const conds = [`t.id != ${id}`];
+    const conds = [`t.id != ${id}`, 't.missing_since IS NULL'];
     if (targetGenre) {
       conds.push(`(LOWER(t.genre) = LOWER('${targetGenre.replace(/'/g, "''")}') OR t.artist_id = ${targetArtistId || 0})`);
     } else if (targetArtistId) {

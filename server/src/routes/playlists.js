@@ -82,6 +82,7 @@ export default async function playlistRoutes(fastify) {
       `SELECT pt.id AS playlist_track_id, pt.track_order,
               t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              (t.missing_since IS NULL) AS available,
               COALESCE(t.track_artist_credit, a.name) AS artist,
               a.name AS primary_artist,
               a.id AS artist_id,

@@ -4,6 +4,7 @@ import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus, FolderPl
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { ArtistLinks } from '../common/ArtistLinks.jsx';
+import { toast } from '../layout/Toast.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -38,7 +39,8 @@ export function TrackRow({
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
   const { addToQueue } = usePlayer();
   const starred = isTrackStarred(track.id);
-  const canPlay = track.id != null;
+  const isAvailable = track.available !== false;
+  const canPlay = track.id != null && isAvailable;
   const isAdmin = user?.is_admin;
   const canEditTags = track.format?.toLowerCase() === 'mp3';
 
@@ -77,6 +79,8 @@ export function TrackRow({
   return (
     <tr
       className={`group transition-all duration-150 select-none ${
+        !isAvailable ? 'opacity-50 text-surface-400' : ''
+      } ${
         canPlay ? 'hover:bg-white/[0.04] cursor-pointer' : ''
       } ${
         isPlaying
@@ -85,7 +89,10 @@ export function TrackRow({
       }`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onDoubleClick={() => canPlay && onPlay?.(track)}
+      onDoubleClick={() => {
+        if (canPlay) onPlay?.(track);
+        else toast('This track is unavailable: file was not found on disk', 'warning');
+      }}
     >
       {/* Track number / Play button */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm w-12 text-center relative">
@@ -132,9 +139,17 @@ export function TrackRow({
 
       {/* Title */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm truncate max-w-xs font-medium">
-        <span className={isPlaying ? 'text-accent font-semibold' : 'text-surface-100'}>
+        <span className={isPlaying ? 'text-accent font-semibold' : (isAvailable ? 'text-surface-100' : 'text-surface-400')}>
           {track.title || track.file_name}
         </span>
+        {!isAvailable && (
+          <span
+            className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30"
+            title="File is missing or unavailable on disk"
+          >
+            Unavailable
+          </span>
+        )}
         {(track.artist || albumArtist) && (showArtist || isDifferentArtist) && (
           <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
             <ArtistLinks
@@ -224,17 +239,19 @@ export function TrackRow({
             className="fixed glass-panel rounded-2xl py-1.5 min-w-[190px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
             style={{ top: menuPos.top, right: menuPos.right }}
           >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen(false);
-                addToQueue(track);
-              }}
-              className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white transition-colors"
-            >
-              <ListPlus className="w-3.5 h-3.5 text-accent" />
-              <span>Add to Queue</span>
-            </button>
+            {canPlay && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  addToQueue(track);
+                }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white transition-colors"
+              >
+                <ListPlus className="w-3.5 h-3.5 text-accent" />
+                <span>Add to Queue</span>
+              </button>
+            )}
 
             {onAddToPlaylist && (
               <button

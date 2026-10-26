@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api, setAuthToken, getAuthToken, onAuthExpired } from './api.js';
 import { ThemeProvider } from './context/ThemeContext.jsx';
 import { FavoritesProvider } from './context/FavoritesContext.jsx';
@@ -29,17 +29,133 @@ import { AdminView } from './views/AdminView.jsx';
 import { LoginView } from './views/LoginView.jsx';
 import { AddToPlaylistModal } from './components/modals/AddToPlaylistModal.jsx';
 
-function MainLayout({ user, onLogout }) {
-  const [view, setView] = useState('home');
-  const [history, setHistory] = useState([{ view: 'home', param: null }]);
-  const [historyIndex, setHistoryIndex] = useState(0);
+export function buildUrl(view, param = null) {
+  switch (view) {
+    case 'home':
+      return '/';
+    case 'albums':
+      return '/albums';
+    case 'album': {
+      const idOrTitle = param?.id != null ? param.id : (param?.title ? encodeURIComponent(param.title) : '');
+      return idOrTitle ? `/album/${idOrTitle}` : '/albums';
+    }
+    case 'artists':
+      return '/artists';
+    case 'artist': {
+      const idOrName = param?.id != null ? param.id : (param?.name ? encodeURIComponent(param.name) : '');
+      return idOrName ? `/artist/${idOrName}` : '/artists';
+    }
+    case 'tracks':
+      return '/tracks';
+    case 'playlists':
+      return '/playlists';
+    case 'playlist': {
+      const plId = param?.id != null ? param.id : '';
+      return plId ? `/playlist/${plId}` : '/playlists';
+    }
+    case 'favorites':
+      return '/favorites';
+    case 'browse': {
+      const p = typeof param === 'string' && param.trim() ? param.trim() : '';
+      return p ? `/browse/${p.split('/').map(encodeURIComponent).join('/')}` : '/browse';
+    }
+    case 'search': {
+      const q = typeof param === 'string' && param.trim() ? param.trim() : '';
+      return q ? `/search?q=${encodeURIComponent(q)}` : '/search';
+    }
+    case 'settings':
+      return '/settings';
+    case 'admin':
+      return '/admin';
+    default:
+      return '/';
+  }
+}
 
-  const [selectedAlbum, setSelectedAlbum] = useState(null);
-  const [selectedArtist, setSelectedArtist] = useState(null);
-  const [selectedPlaylist, setSelectedPlaylist] = useState(null);
+export function parseLocation(pathname, search) {
+  const rawPath = pathname !== undefined
+    ? pathname
+    : (typeof window !== 'undefined' && window.location ? window.location.pathname : '/');
+  const rawSearch = search !== undefined
+    ? search
+    : (typeof window !== 'undefined' && window.location ? window.location.search : '');
+  const cleanPath = (rawPath || '/').replace(/\/+$/, '') || '/';
+  const searchParams = new URLSearchParams(rawSearch || '');
+
+  if (cleanPath === '/' || cleanPath === '') {
+    return { view: 'home', param: null };
+  }
+  if (cleanPath === '/albums') {
+    return { view: 'albums', param: null };
+  }
+  const albumMatch = cleanPath.match(/^\/(?:album|albums)\/([^/]+)$/);
+  if (albumMatch) {
+    const raw = decodeURIComponent(albumMatch[1]);
+    const num = parseInt(raw, 10);
+    return { view: 'album', param: !isNaN(num) && String(num) === raw ? { id: num } : { title: raw } };
+  }
+
+  if (cleanPath === '/artists') {
+    return { view: 'artists', param: null };
+  }
+  const artistMatch = cleanPath.match(/^\/(?:artist|artists)\/([^/]+)$/);
+  if (artistMatch) {
+    const raw = decodeURIComponent(artistMatch[1]);
+    const num = parseInt(raw, 10);
+    return { view: 'artist', param: !isNaN(num) && String(num) === raw ? { id: num, name: raw } : { name: raw } };
+  }
+
+  if (cleanPath === '/tracks') {
+    return { view: 'tracks', param: null };
+  }
+
+  if (cleanPath === '/playlists') {
+    return { view: 'playlists', param: null };
+  }
+  const playlistMatch = cleanPath.match(/^\/(?:playlist|playlists)\/([^/]+)$/);
+  if (playlistMatch) {
+    const raw = decodeURIComponent(playlistMatch[1]);
+    const num = parseInt(raw, 10);
+    return { view: 'playlist', param: !isNaN(num) ? { id: num } : null };
+  }
+
+  if (cleanPath === '/favorites') {
+    return { view: 'favorites', param: null };
+  }
+
+  if (cleanPath === '/browse' || cleanPath.startsWith('/browse/')) {
+    const sub = cleanPath.slice('/browse'.length).replace(/^\/+/, '');
+    const browsePath = sub ? sub.split('/').map(decodeURIComponent).join('/') : '';
+    return { view: 'browse', param: browsePath };
+  }
+
+  if (cleanPath === '/search') {
+    const q = searchParams.get('q') || '';
+    return { view: 'search', param: q };
+  }
+
+  if (cleanPath === '/settings') {
+    return { view: 'settings', param: null };
+  }
+
+  if (cleanPath === '/admin') {
+    return { view: 'admin', param: null };
+  }
+
+  return { view: 'home', param: null };
+}
+
+function MainLayout({ user, onLogout }) {
+  const [route, setRoute] = useState(() => parseLocation());
+  const [historyDepth, setHistoryDepth] = useState(() => (typeof window !== 'undefined' && window.history ? window.history.state?.idx ?? 0 : 0));
+
+  const [selectedAlbum, setSelectedAlbum] = useState(() => (route.view === 'album' ? route.param : null));
+  const [selectedArtist, setSelectedArtist] = useState(() => (route.view === 'artist' ? route.param : null));
+  const [selectedPlaylist, setSelectedPlaylist] = useState(() => (route.view === 'playlist' ? route.param : null));
+  const [browsePath, setBrowsePath] = useState(() => (route.view === 'browse' ? route.param || '' : ''));
+  const [searchQuery, setSearchQuery] = useState(() => (route.view === 'search' ? route.param || '' : ''));
+
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null);
-  const [browsePath, setBrowsePath] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingTrack, setEditingTrack] = useState(null);
   const [scanVersion, setScanVersion] = useState(0);
@@ -47,92 +163,85 @@ function MainLayout({ user, onLogout }) {
   const { currentTrack, playTrack } = usePlayer();
 
   const navigateTo = useCallback(
-    (targetView, param = null) => {
-      // Prevent duplicate history entries when clicking same page or same item
-      const currentEntry = history[historyIndex];
-      if (currentEntry && currentEntry.view === targetView) {
-        if (
-          targetView === 'album' &&
-          (currentEntry.param?.id === param?.id ||
-            (!param?.id && currentEntry.param?.title === param?.title))
-        ) {
-          return;
-        }
-        if (targetView === 'artist' && currentEntry.param?.name === param?.name) {
-          return;
-        }
-        if (targetView === 'playlist' && currentEntry.param?.id === param?.id) {
-          return;
-        }
-        if (targetView === 'search' && currentEntry.param === param) {
-          return;
-        }
-        if (targetView === 'browse' && currentEntry.param === param) {
-          return;
-        }
-        if (!['album', 'artist', 'playlist', 'search', 'browse'].includes(targetView)) {
-          return;
-        }
-      }
+    (targetView, param = null, { replace = false } = {}) => {
+      const targetUrl = buildUrl(targetView, param);
+      const currentUrl = typeof window !== 'undefined' && window.location ? window.location.pathname + window.location.search : '';
 
-      if (targetView === 'album') {
-        setSelectedAlbum(param);
-      } else if (targetView === 'artist') {
-        setSelectedArtist(param);
-      } else if (targetView === 'playlist') {
-        setSelectedPlaylist(param);
-      } else if (targetView === 'browse') {
-        setBrowsePath(param || '');
-      } else if (targetView === 'search') {
+      if (targetView === 'album') setSelectedAlbum(param);
+      else if (targetView === 'artist') setSelectedArtist(param);
+      else if (targetView === 'playlist') setSelectedPlaylist(param);
+      else if (targetView === 'browse') setBrowsePath(param || '');
+      else if (targetView === 'search') {
         if (typeof param === 'string') setSearchQuery(param);
       }
 
-      setView(targetView);
-      setHistory((prev) => [...prev.slice(0, historyIndex + 1), { view: targetView, param }]);
-      setHistoryIndex((prev) => prev + 1);
+      if (targetUrl === currentUrl && route.view === targetView) {
+        return;
+      }
+
+      if (typeof window !== 'undefined' && window.history) {
+        const nextDepth = replace
+          ? (window.history.state?.idx ?? 0)
+          : (window.history.state?.idx ?? 0) + 1;
+        const stateObj = { view: targetView, param, idx: nextDepth };
+
+        if (replace && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(stateObj, '', targetUrl);
+        } else if (typeof window.history.pushState === 'function') {
+          window.history.pushState(stateObj, '', targetUrl);
+        }
+        setHistoryDepth(nextDepth);
+      }
+
+      setRoute({ view: targetView, param });
     },
-    [historyIndex, history]
+    [route.view]
   );
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = (e) => {
+      const parsed = parseLocation();
+      const currentDepth = e?.state?.idx ?? (window.history?.state?.idx ?? 0);
+      setHistoryDepth(currentDepth);
+      setRoute(parsed);
+
+      if (parsed.view === 'album') setSelectedAlbum(parsed.param);
+      else if (parsed.view === 'artist') setSelectedArtist(parsed.param);
+      else if (parsed.view === 'playlist') setSelectedPlaylist(parsed.param);
+      else if (parsed.view === 'browse') setBrowsePath(parsed.param || '');
+      else if (parsed.view === 'search') setSearchQuery(parsed.param || '');
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const handleBack = () => {
-    if (historyIndex > 0) {
-      const prevEntry = history[historyIndex - 1];
-      setHistoryIndex((i) => i - 1);
-      setView(prevEntry.view);
-      if (prevEntry.view === 'album') setSelectedAlbum(prevEntry.param);
-      if (prevEntry.view === 'artist') setSelectedArtist(prevEntry.param);
-      if (prevEntry.view === 'playlist') setSelectedPlaylist(prevEntry.param);
-      if (prevEntry.view === 'browse') setBrowsePath(prevEntry.param || '');
-      if (prevEntry.view === 'search') setSearchQuery(prevEntry.param || '');
-    }
+    if (typeof window !== 'undefined' && window.history?.back) window.history.back();
   };
 
   const handleForward = () => {
-    if (historyIndex < history.length - 1) {
-      const nextEntry = history[historyIndex + 1];
-      setHistoryIndex((i) => i + 1);
-      setView(nextEntry.view);
-      if (nextEntry.view === 'album') setSelectedAlbum(nextEntry.param);
-      if (nextEntry.view === 'artist') setSelectedArtist(nextEntry.param);
-      if (nextEntry.view === 'playlist') setSelectedPlaylist(nextEntry.param);
-      if (nextEntry.view === 'browse') setBrowsePath(nextEntry.param || '');
-      if (nextEntry.view === 'search') setSearchQuery(nextEntry.param || '');
-    }
+    if (typeof window !== 'undefined' && window.history?.forward) window.history.forward();
   };
 
   const handleAlbumClick = (album) => navigateTo('album', album);
   const handleArtistClick = (artist) => navigateTo('artist', artist);
   const handlePlaylistClick = (playlist) => navigateTo('playlist', playlist);
 
+  const activeAlbum = route.view === 'album' ? (selectedAlbum || route.param) : selectedAlbum;
+  const activeArtist = route.view === 'artist' ? (selectedArtist || route.param) : selectedArtist;
+  const activePlaylist = route.view === 'playlist' ? (selectedPlaylist || route.param) : selectedPlaylist;
+
   const viewTitles = {
     home: 'Home Hub',
     albums: 'Albums',
-    album: selectedAlbum?.title || 'Album',
+    album: activeAlbum?.title || 'Album',
     artists: 'Artists',
-    artist: selectedArtist?.name || 'Artist',
+    artist: activeArtist?.name || 'Artist',
     tracks: 'Tracks Library',
     playlists: 'Playlists',
-    playlist: selectedPlaylist?.name || 'Playlist',
+    playlist: activePlaylist?.name || 'Playlist',
     favorites: 'Favorites',
     browse: 'Folder Browser',
     search: 'Search Library',
@@ -145,7 +254,7 @@ function MainLayout({ user, onLogout }) {
       <div className="flex flex-1 min-h-0 overflow-hidden relative">
         {/* Left Sidebar */}
         <Sidebar
-          activeView={view}
+          activeView={route.view}
           onViewChange={(v) => navigateTo(v)}
           user={user}
           onLogout={onLogout}
@@ -157,9 +266,9 @@ function MainLayout({ user, onLogout }) {
         {/* Center Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           <Header
-            canGoBack={historyIndex > 0}
+            canGoBack={historyDepth > 0 || (typeof window !== 'undefined' && (window.history?.length || 0) > 1)}
             onBack={handleBack}
-            canGoForward={historyIndex < history.length - 1}
+            canGoForward={true}
             onForward={handleForward}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
@@ -168,12 +277,12 @@ function MainLayout({ user, onLogout }) {
             onSelectArtist={handleArtistClick}
             onPlayTrack={(track) => playTrack(track, [track])}
             onOpenSidebar={() => setSidebarOpen(true)}
-            currentView={view}
-            currentViewTitle={viewTitles[view]}
+            currentView={route.view}
+            currentViewTitle={viewTitles[route.view]}
           />
 
           <main className="flex-1 overflow-y-auto p-4 sm:p-7 pb-[120px] sm:pb-[140px] bg-black/15">
-            {view === 'home' && (
+            {route.view === 'home' && (
               <HomeView
                 key={scanVersion}
                 onAlbumClick={handleAlbumClick}
@@ -181,16 +290,16 @@ function MainLayout({ user, onLogout }) {
                 onNavigate={(v, q) => navigateTo(v, q)}
               />
             )}
-            {view === 'albums' && (
+            {route.view === 'albums' && (
               <AlbumsView
                 key={scanVersion}
                 onAlbumClick={handleAlbumClick}
                 onArtistClick={handleArtistClick}
               />
             )}
-            {view === 'album' && selectedAlbum && (
+            {route.view === 'album' && activeAlbum && (
               <AlbumDetailView
-                album={selectedAlbum}
+                album={activeAlbum}
                 onBack={handleBack}
                 user={user}
                 onGoToAlbum={handleAlbumClick}
@@ -199,15 +308,15 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'artists' && (
+            {route.view === 'artists' && (
               <ArtistsView
                 key={scanVersion}
                 onArtistClick={handleArtistClick}
               />
             )}
-            {view === 'artist' && selectedArtist && (
+            {route.view === 'artist' && activeArtist && (
               <ArtistDetailView
-                artist={selectedArtist}
+                artist={activeArtist}
                 onBack={handleBack}
                 user={user}
                 onGoToAlbum={handleAlbumClick}
@@ -216,7 +325,7 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'tracks' && (
+            {route.view === 'tracks' && (
               <TracksView
                 key={scanVersion}
                 user={user}
@@ -226,16 +335,16 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'playlists' && (
+            {route.view === 'playlists' && (
               <PlaylistsView
                 key={scanVersion}
                 onPlaylistClick={handlePlaylistClick}
                 user={user}
               />
             )}
-            {view === 'playlist' && selectedPlaylist && (
+            {route.view === 'playlist' && activePlaylist && (
               <PlaylistDetailView
-                playlist={selectedPlaylist}
+                playlist={activePlaylist}
                 onBack={handleBack}
                 user={user}
                 onGoToAlbum={handleAlbumClick}
@@ -244,7 +353,7 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'favorites' && (
+            {route.view === 'favorites' && (
               <FavoritesView
                 user={user}
                 onAlbumClick={handleAlbumClick}
@@ -253,7 +362,7 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'browse' && (
+            {route.view === 'browse' && (
               <BrowseView
                 key={scanVersion}
                 browsePath={browsePath}
@@ -265,7 +374,7 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'search' && (
+            {route.view === 'search' && (
               <SearchView
                 initialQuery={searchQuery}
                 onAlbumClick={handleAlbumClick}
@@ -275,13 +384,13 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
-            {view === 'settings' && (
+            {route.view === 'settings' && (
               <SettingsView
                 user={user}
                 onScanComplete={() => setScanVersion((v) => v + 1)}
               />
             )}
-            {view === 'admin' && <AdminView user={user} />}
+            {route.view === 'admin' && <AdminView user={user} />}
           </main>
         </div>
       </div>
@@ -320,7 +429,7 @@ function MainLayout({ user, onLogout }) {
           track={addToPlaylistTrack}
           onClose={() => setAddToPlaylistTrack(null)}
           onPlaylistCreated={(newPl) => {
-            // Optional: navigateTo('playlist', newPl);
+            if (newPl?.id) navigateTo('playlist', newPl);
           }}
         />
       )}
@@ -383,10 +492,32 @@ export default function App() {
     });
   }, []);
 
+  // Preserve pre-auth destination URL
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!user) {
+      const currentDest = window.location.pathname + window.location.search;
+      if (currentDest && currentDest !== '/' && currentDest !== '/login') {
+        try {
+          sessionStorage.setItem('tunecloud_redirect', currentDest);
+        } catch {}
+      }
+    }
+  }, [user]);
+
   const handleLogin = (userData) => {
     setSessionNotice(null);
     setAuthError(null);
     setUser(userData);
+    if (typeof window !== 'undefined') {
+      try {
+        const savedRedirect = sessionStorage.getItem('tunecloud_redirect');
+        if (savedRedirect) {
+          sessionStorage.removeItem('tunecloud_redirect');
+          window.history.replaceState({ idx: 0 }, '', savedRedirect);
+        }
+      } catch {}
+    }
   };
 
   const handleLogout = useCallback(async () => {
@@ -399,6 +530,12 @@ export default function App() {
       setAuthToken(null);
       setUser(null);
       setAuthError(null);
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem('tunecloud_redirect');
+          window.history.replaceState({ idx: 0 }, '', '/');
+        } catch {}
+      }
     }
   }, []);
 

@@ -76,12 +76,14 @@ export function AlbumDetailView({
       togglePlay();
       return;
     }
-    if (tracks.length > 0) playTrack(tracks[0], tracks);
+    const availableTracks = tracks.filter((t) => t.available !== false);
+    if (availableTracks.length > 0) playTrack(availableTracks[0], availableTracks);
   };
 
   const handleShufflePlay = () => {
-    if (tracks.length === 0) return;
-    const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+    const availableTracks = tracks.filter((t) => t.available !== false);
+    if (availableTracks.length === 0) return;
+    const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
     playTrack(shuffled[0], shuffled);
   };
 

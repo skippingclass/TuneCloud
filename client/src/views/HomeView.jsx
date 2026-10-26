@@ -48,12 +48,12 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      api.albums().catch(() => []),
+      api.albums({ limit: 100 }).catch(() => []),
       api.genres().catch(() => []),
       api.tracks({ sort: 'play_count', order: 'desc', limit: 8 }).catch(() => ({ tracks: [] })),
     ])
       .then(([allAlbums, allGenres, tracksRes]) => {
-        setAlbums(allAlbums);
+        setAlbums(Array.isArray(allAlbums) ? allAlbums : (allAlbums?.albums || []));
         setGenres(allGenres);
         const tracks = tracksRes?.tracks || [];
         setTopTracks(tracks);
@@ -64,7 +64,8 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
   const handlePlayAlbum = useCallback(
     async (album, shouldShuffle = false) => {
       try {
-        const tracks = await api.album(album.id);
+        const rawTracks = await api.album(album.id);
+        const tracks = (rawTracks || []).filter((t) => t.available !== false);
         if (tracks.length > 0) {
           const list = shouldShuffle ? [...tracks].sort(() => Math.random() - 0.5) : tracks;
           playTrack(list[0], list);
@@ -86,8 +87,9 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
 
   const handlePlayLikedSongs = async () => {
     try {
-      const data = await api.favorites();
-      const tracks = data?.tracks || [];
+      const data = await api.favorites({ type: 'tracks', all: true });
+      const rawTracks = data?.tracks || (Array.isArray(data) ? data : []);
+      const tracks = rawTracks.filter((t) => t.available !== false);
       if (tracks.length > 0) {
         playTrack(tracks[0], tracks);
         toast(`Playing Liked Songs (${tracks.length} tracks)`, 'success');

@@ -127,9 +127,9 @@ The project was built to demonstrate practical, production-grade DevOps workflow
 
 ### 📱 OpenSubsonic & Subsonic API (v1.16.1)
 Connect seamlessly with all popular Subsonic ecosystem clients (**Symfonium**, **Feishin**, **DSub**, **Tempo**, **Substreamer**):
-* **60+ Subsonic API Endpoints**: Full parity covering streaming, transcoding, scrobbling, playlists, star ratings, and search.
+* **60+ Subsonic API Endpoints**: Full parity covering native audio streaming (HTTP byte-range seeking), scrobbling, playlists, star ratings, and search.
 * **Real Filesystem & ID3 Browsing**: Browse by artist/album ID3 tags or explore real disk folder hierarchies (`getIndexes` & `getMusicDirectory`).
-* **OpenSubsonic Extensions**: `songLyrics`, `playQueue`, `topSongsByArtistId`, `formPost`, `transcodeOffset`, and `playlistUpload`.
+* **OpenSubsonic Extensions**: `songLyrics`, `playQueue`, `topSongsByArtistId`, `formPost`, and `playlistUpload`.
 * **Standard Authentication**: Token authentication (`u` + `t` + `s` MD5 salt) and clear/hex token support.
 
 ---

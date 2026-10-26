@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Search,
   ArrowUpDown,
@@ -7,34 +7,100 @@ import {
   LayoutGrid,
   Grid3X3,
   X,
-  Shuffle,
   Filter,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AlbumCard } from '../components/cards/AlbumCard.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 
+export const DEFAULT_ALBUMS_PAGE_SIZE = 48;
+
 export function AlbumsView({ onAlbumClick, onArtistClick }) {
   const [albums, setAlbums] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedGenre, setSelectedGenre] = useState('all');
   const [selectedYear, setSelectedYear] = useState('all');
-  const [sortBy, setSortBy] = useState('recent'); // 'recent' | 'title_asc' | 'title_desc' | 'year_desc' | 'year_asc' | 'duration' | 'random'
-  const [randomSeed, setRandomSeed] = useState(0);
+  const [sortBy, setSortBy] = useState('recent'); // 'recent' | 'title_asc' | 'title_desc' | 'year_desc' | 'year_asc' | 'duration'
+  const [genresList, setGenresList] = useState([]);
+
   const [density, setDensity] = useState(() => {
     return localStorage.getItem('tunecloud_albums_density') || 'standard';
   });
 
   const { playTrack } = usePlayer();
+  const reqIdRef = useRef(0);
+  const abortRef = useRef(null);
 
+  // Load genres list once for filter dropdown
   useEffect(() => {
-    setLoading(true);
     api
-      .albums()
-      .then(setAlbums)
-      .finally(() => setLoading(false));
+      .genres()
+      .then((res) => {
+        const list = Array.isArray(res) ? res : [];
+        setGenresList(list);
+      })
+      .catch(() => {});
   }, []);
+
+  // Debounce search
+  useEffect(() => {
+    const trimmed = search.trim();
+    const timer = setTimeout(() => {
+      setDebouncedSearch(trimmed);
+      setPage(1);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Load paginated albums from server
+  useEffect(() => {
+    const reqId = ++reqIdRef.current;
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoading(true);
+
+    const offset = (page - 1) * DEFAULT_ALBUMS_PAGE_SIZE;
+    const params = {
+      limit: DEFAULT_ALBUMS_PAGE_SIZE,
+      offset,
+      sort: sortBy,
+    };
+    if (debouncedSearch) params.q = debouncedSearch;
+    if (selectedGenre !== 'all') params.genre = selectedGenre;
+    if (selectedYear !== 'all') params.year = selectedYear;
+
+    api
+      .albums(params, { signal: controller.signal })
+      .then((res) => {
+        if (reqId !== reqIdRef.current || controller.signal.aborted) return;
+        const list = Array.isArray(res) ? res : (res?.albums || []);
+        const totalCount = typeof res?.total === 'number' ? res.total : list.length;
+        setAlbums(list);
+        setTotal(totalCount);
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
+        setAlbums([]);
+        setTotal(0);
+      })
+      .finally(() => {
+        if (reqId === reqIdRef.current && !controller.signal.aborted) {
+          setLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [page, debouncedSearch, selectedGenre, selectedYear, sortBy]);
 
   const handleDensityChange = (newDensity) => {
     setDensity(newDensity);
@@ -43,252 +109,143 @@ export function AlbumsView({ onAlbumClick, onArtistClick }) {
 
   const handlePlayAlbum = async (album) => {
     try {
-      const tracks = await api.album(album.id);
+      const res = await api.album(album.id);
+      const rawTracks = res?.tracks || (Array.isArray(res) ? res : []);
+      const tracks = rawTracks.filter((t) => t.available !== false);
       if (tracks.length > 0) {
         playTrack(tracks[0], tracks);
       }
     } catch {}
   };
 
-  // Extract unique genres
-  const availableGenres = useMemo(() => {
-    const set = new Set();
-    albums.forEach((a) => {
-      if (a.genre && typeof a.genre === 'string') {
-        a.genre
-          .split(/[,/]/)
-          .map((g) => g.trim())
-          .filter(Boolean)
-          .forEach((g) => set.add(g));
-      }
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [albums]);
-
-  // Extract unique years
-  const availableYears = useMemo(() => {
-    const set = new Set();
-    albums.forEach((a) => {
-      if (a.year && Number.isInteger(a.year) && a.year > 1900) {
-        set.add(a.year);
-      }
-    });
-    return Array.from(set).sort((a, b) => b - a);
-  }, [albums]);
-
-  // Filter & Sort
-  const filteredAndSorted = useMemo(() => {
-    let result = albums;
-
-    // Search query filter
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      result = result.filter(
-        (a) =>
-          (a.title || '').toLowerCase().includes(q) ||
-          (a.artist || '').toLowerCase().includes(q) ||
-          (a.genre || '').toLowerCase().includes(q)
-      );
-    }
-
-    // Genre filter
-    if (selectedGenre !== 'all') {
-      const gQuery = selectedGenre.toLowerCase();
-      result = result.filter((a) =>
-        (a.genre || '').toLowerCase().includes(gQuery)
-      );
-    }
-
-    // Year filter
-    if (selectedYear !== 'all') {
-      const yVal = parseInt(selectedYear, 10);
-      result = result.filter((a) => a.year === yVal);
-    }
-
-    // Sorting
-    const sorted = [...result];
-    if (sortBy === 'recent') {
-      sorted.sort((a, b) => {
-        if (b.created_at && a.created_at) {
-          return new Date(b.created_at) - new Date(a.created_at);
-        }
-        return (b.id || 0) - (a.id || 0);
-      });
-    } else if (sortBy === 'title_asc') {
-      sorted.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-    } else if (sortBy === 'title_desc') {
-      sorted.sort((a, b) => (b.title || '').localeCompare(a.title || ''));
-    } else if (sortBy === 'year_desc') {
-      sorted.sort((a, b) => (b.year || 0) - (a.year || 0));
-    } else if (sortBy === 'year_asc') {
-      sorted.sort((a, b) => (a.year || 9999) - (b.year || 9999));
-    } else if (sortBy === 'duration') {
-      sorted.sort((a, b) => (b.duration || 0) - (a.duration || 0));
-    } else if (sortBy === 'random') {
-      // Deterministic shuffle with randomSeed
-      sorted.sort((a, b) => {
-        const hashA = ((a.id * 9301 + 49297 + randomSeed) % 233280) / 233280;
-        const hashB = ((b.id * 9301 + 49297 + randomSeed) % 233280) / 233280;
-        return hashA - hashB;
-      });
-    }
-
-    return sorted;
-  }, [albums, search, selectedGenre, selectedYear, sortBy, randomSeed]);
-
-  if (loading) {
-    return (
-      <div className="h-96 flex flex-col items-center justify-center gap-3 text-surface-400">
-        <Loader2 className="w-8 h-8 animate-spin text-accent" />
-        <span className="text-xs font-medium">Loading albums...</span>
-      </div>
-    );
-  }
-
-  const isFiltered =
-    search.trim() !== '' || selectedGenre !== 'all' || selectedYear !== 'all';
-
   const resetFilters = () => {
     setSearch('');
+    setDebouncedSearch('');
     setSelectedGenre('all');
     setSelectedYear('all');
+    setSortBy('recent');
+    setPage(1);
   };
 
+  const hasActiveFilters =
+    search.trim() !== '' ||
+    selectedGenre !== 'all' ||
+    selectedYear !== 'all' ||
+    sortBy !== 'recent';
+
+  const totalPages = Math.ceil(total / DEFAULT_ALBUMS_PAGE_SIZE) || 1;
+
+  // Generate a list of recent years for dropdown filter
+  const recentYears = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const list = [];
+    for (let y = currentYear; y >= 1960; y -= 1) {
+      list.push(y);
+    }
+    return list;
+  }, []);
+
   return (
-    <div className="animate-fade-in space-y-6">
-      {/* Sticky & Sleek Toolbar */}
-      <div className="sticky top-0 z-20 -mx-4 sm:-mx-7 px-4 sm:px-7 py-3 -mt-4 sm:-mt-7 bg-surface-950/85 backdrop-blur-xl border-b border-white/[0.08] transition-all">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3.5">
-          {/* Left: Heading & Total Counter */}
-          <div className="flex items-center gap-3 shrink-0">
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-              Albums
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full bg-accent/15 border border-accent/30 text-accent font-mono text-xs font-semibold">
-              {filteredAndSorted.length}
-            </span>
-            {isFiltered && (
+    <div className="space-y-6 animate-fade-in pb-12">
+      {/* Top Filter and Search Bar */}
+      <div className="glass-panel p-4 sm:p-5 rounded-3xl border border-white/[0.08] space-y-4">
+        <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center justify-between">
+          {/* Search box */}
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 text-surface-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search albums by title or artist..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="glass-input w-full pl-9 pr-8 text-xs sm:text-sm py-2"
+            />
+            {search && (
               <button
-                onClick={resetFilters}
-                className="text-[11px] text-surface-400 hover:text-rose-400 flex items-center gap-1 transition-colors"
-                title="Reset all filters"
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-surface-500 hover:text-white p-0.5"
+                title="Clear search"
               >
-                <X className="w-3 h-3" />
-                <span>Reset</span>
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          {/* Right: Controls & Filters */}
-          <div className="flex flex-wrap items-center gap-2.5 text-xs">
-            {/* Search Input */}
-            <div className="relative min-w-[160px] sm:min-w-[200px] flex-1 sm:flex-initial">
-              <Search className="w-3.5 h-3.5 text-surface-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                type="text"
-                placeholder="Filter albums..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="glass-input w-full pl-8 pr-7 py-1.5 text-xs rounded-xl"
-              />
-              {search && (
-                <button
-                  onClick={() => setSearch('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-surface-400 hover:text-white"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
+          {/* Filters & Sorting controls */}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {/* Genre selector */}
+            <div className="flex items-center gap-1.5 text-xs">
+              <Filter className="w-3.5 h-3.5 text-surface-500 hidden sm:inline" />
+              <select
+                value={selectedGenre}
+                onChange={(e) => {
+                  setSelectedGenre(e.target.value);
+                  setPage(1);
+                }}
+                className="glass-input text-xs py-2 px-2.5 rounded-xl border-white/[0.1] bg-surface-900/90"
+              >
+                <option value="all">All Genres</option>
+                {genresList.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            {/* Genre Filter */}
-            {availableGenres.length > 0 && (
-              <div className="flex items-center">
-                <select
-                  value={selectedGenre}
-                  onChange={(e) => setSelectedGenre(e.target.value)}
-                  className="glass-pill bg-white/[0.04] text-surface-200 outline-none cursor-pointer py-1.5 px-3 rounded-xl border border-white/[0.08] hover:border-white/[0.15]"
-                >
-                  <option value="all" className="bg-surface-900 text-white">
-                    All Genres
+            {/* Year selector */}
+            <div className="flex items-center gap-1.5 text-xs">
+              <select
+                value={selectedYear}
+                onChange={(e) => {
+                  setSelectedYear(e.target.value);
+                  setPage(1);
+                }}
+                className="glass-input text-xs py-2 px-2.5 rounded-xl border-white/[0.1] bg-surface-900/90"
+              >
+                <option value="all">All Years</option>
+                {recentYears.slice(0, 40).map((y) => (
+                  <option key={y} value={y}>
+                    {y}
                   </option>
-                  {availableGenres.map((g) => (
-                    <option key={g} value={g} className="bg-surface-900 text-white">
-                      {g}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+                ))}
+              </select>
+            </div>
 
-            {/* Year Filter */}
-            {availableYears.length > 0 && (
-              <div className="flex items-center">
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(e.target.value)}
-                  className="glass-pill bg-white/[0.04] text-surface-200 outline-none cursor-pointer py-1.5 px-3 rounded-xl border border-white/[0.08] hover:border-white/[0.15]"
-                >
-                  <option value="all" className="bg-surface-900 text-white">
-                    All Years
-                  </option>
-                  {availableYears.map((y) => (
-                    <option key={y} value={y} className="bg-surface-900 text-white">
-                      {y}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {/* Sort Select */}
-            <div className="flex items-center gap-1.5">
+            {/* Sort selector */}
+            <div className="flex items-center gap-1.5 text-xs">
+              <ArrowUpDown className="w-3.5 h-3.5 text-surface-500 hidden sm:inline" />
               <select
                 value={sortBy}
                 onChange={(e) => {
                   setSortBy(e.target.value);
-                  if (e.target.value === 'random') {
-                    setRandomSeed((s) => s + 1);
-                  }
+                  setPage(1);
                 }}
-                className="glass-pill bg-white/[0.04] text-surface-200 outline-none cursor-pointer py-1.5 px-3 rounded-xl border border-white/[0.08] hover:border-white/[0.15]"
+                className="glass-input text-xs py-2 px-2.5 rounded-xl border-white/[0.1] bg-surface-900/90"
               >
-                <option value="recent" className="bg-surface-900 text-white">
-                  Recently Added
-                </option>
-                <option value="title_asc" className="bg-surface-900 text-white">
-                  Alphabetical (A-Z)
-                </option>
-                <option value="title_desc" className="bg-surface-900 text-white">
-                  Alphabetical (Z-A)
-                </option>
-                <option value="year_desc" className="bg-surface-900 text-white">
-                  Release Year (Newest)
-                </option>
-                <option value="year_asc" className="bg-surface-900 text-white">
-                  Release Year (Oldest)
-                </option>
-                <option value="duration" className="bg-surface-900 text-white">
-                  Duration
-                </option>
-                <option value="random" className="bg-surface-900 text-white">
-                  Random
-                </option>
+                <option value="recent">Recently Added</option>
+                <option value="title_asc">Title (A to Z)</option>
+                <option value="title_desc">Title (Z to A)</option>
+                <option value="year_desc">Year (Newest)</option>
+                <option value="year_asc">Year (Oldest)</option>
+                <option value="duration">Longest Duration</option>
+                <option value="play_count">Most Played</option>
               </select>
-
-              {sortBy === 'random' && (
-                <button
-                  onClick={() => setRandomSeed((s) => s + 1)}
-                  className="btn-glass p-1.5 rounded-xl text-surface-400 hover:text-accent"
-                  title="Re-shuffle"
-                >
-                  <Shuffle className="w-3.5 h-3.5" />
-                </button>
-              )}
             </div>
 
-            {/* Density Switch */}
-            <div className="flex items-center rounded-xl bg-white/[0.04] border border-white/[0.08] p-0.5">
+            {/* Reset button */}
+            {hasActiveFilters && (
+              <button
+                onClick={resetFilters}
+                className="btn-glass text-xs py-2 px-3 rounded-xl text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors"
+                title="Reset all filters"
+              >
+                Reset
+              </button>
+            )}
+
+            {/* Density switcher */}
+            <div className="flex items-center gap-1 p-1 rounded-xl glass-panel border border-white/[0.08] ml-auto">
               <button
                 onClick={() => handleDensityChange('standard')}
                 className={`p-1.5 rounded-lg transition-all ${
@@ -317,35 +274,74 @@ export function AlbumsView({ onAlbumClick, onArtistClick }) {
       </div>
 
       {/* Grid Content */}
-      {filteredAndSorted.length === 0 ? (
+      {loading ? (
+        <div className="h-96 flex flex-col items-center justify-center gap-3 text-surface-400">
+          <Loader2 className="w-8 h-8 animate-spin text-accent" />
+          <span className="text-xs font-medium">Loading albums...</span>
+        </div>
+      ) : albums.length === 0 ? (
         <div className="h-64 flex flex-col items-center justify-center gap-3 text-surface-500">
           <Disc className="w-10 h-10 stroke-1 opacity-50" />
           <p className="text-sm font-semibold">No albums match your filter</p>
-          <button
-            onClick={resetFilters}
-            className="btn-glass text-xs py-1.5 px-3 rounded-xl mt-1 text-accent"
-          >
-            Clear Filters
-          </button>
+          {hasActiveFilters && (
+            <button
+              onClick={resetFilters}
+              className="btn-glass text-xs py-1.5 px-3 rounded-xl mt-1 text-accent"
+            >
+              Clear Filters
+            </button>
+          )}
         </div>
       ) : (
-        <div
-          className={
-            density === 'compact'
-              ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-8 gap-2.5 sm:gap-3'
-              : 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4'
-          }
-        >
-          {filteredAndSorted.map((album) => (
-            <AlbumCard
-              key={album.id}
-              album={album}
-              compact={density === 'compact'}
-              onClick={onAlbumClick}
-              onArtistClick={onArtistClick}
-              onPlay={handlePlayAlbum}
-            />
-          ))}
+        <div className="space-y-4">
+          <div
+            className={
+              density === 'compact'
+                ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-8 gap-2.5 sm:gap-3'
+                : 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4'
+            }
+          >
+            {albums.map((album) => (
+              <AlbumCard
+                key={album.id}
+                album={album}
+                compact={density === 'compact'}
+                onClick={onAlbumClick}
+                onArtistClick={onArtistClick}
+                onPlay={handlePlayAlbum}
+              />
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-2 py-3 text-xs text-surface-400">
+              <span>
+                Showing {(page - 1) * DEFAULT_ALBUMS_PAGE_SIZE + 1}–
+                {Math.min(page * DEFAULT_ALBUMS_PAGE_SIZE, total)} of {total}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="p-1.5 rounded-lg border border-white/[0.08] hover:bg-white/[0.06] disabled:opacity-30 disabled:pointer-events-none text-white transition-colors"
+                  title="Previous Page"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="font-mono px-2 font-medium text-surface-200">
+                  Page {page} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="p-1.5 rounded-lg border border-white/[0.08] hover:bg-white/[0.06] disabled:opacity-30 disabled:pointer-events-none text-white transition-colors"
+                  title="Next Page"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
