@@ -232,14 +232,16 @@ export function ArtistDetailView({
   }, [discographyTab, fullAlbums, singlesAndEPs, appearsOn, albumGroups]);
 
   const handlePlayAll = () => {
-    if (tracks.length > 0) {
-      playTrack(tracks[0], tracks);
+    const availableTracks = tracks.filter((t) => t.available !== false);
+    if (availableTracks.length > 0) {
+      playTrack(availableTracks[0], availableTracks);
     }
   };
 
   const handleShuffle = () => {
-    if (tracks.length > 0) {
-      const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+    const availableTracks = tracks.filter((t) => t.available !== false);
+    if (availableTracks.length > 0) {
+      const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
       playTrack(shuffled[0], shuffled);
     }
   };
@@ -252,13 +254,14 @@ export function ArtistDetailView({
 
   const handlePlayAlbum = (album) => {
     const albTracks = tracks.filter(
-      (t) => t.album_id === album.album_id || t.album === album.title
+      (t) => (t.album_id === album.album_id || t.album === album.title) && t.available !== false
     );
     if (albTracks.length > 0) {
       playTrack(albTracks[0], albTracks);
     } else if (album.album_id) {
       api.album(album.album_id).then((res) => {
-        const list = res?.tracks || res || [];
+        const rawList = res?.tracks || res || [];
+        const list = (Array.isArray(rawList) ? rawList : []).filter((t) => t.available !== false);
         if (list.length > 0) playTrack(list[0], list);
       });
     }

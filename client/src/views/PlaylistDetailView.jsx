@@ -114,17 +114,24 @@ export function PlaylistDetailView({
       togglePlay();
       return;
     }
-    if (tracks.length > 0) {
-      playTrack(tracks[0], tracks);
-      toast(`Playing "${data.name}"`, 'success');
+    const availableTracks = tracks.filter((t) => t.available !== false);
+    if (availableTracks.length > 0) {
+      playTrack(availableTracks[0], availableTracks);
+      toast(`Playing "${data?.name || 'Playlist'}"`, 'success');
+    } else {
+      toast('No available tracks to play in this playlist', 'info');
     }
   };
 
   const handleShufflePlay = () => {
-    if (tracks.length === 0) return;
-    const shuffled = [...tracks].sort(() => Math.random() - 0.5);
+    const availableTracks = tracks.filter((t) => t.available !== false);
+    if (availableTracks.length === 0) {
+      toast('No available tracks to play in this playlist', 'info');
+      return;
+    }
+    const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
     playTrack(shuffled[0], shuffled);
-    toast(`Playing "${data.name}" in shuffle`, 'success');
+    toast(`Playing "${data?.name || 'Playlist'}" in shuffle`, 'success');
   };
 
   const handleRemoveTrack = async (track) => {

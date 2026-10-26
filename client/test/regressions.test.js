@@ -21,13 +21,14 @@ import {
   onAuthExpired,
   AUTH_EXPIRED_EVENT,
 } from '../src/api.js';
-import App from '../src/App.jsx';
+import App, { buildUrl, parseLocation } from '../src/App.jsx';
 import { AdminView } from '../src/views/AdminView.jsx';
 import { PlayerProvider, usePlayer } from '../src/context/PlayerContext.jsx';
 import { FavoritesProvider } from '../src/context/FavoritesContext.jsx';
 import { SearchView } from '../src/views/SearchView.jsx';
 import { Header } from '../src/components/layout/Header.jsx';
 import { TracksView } from '../src/views/TracksView.jsx';
+import { TrackRow } from '../src/components/cards/TrackRow.jsx';
 
 describe('API client, stream URL, typed errors, and central 401 handling', () => {
   beforeEach(() => {
@@ -730,3 +731,77 @@ it('clearing a filter before its debounce expires restarts a cancelled initial l
   assert.ok(view.container.textContent.includes('Recovered Library'));
   await view.unmount();
 });
+
+it('parseLocation and buildUrl correctly route and resolve main and detail views', () => {
+  // Routes without params
+  assert.equal(buildUrl('home'), '/');
+  assert.equal(buildUrl('albums'), '/albums');
+  assert.equal(buildUrl('artists'), '/artists');
+  assert.equal(buildUrl('tracks'), '/tracks');
+  assert.equal(buildUrl('playlists'), '/playlists');
+  assert.equal(buildUrl('favorites'), '/favorites');
+  assert.equal(buildUrl('settings'), '/settings');
+  assert.equal(buildUrl('admin'), '/admin');
+
+  // Detail routes
+  assert.equal(buildUrl('album', { id: 42 }), '/album/42');
+  assert.equal(buildUrl('artist', { name: 'Daft Punk' }), '/artist/Daft%20Punk');
+  assert.equal(buildUrl('playlist', { id: 7 }), '/playlist/7');
+  assert.equal(buildUrl('search', 'synthwave'), '/search?q=synthwave');
+  assert.equal(buildUrl('browse', 'Electronic/Daft Punk'), '/browse/Electronic/Daft%20Punk');
+
+  // Parsing locations
+  assert.deepEqual(parseLocation('/', ''), { view: 'home', param: null });
+  assert.deepEqual(parseLocation('/albums', ''), { view: 'albums', param: null });
+  assert.deepEqual(parseLocation('/album/42', ''), { view: 'album', param: { id: 42 } });
+  assert.deepEqual(parseLocation('/albums/42', ''), { view: 'album', param: { id: 42 } });
+  assert.deepEqual(parseLocation('/artist/Daft%20Punk', ''), { view: 'artist', param: { name: 'Daft Punk' } });
+  assert.deepEqual(parseLocation('/playlist/7', ''), { view: 'playlist', param: { id: 7 } });
+  assert.deepEqual(parseLocation('/favorites', ''), { view: 'favorites', param: null });
+  assert.deepEqual(parseLocation('/browse/Electronic/Daft%20Punk', ''), { view: 'browse', param: 'Electronic/Daft Punk' });
+  assert.deepEqual(parseLocation('/search', '?q=synthwave'), { view: 'search', param: 'synthwave' });
+  assert.deepEqual(parseLocation('/settings', ''), { view: 'settings', param: null });
+  assert.deepEqual(parseLocation('/admin', ''), { view: 'admin', param: null });
+});
+
+it('TrackRow displays Unavailable badge, prevents playback, and retains user actions for missing files', async () => {
+  createTestDOM();
+  let played = false;
+  const unavailableTrack = {
+    id: 101,
+    title: 'Lost Transmission',
+    artist: 'Cosmic Voyager',
+    album: 'Deep Space',
+    duration: 180,
+    available: false,
+  };
+
+  const view = await render(
+    <FavoritesProvider>
+      <PlayerProvider>
+        <table>
+          <tbody>
+            <TrackRow
+              track={unavailableTrack}
+              onPlay={() => { played = true; }}
+              index={0}
+            />
+          </tbody>
+        </table>
+      </PlayerProvider>
+    </FavoritesProvider>
+  );
+
+  // Checks unavailable badge
+  assert.ok(view.container.textContent.includes('Unavailable'));
+  assert.ok(view.container.textContent.includes('Lost Transmission'));
+
+  // Double click does not trigger play
+  const row = view.container.find((el) => el.tagName === 'TR');
+  row.dispatchEvent({ type: 'dblclick' });
+  await flushAsync();
+  assert.equal(played, false, 'Playback must not be initiated for unavailable tracks');
+
+  await view.unmount();
+});
+

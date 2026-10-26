@@ -236,6 +236,72 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       await scanDirectory(process.env.MUSIC_DIR);
       assert.equal((await query('SELECT missing_since FROM tracks WHERE id=$1', [track.id])).rows[0].missing_since, null);
     });
+
+    await t.test('lyrics API uses DB metadata, rejects unknown IDs, and blocks title traversal', async () => {
+      const missing = await call('GET', '/api/lyrics?id=999999', owner);
+      assert.equal(missing.statusCode, 404);
+      assert.equal(missing.json().error, 'Track not found');
+
+      // Create local lyrics matching track filename
+      const lrcFile = path.join(process.env.MUSIC_DIR, 'track.lrc');
+      await fs.writeFile(lrcFile, '[00:05.00] DB Metadata Lyrics');
+
+      // Request with malicious title override '../etc/passwd'
+      const traversal = await call('GET', `/api/lyrics?id=${track.id}&title=../../../../etc/passwd`, owner);
+      assert.equal(traversal.statusCode, 200);
+      assert.equal(traversal.json().source, 'local');
+      assert.equal(traversal.json().lyrics, '[00:05.00] DB Metadata Lyrics');
+      await fs.unlink(lrcFile);
+    });
+
+    await t.test('Subsonic Form POST preserves repeating parameters, duplicate songs, and order in playlists and queue', async () => {
+      // 1. Form POST createPlaylist with duplicate songId preserving order
+      const createRes = await app.inject({
+        method: 'POST',
+        url: '/rest/createPlaylist.view',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `u=owner&p=${password}&v=1.16.1&c=test&f=json&name=FormDupes&songId=${track.id}&songId=${second.id}&songId=${track.id}`,
+      });
+      assert.equal(createRes.statusCode, 200);
+      assert.equal(createRes.json()['subsonic-response'].status, 'ok');
+      const plId = createRes.json()['subsonic-response'].playlist.id;
+      const { rows: plRows } = await query('SELECT track_id, track_order FROM playlist_tracks WHERE playlist_id=$1 ORDER BY track_order', [plId]);
+      assert.deepEqual(plRows.map(r => r.track_id), [track.id, second.id, track.id]);
+      assert.deepEqual(plRows.map(r => r.track_order), [1, 2, 3]);
+
+      // 2. Form POST updatePlaylist with duplicate songIdToAdd
+      const updateRes = await app.inject({
+        method: 'POST',
+        url: '/rest/updatePlaylist.view',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `u=owner&p=${password}&v=1.16.1&c=test&f=json&playlistId=${plId}&songIdToAdd=${second.id}&songIdToAdd=${second.id}`,
+      });
+      assert.equal(updateRes.statusCode, 200);
+      const { rows: updatedRows } = await query('SELECT track_id, track_order FROM playlist_tracks WHERE playlist_id=$1 ORDER BY track_order', [plId]);
+      assert.deepEqual(updatedRows.map(r => r.track_id), [track.id, second.id, track.id, second.id, second.id]);
+
+      // 3. Form POST savePlayQueue with duplicate track IDs preserving order
+      const queueRes = await app.inject({
+        method: 'POST',
+        url: '/rest/savePlayQueue.view',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: `u=owner&p=${password}&v=1.16.1&c=test&f=json&id=${track.id}&id=${second.id}&id=${track.id}&current=${track.id}&position=5000`,
+      });
+      assert.equal(queueRes.statusCode, 200);
+      const queueRow = (await query('SELECT track_ids, current_track_id, position_ms FROM play_queues WHERE user_id=$1', [owner.id])).rows[0];
+      assert.deepEqual(queueRow.track_ids, [track.id, second.id, track.id]);
+      assert.equal(queueRow.current_track_id, track.id);
+      assert.equal(queueRow.position_ms, 5000);
+
+      // 4. GET getOpenSubsonicExtensions omits transcodeOffset
+      const extRes = await app.inject({
+        method: 'GET',
+        url: `/rest/getOpenSubsonicExtensions?u=owner&p=${password}&v=1.16.1&c=test&f=json`,
+      });
+      assert.equal(extRes.statusCode, 200);
+      const extensions = extRes.json()['subsonic-response'].openSubsonicExtensions;
+      assert.equal(extensions.some(e => e.name === 'transcodeOffset'), false);
+    });
   } finally {
     await app.close();
     await pool.end();

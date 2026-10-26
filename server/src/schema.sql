@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS tracks (
   cover_path TEXT,
   composer TEXT,
   track_artist_credit TEXT,
+  album_artist_credit TEXT,
+  parse_error BOOLEAN NOT NULL DEFAULT false,
+  missing_since TIMESTAMPTZ,
   mtime TIMESTAMPTZ,
   play_count INTEGER NOT NULL DEFAULT 0,
   last_played_at TIMESTAMPTZ,
@@ -54,6 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_album_id ON tracks(album_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_file_path ON tracks(file_path);
 CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
 CREATE INDEX IF NOT EXISTS idx_tracks_mtime ON tracks(mtime);
+CREATE INDEX IF NOT EXISTS idx_tracks_missing_since ON tracks(missing_since) WHERE missing_since IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,

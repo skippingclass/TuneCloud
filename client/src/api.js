@@ -113,9 +113,41 @@ export const api = {
     return fetchJson(`/tracks${qs ? `?${qs}` : ''}`, opts);
   },
   track: (id, opts) => fetchJson(`/tracks/${id}`, opts),
-  albums: (opts) => fetchJson('/albums', opts),
+  albums: (params = {}, opts = {}) => {
+    const searchParams = new URLSearchParams();
+    let fetchOpts = opts;
+    if (params && typeof params === 'object') {
+      if ('signal' in params || 'headers' in params) {
+        fetchOpts = params;
+      } else {
+        Object.entries(params).forEach(([k, v]) => {
+          if (v !== undefined && v !== null && v !== '') {
+            searchParams.set(k, String(v));
+          }
+        });
+      }
+    }
+    const qs = searchParams.toString();
+    return fetchJson(`/albums${qs ? `?${qs}` : ''}`, fetchOpts);
+  },
   album: (id, opts) => fetchJson(`/albums/${id}`, opts),
-  artists: (opts) => fetchJson('/artists', opts),
+  artists: (params = {}, opts = {}) => {
+    const searchParams = new URLSearchParams();
+    let fetchOpts = opts;
+    if (params && typeof params === 'object') {
+      if ('signal' in params || 'headers' in params) {
+        fetchOpts = params;
+      } else {
+        Object.entries(params).forEach(([k, v]) => {
+          if (v !== undefined && v !== null && v !== '') {
+            searchParams.set(k, String(v));
+          }
+        });
+      }
+    }
+    const qs = searchParams.toString();
+    return fetchJson(`/artists${qs ? `?${qs}` : ''}`, fetchOpts);
+  },
   artist: (id, opts) => fetchJson(`/artists/${id}`, opts),
   artistByName: (name, opts) => fetchJson(`/artists/by-name?name=${encodeURIComponent(name)}`, opts),
   search: (q, opts = {}) => fetchJson(`/search?q=${encodeURIComponent(q)}`, opts),
@@ -147,7 +179,24 @@ export const api = {
     fetchJson(`/auth/users/${id}/admin`, { method: 'PATCH', body: JSON.stringify({ is_admin }) }),
   adminDeleteUser: (id) =>
     fetchJson(`/auth/users/${id}`, { method: 'DELETE' }),
-  favorites: (opts) => fetchJson('/favorites', opts),
+  favorites: (params = {}, opts = {}) => {
+    const searchParams = new URLSearchParams();
+    let fetchOpts = opts;
+    if (params && typeof params === 'object') {
+      if ('signal' in params || 'headers' in params) {
+        fetchOpts = params;
+      } else {
+        Object.entries(params).forEach(([k, v]) => {
+          if (v !== undefined && v !== null && v !== '') {
+            searchParams.set(k, String(v));
+          }
+        });
+      }
+    }
+    const qs = searchParams.toString();
+    return fetchJson(`/favorites${qs ? `?${qs}` : ''}`, fetchOpts);
+  },
+  favoriteIds: (opts) => fetchJson('/favorites/ids', opts),
   toggleFavoriteTrack: (id) => fetchJson(`/favorites/track/${id}`, { method: 'POST' }),
   toggleFavoriteAlbum: (id) => fetchJson(`/favorites/album/${id}`, { method: 'POST' }),
   toggleFavoriteArtist: (id) => fetchJson(`/favorites/artist/${id}`, { method: 'POST' }),

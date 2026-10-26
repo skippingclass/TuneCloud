@@ -94,35 +94,81 @@ export function splitTrackArtistAndTitle(artist, title) {
   return { artist: a, title: t };
 }
 
+export const MAX_LYRICS_FILE_SIZE = 128 * 1024; // 128 KB
+
+export function isSafeFilename(name) {
+  if (typeof name !== 'string' || !name.trim()) return false;
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false;
+  if (name === '.' || name === '..' || name.startsWith('..')) return false;
+  return path.basename(name) === name;
+}
+
+export function isWithinDirectory(parentDir, targetPath) {
+  if (!parentDir || !targetPath) return false;
+  const rel = path.relative(parentDir, targetPath);
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 /**
  * Try reading local .lrc or .txt files near the audio file
  */
 export function readLocalLyrics(trackPath, cleanTitle) {
-  if (!trackPath) return null;
+  if (!trackPath || typeof trackPath !== 'string') return null;
   const dir = path.dirname(trackPath);
   const base = path.basename(trackPath, path.extname(trackPath));
-  const candidates = [
-    path.join(dir, `${base}.lrc`),
-    path.join(dir, `${base}.txt`),
-  ];
-  if (cleanTitle && cleanTitle !== base) {
-    candidates.push(path.join(dir, `${cleanTitle}.lrc`));
-    candidates.push(path.join(dir, `${cleanTitle}.txt`));
+  const candidateNames = [`${base}.lrc`, `${base}.txt`];
+
+  if (cleanTitle && typeof cleanTitle === 'string') {
+    const trimmed = cleanTitle.trim();
+    if (isSafeFilename(trimmed) && trimmed !== base) {
+      candidateNames.push(`${trimmed}.lrc`, `${trimmed}.txt`);
+    }
   }
 
-  for (const p of candidates) {
+  let realMusicDir = null;
+  if (process.env.MUSIC_DIR) {
     try {
-      if (fs.existsSync(p)) {
-        const content = fs.readFileSync(p, 'utf8').trim();
-        if (content) {
-          const synced = content.includes('[') && /\d{2}:\d{2}/.test(content);
-          return {
-            synced,
-            type: synced ? 'line' : 'plain',
-            lyrics: content,
-            source: 'local',
-          };
+      realMusicDir = fs.realpathSync(process.env.MUSIC_DIR);
+    } catch {
+      return null;
+    }
+  }
+
+  for (const name of candidateNames) {
+    const candidatePath = path.join(dir, name);
+    try {
+      if (!fs.existsSync(candidatePath)) continue;
+
+      const realCandidate = fs.realpathSync(candidatePath);
+
+      if (realMusicDir) {
+        if (!isWithinDirectory(realMusicDir, realCandidate)) {
+          continue;
         }
+      } else {
+        try {
+          const realTrackDir = fs.realpathSync(dir);
+          if (!isWithinDirectory(realTrackDir, realCandidate)) {
+            continue;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      const stat = fs.statSync(realCandidate);
+      if (!stat.isFile()) continue;
+      if (stat.size > MAX_LYRICS_FILE_SIZE) continue;
+
+      const content = fs.readFileSync(realCandidate, 'utf8').trim();
+      if (content) {
+        const synced = content.includes('[') && /\d{2}:\d{2}/.test(content);
+        return {
+          synced,
+          type: synced ? 'line' : 'plain',
+          lyrics: content,
+          source: 'local',
+        };
       }
     } catch {}
   }

@@ -13,10 +13,16 @@ export function FavoritesProvider({ children }) {
     if (!getAuthToken()) return;
     try {
       setLoading(true);
-      const data = await api.favorites();
-      const trackIds = new Set((data.tracks || []).map((t) => t.id));
-      const albumIds = new Set((data.albums || []).map((a) => a.id));
-      const artistIds = new Set((data.artists || []).map((a) => a.id));
+      const data = await (api.favoriteIds ? api.favoriteIds() : api.favorites({ ids_only: true }));
+      const trackIds = new Set(
+        data.track_ids || (data.tracks || []).map((t) => (typeof t === 'number' ? t : t.id))
+      );
+      const albumIds = new Set(
+        data.album_ids || (data.albums || []).map((a) => (typeof a === 'number' ? a : a.id))
+      );
+      const artistIds = new Set(
+        data.artist_ids || (data.artists || []).map((a) => (typeof a === 'number' ? a : a.id))
+      );
       setStarredTrackIds(trackIds);
       setStarredAlbumIds(albumIds);
       setStarredArtistIds(artistIds);

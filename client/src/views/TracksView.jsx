@@ -179,8 +179,9 @@ export function TracksView({
     try {
       const allTracks = await fetchAllMatchingTracks(controller.signal);
       if (controller.signal.aborted) return;
-      if (allTracks.length > 0) {
-        playTrack(allTracks[0], allTracks);
+      const availableTracks = allTracks.filter((t) => t.available !== false);
+      if (availableTracks.length > 0) {
+        playTrack(availableTracks[0], availableTracks);
       }
     } catch (err) {
       if (err.name !== 'AbortError' && !controller.signal.aborted) setError(err.message || 'Unable to load playback queue');
@@ -199,8 +200,9 @@ export function TracksView({
     try {
       const allTracks = await fetchAllMatchingTracks(controller.signal);
       if (controller.signal.aborted) return;
-      if (allTracks.length === 0) return;
-      const shuffled = [...allTracks].sort(() => Math.random() - 0.5);
+      const availableTracks = allTracks.filter((t) => t.available !== false);
+      if (availableTracks.length === 0) return;
+      const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
       playTrack(shuffled[0], shuffled);
     } catch (err) {
       if (err.name !== 'AbortError' && !controller.signal.aborted) setError(err.message || 'Unable to load playback queue');

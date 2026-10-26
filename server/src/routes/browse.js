@@ -37,6 +37,38 @@ export default async function browseRoutes(fastify) {
     } catch {
       return reply.status(404).send({ error: 'Directory not found' });
     }
+    const audioExts = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
+    const audioPaths = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (audioExts.has(ext)) {
+          audioPaths.push(path.join(targetDir, entry.name));
+        }
+      }
+    }
+
+    const trackMap = new Map();
+    if (audioPaths.length > 0) {
+      const { rows } = await query(
+        `SELECT t.id, t.title, t.duration, t.file_size, t.format, t.track_number,
+                t.file_path,
+                (t.missing_since IS NULL) AS available,
+                COALESCE(t.track_artist_credit, a.name) as artist,
+                al.title as album, al.id as album_id,
+                COALESCE(t.cover_path, al.cover_path) as cover_path
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN albums al ON t.album_id = al.id
+         WHERE t.file_path = ANY($1::text[])`,
+        [audioPaths]
+      );
+      for (const r of rows) {
+        trackMap.set(r.file_path, r);
+      }
+    }
+
     const result = [];
 
     for (const entry of entries) {
@@ -52,26 +84,18 @@ export default async function browseRoutes(fastify) {
         });
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        const audioExts = ['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus'];
-        const isAudio = audioExts.includes(ext);
-
-        if (isAudio) {
-          const track = await query(
-            `SELECT t.id, t.title, t.duration, t.file_size, t.format, t.track_number,
-                    a.name as artist, al.title as album, al.id as album_id,
-                    COALESCE(t.cover_path, al.cover_path) as cover_path
-             FROM tracks t
-             LEFT JOIN artists a ON t.artist_id = a.id
-             LEFT JOIN albums al ON t.album_id = al.id
-             WHERE t.file_path = $1`,
-            [fullPath]
-          );
-
+        if (audioExts.has(ext)) {
+          const trackRow = trackMap.get(fullPath);
+          let meta = null;
+          if (trackRow) {
+            const { file_path, ...metaFields } = trackRow;
+            meta = metaFields;
+          }
           result.push({
             name: entry.name,
             path: relativePath,
             type: 'file',
-            meta: track.rows[0] || null,
+            meta,
           });
         }
       }

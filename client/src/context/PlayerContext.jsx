@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api.js';
+import { toast } from '../components/layout/Toast.jsx';
 
 const VOL_KEY = 'tunecloud-volume';
 const PlayerContext = createContext(null);
@@ -296,10 +297,17 @@ export function PlayerProvider({ children }) {
   const playTrack = useCallback(
     (track, trackList = null) => {
       if (!track) return;
-      const list = trackList || (queue.some(t => t.id === track.id) ? queue : [track]);
+      if (track.available === false) {
+        toast('This track is unavailable (file missing on disk)', 'warning');
+        return;
+      }
+      const rawList = trackList || (queue.some((t) => t.id === track.id) ? queue : [track]);
+      const list = rawList.filter((t) => t.available !== false);
+      if (list.length === 0) return;
       const idx = list.findIndex((t) => t.id === track.id);
       const targetIdx = idx >= 0 ? idx : 0;
-      const isSameTrack = currentTrack?.id != null && currentTrack.id === track.id;
+      const activeTrack = list[targetIdx];
+      const isSameTrack = currentTrack?.id != null && currentTrack.id === activeTrack.id;
 
       setQueue(list);
       setQueueIndex(targetIdx);
@@ -314,7 +322,7 @@ export function PlayerProvider({ children }) {
 
       scrobbledRef.current = false;
       setCurrentTime(0);
-      setDuration(Number.isFinite(track.duration) && track.duration > 0 ? track.duration : 0);
+      setDuration(Number.isFinite(activeTrack.duration) && activeTrack.duration > 0 ? activeTrack.duration : 0);
       setPlaybackKey((k) => k + 1);
     },
     [queue, currentTrack?.id, safePlay]
@@ -334,6 +342,7 @@ export function PlayerProvider({ children }) {
 
   const addToQueue = useCallback(
     (track) => {
+      if (!track || track.available === false) return;
       setQueue((prev) => [...prev, track]);
       if (queueIndex === -1) {
         scrobbledRef.current = false;
@@ -478,6 +487,8 @@ export function PlayerProvider({ children }) {
     const onError = () => {
       playRequestIdRef.current += 1;
       setIsPlaying(false);
+      const title = currentTrack?.title || currentTrack?.file_name || 'track';
+      toast(`Playback error: unable to play "${title}"`, 'error');
     };
 
     el.addEventListener('timeupdate', onTime);

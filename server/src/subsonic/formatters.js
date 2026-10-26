@@ -133,6 +133,7 @@ export function formatSong(row) {
     starred: iso(row.starred_at),
     userRating: row.user_rating != null ? Number(row.user_rating) : undefined,
     playCount: row.play_count != null ? Number(row.play_count) : undefined,
+    available: row.available != null ? Boolean(row.available) : (row.missing_since == null),
   });
 }
 
@@ -156,6 +157,7 @@ export const SONG_SELECT = `
   SELECT t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
          t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
          t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
+         t.missing_since, (t.missing_since IS NULL) AS available,
          t.track_artist_credit,
          al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
          al.cover_path AS album_cover,
@@ -175,6 +177,7 @@ export function songSelectSql(userId = null) {
     SELECT t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
            t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
            t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
+           t.missing_since, (t.missing_since IS NULL) AS available,
            t.track_artist_credit,
            al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
            al.cover_path AS album_cover,
