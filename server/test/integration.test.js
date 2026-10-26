@@ -254,6 +254,56 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       await fs.unlink(lrcFile);
     });
 
+    await t.test('web lyrics prefer lrc.red, preserve its cache and fall back to LRCLIB on upstream failure', async () => {
+      const originalFetch = globalThis.fetch;
+      const artistId = (await query("INSERT INTO artists (name) VALUES ('Lyrics Test Artist') RETURNING id")).rows[0].id;
+      const lyricsFile = path.join(process.env.MUSIC_DIR, 'lyrics-provider.mp3');
+      await fs.writeFile(lyricsFile, Buffer.alloc(128));
+      const lyricsId = (await query(`INSERT INTO tracks (file_path,file_name,title,artist_id,duration)
+        VALUES ($1,'lyrics-provider.mp3','Lyrics Test Song',$2,120) RETURNING id`, [lyricsFile, artistId])).rows[0].id;
+      const requests = [];
+      try {
+        globalThis.fetch = async url => {
+          requests.push(String(url));
+          if (String(url).includes('lrc.red/search.json')) return new Response(JSON.stringify({ hits: [
+            { isrc: 'USAAA2600001', title: 'Lyrics Test Song', artist: 'Lyrics Test Artist', duration: 120 },
+          ] }));
+          if (String(url).includes('lrc.red/s/')) return new Response('[00:01.00]<00:01.00>First <00:01.50>line\n[00:04.00]Second line');
+          throw new Error('LRCLIB must not be called after lrc.red succeeds');
+        };
+        const first = await call('GET', `/api/lyrics?id=${lyricsId}`, owner);
+        assert.equal(first.statusCode, 200);
+        assert.equal(first.json().source, 'lrc.red');
+        assert.equal(first.json().lyrics.includes('<00:'), false);
+        assert.equal(requests.length, 2);
+        const cached = await call('GET', `/api/lyrics?id=${lyricsId}`, owner);
+        assert.deepEqual(cached.json(), first.json());
+        assert.equal(requests.length, 2, 'cached synchronized lyrics do not refetch providers');
+
+        await query('DELETE FROM track_lyrics WHERE track_id=$1', [lyricsId]);
+        requests.length = 0;
+        globalThis.fetch = async url => {
+          requests.push(String(url));
+          return String(url).includes('lrc.red') ? new Response('', { status: 429 }) : new Response(JSON.stringify({
+            syncedLyrics: '[00:01.00]LRCLIB fallback line',
+          }));
+        };
+        const fallback = await call('GET', `/api/lyrics?id=${lyricsId}`, owner);
+        assert.equal(fallback.statusCode, 200);
+        assert.equal(fallback.json().source, 'lrclib');
+        assert.ok(requests[0].startsWith('https://lrc.red/'));
+        assert.ok(requests[1].startsWith('https://lrclib.net/'));
+
+        await query('DELETE FROM track_lyrics WHERE track_id=$1', [lyricsId]);
+        await fs.writeFile(lyricsFile.replace('.mp3', '.lrc'), '[00:01.00]Local line');
+        globalThis.fetch = async () => { throw new Error('local synchronized lyrics must win'); };
+        const local = await call('GET', `/api/lyrics?id=${lyricsId}`, owner);
+        assert.equal(local.json().source, 'local');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
     await t.test('Subsonic Form POST preserves repeating parameters, duplicate songs, and order in playlists and queue', async () => {
       // 1. Form POST createPlaylist with duplicate songId preserving order
       const createRes = await app.inject({

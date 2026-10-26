@@ -22,32 +22,13 @@ import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { extractPalette } from '../../utils/palette.js';
 import { ArtistLinks } from '../common/ArtistLinks.jsx';
+import { parseLrc, activeLineIndex } from '../../utils/lyrics.js';
 
 function formatTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00';
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-function parseLrc(lrcText) {
-  if (!lrcText) return [];
-  const lines = lrcText.split('\n');
-  const result = [];
-  const regex = /\[(\d{2}):(\d{2}(?:\.\d+)?)\](.*)/;
-
-  for (const line of lines) {
-    const match = line.match(regex);
-    if (match) {
-      const min = parseInt(match[1], 10);
-      const sec = parseFloat(match[2]);
-      const text = match[3].trim();
-      const startMs = Math.round((min * 60 + sec) * 1000);
-      result.push({ startMs, endMs: startMs + 4000, text });
-    }
-  }
-
-  return result.sort((a, b) => a.startMs - b.startMs);
 }
 
 const lyricsCache = new Map();
@@ -106,6 +87,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
 
   // Load lyrics with request cancellation, instant memory caching and zero flash
   const loadLyrics = useCallback(() => {
+    const reqId = ++activeRequestIdRef.current;
     if (!isLyricsOpen || !currentTrack) return;
     const trackId = currentTrack.id;
 
@@ -116,7 +98,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
       return;
     }
 
-    const reqId = ++activeRequestIdRef.current;
+    const controller = new AbortController();
     setLoading(true);
     setLyricsData(null);
     setLoadedTrackId(null);
@@ -127,15 +109,16 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
         title: currentTrack.title || currentTrack.fileName || '',
         artist: currentTrack.artist || '',
         duration: currentTrack.duration || 0,
-      })
+      }, { signal: controller.signal })
       .then((data) => {
         if (reqId !== activeRequestIdRef.current) return;
         let parsedData;
         if (data.synced) {
-          const parsed = parseLrc(data.lyrics);
+          const parsed = parseLrc(data.lyrics, currentTrack.duration);
           parsedData = {
-            synced: true,
+            synced: parsed.length > 0,
             lines: parsed,
+            text: parsed.length ? undefined : data.lyrics,
             source: data.source || 'lrclib',
           };
         } else {
@@ -149,10 +132,12 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
         setLyricsData(parsedData);
         setLoadedTrackId(trackId);
       })
-      .catch(() => {
+      .catch((error) => {
         if (reqId !== activeRequestIdRef.current) return;
+        if (error.name === 'AbortError') return;
         const notFoundData = { notFound: true };
-        lyricsCache.set(trackId, notFoundData);
+        // The server may have exhausted providers during a temporary outage.
+        // Retry on reopening instead of caching failed lookups as permanent misses.
         setLyricsData(notFoundData);
         setLoadedTrackId(trackId);
       })
@@ -161,10 +146,14 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
           setLoading(false);
         }
       });
+    return () => {
+      activeRequestIdRef.current++;
+      controller.abort();
+    };
   }, [isLyricsOpen, currentTrack?.id]);
 
   useEffect(() => {
-    loadLyrics();
+    return loadLyrics();
   }, [loadLyrics]);
 
   // Handle Fullscreen events and key listener (Escape, F)
@@ -201,18 +190,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   };
 
   // Find active line index
-  const currentMs = currentTime * 1000;
-  let activeIndex = -1;
-  if (lyricsData?.synced && lyricsData.lines?.length > 0) {
-    const lines = lyricsData.lines;
-    for (let i = 0; i < lines.length; i++) {
-      if (currentMs >= lines[i].startMs) {
-        activeIndex = i;
-      } else {
-        break;
-      }
-    }
-  }
+  const activeIndex = lyricsData?.synced ? activeLineIndex(lyricsData.lines, currentTime) : -1;
 
   // Auto-scroll to active line
   useEffect(() => {
@@ -222,7 +200,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
         block: 'center',
       });
     }
-  }, [activeIndex]);
+  }, [activeIndex, loadedTrackId, isLyricsOpen, mobileTab]);
 
   // Volume slider click/drag handler
   const handleVolumeBarClick = (e) => {
@@ -469,7 +447,12 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
       <header className="relative z-20 flex items-center justify-between px-6 py-4 shrink-0">
         {/* Source badge / synced via */}
         <div className="flex items-center gap-2">
-          {lyricsData?.synced ? (
+          {!isCurrentlyLoading && lyricsData?.source === 'lrc.red' ? (
+            <a href="https://lrc.red" target="_blank" rel="noopener noreferrer"
+              className="text-xs text-white/60 hover:text-white underline underline-offset-4">
+              Lyrics via lrc.red
+            </a>
+          ) : !isCurrentlyLoading && lyricsData?.synced ? (
             <span className="text-xs font-lyrics text-white/35 font-normal tracking-wide select-none">
               synced via {lyricsData.source?.toLowerCase() === 'lrclib' ? 'lrclib' : lyricsData.source || 'lrc'}
             </span>
@@ -551,8 +534,17 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                   return (
                     <div
                       key={idx}
+                      role="button"
+                      tabIndex={0}
+                      aria-current={isActive ? 'true' : undefined}
                       ref={isActive ? activeLineRef : null}
                       onClick={() => seek(line.startMs / 1000)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          seek(line.startMs / 1000);
+                        }
+                      }}
                       className={`cursor-pointer transition-all duration-300 rounded-xl py-2 sm:py-2.5 px-3 sm:px-4 ${
                         isActive
                           ? 'scale-[1.02] origin-left text-white'
@@ -562,7 +554,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
                       }`}
                     >
                       <p
-                        className={`tracking-tight leading-snug transition-all duration-300 ${
+                        className={`whitespace-pre-line tracking-tight leading-snug transition-all duration-300 ${
                           isActive
                             ? 'text-2xl sm:text-3xl lg:text-[36px] font-[650] text-white'
                             : 'text-xl sm:text-2xl lg:text-[28px] font-medium'

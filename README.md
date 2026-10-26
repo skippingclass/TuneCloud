@@ -119,7 +119,7 @@ The project was built to demonstrate practical, production-grade DevOps workflow
 ### 🎨 Modern Web Experience
 * **Spotify-Inspired Glassmorphism**: Clean dark aesthetic with glass panels and customizable accent palettes (Peach, Emerald, Amber, Violet, Cyan).
 * **Live Search**: Instant keyboard-driven global search dropdown with direct navigation to tracks, artists, and albums.
-* **Synchronized Lyrics**: Built-in karaoke synchronized lyrics display supporting embedded tags, local `.lrc` / `.txt` files, and LRCLIB integration.
+* **Synchronized Lyrics**: Line-by-line highlighting, automatic scrolling, and click-to-seek, with local `.lrc` / `.txt` files, embedded tags, [lrc.red](https://lrc.red), and LRCLIB. Enhanced LRC word timestamps are removed; words are not individually animated.
 * **Interactive Player & Queue**: Volume scroll wheel, draggable playback scrubber, persistent queue drawer, and cover art lightbox.
 * **Dual-Mode Library Synchronization**:
   * **Incremental Rescan**: Ultra-fast filesystem diffing based on `mtime`, detecting newly added/removed files and auto-healing unlinked tracks without re-reading unchanged files.
@@ -230,7 +230,7 @@ Monitoring is implemented using the **kube-prometheus-stack**.
 | **Infrastructure & Orchestration** | Kubernetes (k3s), Docker, Helm                    |
 | **CI/CD & GitOps**                 | GitHub Actions, ArgoCD, Git                       |
 | **Monitoring & Metrics**           | Prometheus, Grafana, Postgres Exporter            |
-| **Protocols & Integrations**       | OpenSubsonic / Subsonic v1.16.1, Spotify API, LRCLIB |
+| **Protocols & Integrations**       | OpenSubsonic / Subsonic v1.16.1, Spotify API, lrc.red, LRCLIB |
 | **Backend**                        | Node.js 22, Fastify, PostgreSQL 16                |
 | **Frontend**                       | React 18, Vite, Tailwind CSS 3, Lucide, Nginx     |
 
@@ -264,6 +264,12 @@ docker compose up -d
   - **Server URL**: `http://YOUR_SERVER_IP:APP_PORT`
   - **Username**: `admin` (or `ADMIN_USERNAME` set in `.env`)
   - **Password**: `admin` (or `ADMIN_PASSWORD` set in `.env`)
+
+### Web player lyrics
+
+The web player uses cached synchronized lyrics first, then synchronized local files and embedded tags, followed by [lrc.red](https://lrc.red) and LRCLIB. Plain lyrics remain the fallback when no timed lyrics are available. Existing synchronized cache entries are retained; adding a provider does not replace them automatically. Subsonic lyrics behavior is unchanged.
+
+lrc.red requests run on the server, identify TuneCloud and its contact email, and fall back to LRCLIB on failures, rate limits, or unsuitable matches. Set `LRC_RED_CONTACT_EMAIL` to override the default project contact (`itzmeowzer@gmail.com`); Docker Compose passes it to the server. The web player credits and links to lrc.red when displaying its lyrics, in accordance with its [API terms](https://lrc.red/api).
 
 ### Kubernetes & GitOps (Production)
 
