@@ -1,5 +1,6 @@
 import { query, transaction } from '../db.js';
 import { requireAuth } from '../auth.js';
+import { fetchLrcRedLyrics } from '../lrc-red.js';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -820,7 +821,7 @@ export default async function trackRoutes(fastify) {
     }
   });
 
-  // ---- Lyrics (Cache in DB -> Local .lrc -> Embedded tags -> LRCLIB multi-tier fallback) ----
+  // ---- Lyrics (Cache -> Local -> Embedded -> lrc.red -> LRCLIB -> Plain) ----
   fastify.get('/api/lyrics', { preHandler: requireAuth }, async (req, reply) => {
     const { id, title, artist, duration } = req.query || {};
     let trackId = id ? parseInt(id, 10) : null;
@@ -878,7 +879,7 @@ export default async function trackRoutes(fastify) {
       localResult = readLocalLyrics(trackPath, cleanTitle);
       if (localResult && localResult.synced) {
         if (trackId) {
-          saveLyricsToDb(trackId, localResult).catch(() => {});
+          await saveLyricsToDb(trackId, localResult);
         }
         return localResult;
       }
@@ -890,13 +891,24 @@ export default async function trackRoutes(fastify) {
       embeddedResult = await readEmbeddedLyrics(trackPath);
       if (embeddedResult && embeddedResult.synced) {
         if (trackId) {
-          saveLyricsToDb(trackId, embeddedResult).catch(() => {});
+          await saveLyricsToDb(trackId, embeddedResult);
         }
         return embeddedResult;
       }
     }
 
-    // 4. Try LRCLIB: if LRCLIB has synced lyrics, it takes precedence over plain embedded/local
+    // 4. Prefer lrc.red line timings before the LRCLIB fallback.
+    if (trackTitle) {
+      const redResult = await fetchLrcRedLyrics({
+        title: trackTitle, artist: trackArtist, album: trackAlbum, duration: trackDuration,
+      });
+      if (redResult) {
+        if (trackId) await saveLyricsToDb(trackId, redResult);
+        return redResult;
+      }
+    }
+
+    // 5. LRCLIB synced lyrics take precedence over plain embedded/local text.
     let lrclibResult = null;
     if (trackTitle) {
       lrclibResult = await fetchLrclibLyrics({
@@ -908,17 +920,17 @@ export default async function trackRoutes(fastify) {
 
       if (lrclibResult && lrclibResult.synced) {
         if (trackId) {
-          saveLyricsToDb(trackId, lrclibResult).catch(() => {});
+          await saveLyricsToDb(trackId, lrclibResult);
         }
         return lrclibResult;
       }
     }
 
-    // 5. Fall back to plain lyrics: prefer embedded tags, then local files, then LRCLIB plain, then cached plain
+    // 6. Fall back to plain lyrics: embedded, local, LRCLIB, cached.
     const bestPlain = embeddedResult || localResult || lrclibResult || cachedPlain;
     if (bestPlain) {
       if (trackId) {
-        saveLyricsToDb(trackId, bestPlain).catch(() => {});
+        await saveLyricsToDb(trackId, bestPlain);
       }
       return bestPlain;
     }
