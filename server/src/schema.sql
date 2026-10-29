@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS artists (
   created_at TIMESTAMP DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_mbid ON artists(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_lower ON artists(LOWER(name));
 
 CREATE TABLE IF NOT EXISTS albums (
   id SERIAL PRIMARY KEY,
@@ -21,6 +22,8 @@ CREATE TABLE IF NOT EXISTS albums (
   UNIQUE(title, artist_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_mbid ON albums(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_artist_lower ON albums(LOWER(title), artist_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_null_artist_lower ON albums(LOWER(title)) WHERE artist_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_albums_folder_path ON albums(folder_path);
 
 CREATE TABLE IF NOT EXISTS tracks (

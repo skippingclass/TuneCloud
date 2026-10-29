@@ -458,16 +458,21 @@ export default async function trackRoutes(fastify) {
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
        WHERE al.title ILIKE $1
+         AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
        LIMIT $2`,
       [searchTerm, safeLimit]
     );
 
     const artists = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
        WHERE a.name ILIKE $1
+         AND (
+           EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL)
+           OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL))
+         )
        LIMIT $2`,
       [searchTerm, safeLimit]
     );
