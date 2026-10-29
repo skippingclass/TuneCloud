@@ -150,7 +150,7 @@ async function flushTrackBatch(client, items) {
   for (const item of items) {
     const title = item.albumTitle || path.basename(normalizeAlbumFolder(item.folderPath));
     const normFolder = normalizeAlbumFolder(item.folderPath);
-    const key = `${normFolder}\u0000${title}`;
+    const key = `${normFolder.toLowerCase()}\u0000${title.toLowerCase()}`;
     if (!albumGroups.has(key)) {
       albumGroups.set(key, { normFolder, title, tracks: [] });
     }
@@ -183,61 +183,90 @@ async function flushTrackBatch(client, items) {
   }
 
   // 2. Artists: collect ONLY canonical artist names + inferred album artists (no comma/feat composites)
-  const allArtistNames = [
-    ...new Set([
-      ...items.map((i) => i.canonicalArtistName).filter(Boolean),
-      ...albumMetaList.map((a) => extractLeadingArtist(a.albumArtistName) || a.albumArtistName).filter(Boolean),
-    ]),
-  ];
+  const uniqueArtistMap = new Map();
+  for (const name of [
+    ...items.map((i) => i.canonicalArtistName).filter(Boolean),
+    ...albumMetaList.map((a) => extractLeadingArtist(a.albumArtistName) || a.albumArtistName).filter(Boolean),
+  ]) {
+    const lower = name.toLowerCase();
+    if (!uniqueArtistMap.has(lower)) {
+      uniqueArtistMap.set(lower, name);
+    }
+  }
+  const allArtistNames = Array.from(uniqueArtistMap.values());
 
   const artistMap = new Map();
   if (allArtistNames.length > 0) {
-    const { rows } = await client.query(
-      `INSERT INTO artists (name)
-       SELECT n FROM unnest($1::text[]) AS n
-       ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-       RETURNING id, name`,
-      [allArtistNames]
+    const { rows: existingArtists } = await client.query(
+      `SELECT id, name FROM artists WHERE LOWER(name) = ANY($1::text[])`,
+      [allArtistNames.map((n) => n.toLowerCase())]
     );
-    for (const r of rows) artistMap.set(r.name, r.id);
+    for (const r of existingArtists) {
+      artistMap.set(r.name.toLowerCase(), r.id);
+      artistMap.set(r.name, r.id);
+    }
+    const newArtistNames = allArtistNames.filter((n) => !artistMap.has(n.toLowerCase()));
+    if (newArtistNames.length > 0) {
+      const { rows: inserted } = await client.query(
+        `INSERT INTO artists (name)
+         SELECT n FROM unnest($1::text[]) AS n
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id, name`,
+        [newArtistNames]
+      );
+      for (const r of inserted) {
+        artistMap.set(r.name.toLowerCase(), r.id);
+        artistMap.set(r.name, r.id);
+      }
+    }
   }
 
   // 3. Albums: look up existing albums in DB by folder_path OR (title, artist_id)
   for (const a of albumMetaList) {
-    a.artistId = a.albumArtistName ? (artistMap.get(a.albumArtistName) ?? null) : null;
+    a.artistId = a.albumArtistName ? (artistMap.get(a.albumArtistName.toLowerCase()) ?? artistMap.get(a.albumArtistName) ?? null) : null;
   }
 
-  const titles = albumMetaList.map((a) => a.title);
-  const folders = albumMetaList.map((a) => a.normFolder);
+  const titles = albumMetaList.map((a) => a.title.toLowerCase());
+  const folders = albumMetaList.map((a) => a.normFolder.toLowerCase());
   const artistIds = albumMetaList.map((a) => a.artistId).filter((id) => id !== null);
 
   const { rows: existingAlbumRows } = await client.query(
     `SELECT id, title, folder_path, artist_id
      FROM albums
-     WHERE folder_path = ANY($1::text[])
-        OR (title = ANY($2::text[]) AND artist_id = ANY($3::int[]))`,
+     WHERE LOWER(folder_path) = ANY($1::text[])
+        OR (LOWER(title) = ANY($2::text[]) AND artist_id = ANY($3::int[]))`,
     [folders, titles, artistIds]
   );
 
   const albumMap = new Map();
 
   for (const a of albumMetaList) {
-    // Exact match on folder_path + title first
+    const normFolderLower = a.normFolder.toLowerCase();
+    const titleLower = a.title.toLowerCase();
+
+    // Exact match on folder_path + title (case-insensitive) first
     let match = existingAlbumRows.find(
-      (r) => r.folder_path === a.normFolder && r.title === a.title
+      (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower && r.title.toLowerCase() === titleLower
     );
-    // If not found, match on title + artist_id (album was moved to another folder)
+    // If not found, match on folder_path alone (folder was renamed or title casing updated)
+    if (!match) {
+      match = existingAlbumRows.find(
+        (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower
+      );
+    }
+    // If not found, match on title + artist_id (case-insensitive, album was moved to another folder)
     if (!match && a.artistId != null) {
       match = existingAlbumRows.find(
-        (r) => r.title === a.title && r.artist_id === a.artistId
+        (r) => r.title.toLowerCase() === titleLower && r.artist_id === a.artistId
       );
-      if (match && match.folder_path !== a.normFolder) {
-        // Update album folder_path in DB to the new folder
-        await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [a.normFolder, match.id]);
-        match.folder_path = a.normFolder;
-      }
     }
+
     if (match) {
+      if (match.folder_path !== a.normFolder || match.title !== a.title) {
+        await client.query('UPDATE albums SET folder_path = $1, title = $2 WHERE id = $3', [a.normFolder, a.title, match.id]);
+        match.folder_path = a.normFolder;
+        match.title = a.title;
+      }
       albumMap.set(a.groupKey, match.id);
     }
   }
@@ -269,12 +298,12 @@ async function flushTrackBatch(client, items) {
 
     for (const r of upsertedRows) {
       const meta = albumsToUpsert.find(
-        (a) => a.title === r.title && (a.artistId === r.artist_id || a.normFolder === r.folder_path)
+        (a) => a.title.toLowerCase() === r.title.toLowerCase() && (a.artistId === r.artist_id || (a.normFolder && r.folder_path && a.normFolder.toLowerCase() === r.folder_path.toLowerCase()))
       );
       if (meta) {
         albumMap.set(meta.groupKey, r.id);
       } else if (r.folder_path) {
-        albumMap.set(`${r.folder_path}\u0000${r.title}`, r.id);
+        albumMap.set(`${r.folder_path.toLowerCase()}\u0000${r.title.toLowerCase()}`, r.id);
       }
     }
   }
@@ -284,13 +313,13 @@ async function flushTrackBatch(client, items) {
   for (const i of items) {
     const title = i.albumTitle || path.basename(normalizeAlbumFolder(i.folderPath));
     const normFolder = normalizeAlbumFolder(i.folderPath);
-    const aKey = `${normFolder}\u0000${title}`;
+    const aKey = `${normFolder.toLowerCase()}\u0000${title.toLowerCase()}`;
     const albumId = albumMap.get(aKey) ?? null;
     const albumMeta = albumMetaList.find((a) => a.groupKey === aKey);
 
     // Prefer album artist if track starts with/matches it, else canonical track artist
     const canonicalName = i.canonicalArtistName || albumMeta?.albumArtistName || null;
-    const trackArtistId = canonicalName ? (artistMap.get(canonicalName) ?? null) : null;
+    const trackArtistId = canonicalName ? (artistMap.get(canonicalName.toLowerCase()) ?? artistMap.get(canonicalName) ?? null) : null;
 
     if (albumId) touchedAlbumIds.add(albumId);
     [
@@ -531,16 +560,24 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
     const inferred = inferAlbumArtist(tracksForInference);
     const canonicalAlbumArtist = extractLeadingArtist(inferred.name) || inferred.name;
 
-    // Find or insert canonical album artist in artists table
+    // Find or insert canonical album artist in artists table (case-insensitive)
     let artistId = null;
     if (canonicalAlbumArtist) {
-      const artRes = await client.query(
-        `INSERT INTO artists (name) VALUES ($1)
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-         RETURNING id`,
+      const artLookup = await client.query(
+        `SELECT id FROM artists WHERE LOWER(name) = LOWER($1) LIMIT 1`,
         [canonicalAlbumArtist]
       );
-      artistId = artRes.rows[0]?.id || null;
+      if (artLookup.rows.length > 0) {
+        artistId = artLookup.rows[0].id;
+      } else {
+        const artRes = await client.query(
+          `INSERT INTO artists (name) VALUES ($1)
+           ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+           RETURNING id`,
+          [canonicalAlbumArtist]
+        );
+        artistId = artRes.rows[0]?.id || null;
+      }
     }
 
     // Check existing album row
@@ -554,7 +591,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
     // If another album already exists with (title, artistId), merge tracks to avoid conflict
     if (artistId != null) {
       const { rows: conflictRows } = await client.query(
-        'SELECT id FROM albums WHERE title = $1 AND artist_id = $2 AND id != $3',
+        'SELECT id FROM albums WHERE LOWER(title) = LOWER($1) AND artist_id = $2 AND id != $3',
         [albumTitle, artistId, albumId]
       );
       if (conflictRows.length > 0) {
@@ -618,14 +655,36 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     [prefix]
   );
   const knownByPath = new Map(known.map((r) => [r.file_path, r]));
+  const knownByLowerPath = new Map(known.map((r) => [r.file_path.toLowerCase(), r]));
 
   const onDisk = new Set();
   const toProcess = [];
   const touchedAlbumIds = new Set();
+  const pathCaseUpdates = [];
 
   for (const f of files) {
     onDisk.add(f.path);
-    const k = knownByPath.get(f.path);
+    let k = knownByPath.get(f.path);
+    if (!k) {
+      const lowerCandidate = knownByLowerPath.get(f.path.toLowerCase());
+      if (lowerCandidate) {
+        const oldFolder = path.dirname(lowerCandidate.file_path);
+        const newFolder = path.dirname(f.path);
+        pathCaseUpdates.push({
+          id: lowerCandidate.id,
+          newPath: f.path,
+          albumId: lowerCandidate.album_id,
+          oldFolder,
+          newFolder,
+        });
+        knownByPath.delete(lowerCandidate.file_path);
+        lowerCandidate.file_path = f.path;
+        lowerCandidate.missing_since = null;
+        knownByPath.set(f.path, lowerCandidate);
+        k = lowerCandidate;
+        if (k.album_id) touchedAlbumIds.add(k.album_id);
+      }
+    }
     if (full || !k || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
@@ -654,6 +713,15 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const client = await getClient();
   try {
+    if (pathCaseUpdates.length > 0) {
+      for (const upd of pathCaseUpdates) {
+        await client.query('UPDATE tracks SET file_path = $1, missing_since = NULL WHERE id = $2', [upd.newPath, upd.id]);
+        if (upd.albumId && upd.oldFolder !== upd.newFolder) {
+          const normNewFolder = normalizeAlbumFolder(upd.newFolder);
+          await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [normNewFolder, upd.albumId]);
+        }
+      }
+    }
     for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
       const parsed = await mapLimit(toProcess.slice(i, i + BATCH_SIZE), PARSE_CONCURRENCY, parseTrackFile);
       for (const p of parsed) {
