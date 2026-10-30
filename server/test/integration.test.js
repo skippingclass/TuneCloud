@@ -19,6 +19,7 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
   process.env.JWT_SECRET = crypto.randomBytes(32).toString('hex');
   process.env.NODE_ENV = 'test';
   process.env.DOTENV_CONFIG_PATH = '/dev/null';
+  process.env.LRC_RED_CONTACT_EMAIL = 'operator@example.net';
   process.env.MUSIC_DIR = await fs.mkdtemp(path.join(os.tmpdir(), 'tunecloud-test-music-'));
   process.env.COVERS_DIR = path.join(process.env.MUSIC_DIR, 'covers');
   await fs.mkdir(process.env.COVERS_DIR);
@@ -262,6 +263,7 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       const lyricsId = (await query(`INSERT INTO tracks (file_path,file_name,title,artist_id,duration)
         VALUES ($1,'lyrics-provider.mp3','Lyrics Test Song',$2,120) RETURNING id`, [lyricsFile, artistId])).rows[0].id;
       const requests = [];
+      const originalContact = process.env.LRC_RED_CONTACT_EMAIL;
       try {
         globalThis.fetch = async url => {
           requests.push(String(url));
@@ -295,12 +297,26 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
         assert.ok(requests[1].startsWith('https://lrclib.net/'));
 
         await query('DELETE FROM track_lyrics WHERE track_id=$1', [lyricsId]);
+        requests.length = 0;
+        delete process.env.LRC_RED_CONTACT_EMAIL;
+        globalThis.fetch = async url => {
+          requests.push(String(url));
+          assert.ok(String(url).startsWith('https://lrclib.net/'), 'unset contact must skip lrc.red entirely');
+          return new Response(JSON.stringify({ syncedLyrics: '[00:01.00]Unconfigured provider fallback' }));
+        };
+        const unconfigured = await call('GET', `/api/lyrics?id=${lyricsId}`, owner);
+        assert.equal(unconfigured.statusCode, 200);
+        assert.equal(unconfigured.json().source, 'lrclib');
+        assert.equal(requests.length, 1);
+
+        await query('DELETE FROM track_lyrics WHERE track_id=$1', [lyricsId]);
         await fs.writeFile(lyricsFile.replace('.mp3', '.lrc'), '[00:01.00]Local line');
         globalThis.fetch = async () => { throw new Error('local synchronized lyrics must win'); };
         const local = await call('GET', `/api/lyrics?id=${lyricsId}`, owner);
         assert.equal(local.json().source, 'local');
       } finally {
         globalThis.fetch = originalFetch;
+        process.env.LRC_RED_CONTACT_EMAIL = originalContact;
       }
     });
 

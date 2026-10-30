@@ -92,7 +92,7 @@ async function lookup(target, options) {
 export async function fetchLrcRedLyrics(metadata, { fetchImpl = globalThis.fetch, timeoutMs = 4000 } = {}) {
   const { title, artist } = splitTrackArtistAndTitle(metadata.artist, metadata.title);
   if (!title || !artist) return null;
-  const contact = (process.env.LRC_RED_CONTACT_EMAIL || 'itzmeowzer@gmail.com').trim();
+  const contact = (process.env.LRC_RED_CONTACT_EMAIL || '').trim();
   if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(contact)) return null;
   const target = { ...metadata, title, artist };
   const key = JSON.stringify([target, contact]);

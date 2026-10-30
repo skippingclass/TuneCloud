@@ -98,7 +98,7 @@ Music is mounted read-only by default. PostgreSQL data and cached artwork use th
 
 To enable MP3 tag editing, set both `TAG_EDITING_ENABLED=true` and `MUSIC_MOUNT_MODE=rw`. Spotify artist lookup is optional; configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` to enable it.
 
-Web lyrics prefer an existing synchronized cache entry, then local and embedded synchronized text, lrc.red, and LRCLIB. Plain text is the fallback. `LRC_RED_CONTACT_EMAIL` identifies your installation to lrc.red; its data is credited in the player. Set a stable `SUBSONIC_ENCRYPTION_KEY` before rotating `JWT_SECRET` to preserve encrypted Subsonic credentials. See [.env.example](.env.example) for the complete configuration.
+Web lyrics prefer an existing synchronized cache entry, then local and embedded synchronized text, lrc.red, and LRCLIB. Plain text is the fallback. Set `LRC_RED_CONTACT_EMAIL` to the contact email of the person running your server; it is sent to lrc.red in the server's User-Agent. There is no built-in contact address: when the variable is empty or invalid, new requests skip lrc.red and continue to LRCLIB. Cached lyrics remain available, and lrc.red data is credited in the player. Set a stable `SUBSONIC_ENCRYPTION_KEY` before rotating `JWT_SECRET` to preserve encrypted Subsonic credentials. See [.env.example](.env.example) for the complete configuration.
 
 ## Architecture
 
@@ -172,6 +172,8 @@ Database integration tests require `TEST_DATABASE_URL` pointing to a separate te
 The capture script uses headless Chromium against a running instance. Credentials are read from `TUNECLOUD_USERNAME` and `TUNECLOUD_PASSWORD`; they are never written to the script, screenshots, or browser state files. See [scripts/capture-readme.mjs](scripts/capture-readme.mjs) for setup and capture options.
 
 ## Credits and license
+
+Project author contact: [itzmeowzer@gmail.com](mailto:itzmeowzer@gmail.com). This is the author's contact, not a default identity for servers running TuneCloud.
 
 Design process adapted from [unslop by Damir Sokolovsky (@heydamir)](https://github.com/heydamir/unslop), licensed under CC BY 4.0. Album artwork and lyrics belong to their respective rights holders.
 
