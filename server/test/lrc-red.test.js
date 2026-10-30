@@ -1,16 +1,35 @@
-import test from 'node:test';
+import test, { beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchLrcRedLyrics, normalizeLineLrc } from '../src/lrc-red.js';
 
 const target = { title: 'Test Song', artist: 'Test Artist', album: 'Test Album', duration: 120 };
 const hit = { ...target, isrc: 'USAAA2600001' };
 const json = data => new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } });
+const originalContact = process.env.LRC_RED_CONTACT_EMAIL;
+beforeEach(() => { process.env.LRC_RED_CONTACT_EMAIL = 'operator@example.net'; });
+after(() => {
+  if (originalContact === undefined) delete process.env.LRC_RED_CONTACT_EMAIL;
+  else process.env.LRC_RED_CONTACT_EMAIL = originalContact;
+});
+
+test('lrc.red sends no requests without a valid installation contact', async () => {
+  let requests = 0;
+  const options = { fetchImpl: async () => { requests++; throw new Error('Must not request lrc.red'); } };
+  delete process.env.LRC_RED_CONTACT_EMAIL;
+  assert.equal(await fetchLrcRedLyrics(target, options), null);
+  for (const contact of ['', '   ', 'not-an-email', 'skippingclass@github', 'owner@example.net\r\nX-Header: value']) {
+    process.env.LRC_RED_CONTACT_EMAIL = contact;
+    assert.equal(await fetchLrcRedLyrics(target, options), null);
+  }
+  assert.equal(requests, 0);
+});
 
 test('lrc.red selects matching version and duration, identifies app, and returns line-only LRC', async () => {
   const requests = [];
   const result = await fetchLrcRedLyrics(target, { fetchImpl: async (url, options) => {
     requests.push(url);
     assert.match(options.headers['User-Agent'], /TuneCloud.*https:\/\/github.com\/skippingclass\/TuneCloud.*contact: [^\s]+@/);
+    assert.ok(options.headers['User-Agent'].includes('contact: operator@example.net'));
     if (url.includes('/search.json')) return json({ hits: [
       { ...hit, isrc: 'USAAA2600002', title: 'Test Song (Acoustic)' },
       { ...hit, isrc: 'USAAA2600003', duration: 180 },

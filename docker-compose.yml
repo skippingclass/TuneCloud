@@ -38,7 +38,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique ADMIN_PASSWORD}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
-      LRC_RED_CONTACT_EMAIL: ${LRC_RED_CONTACT_EMAIL:-itzmeowzer@gmail.com}
+      LRC_RED_CONTACT_EMAIL: ${LRC_RED_CONTACT_EMAIL:-}
     volumes:
       - ${MUSIC_DIR}:/music:${MUSIC_MOUNT_MODE:-ro}
       - covers_data:/app/covers
