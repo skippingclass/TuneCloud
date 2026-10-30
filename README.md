@@ -288,6 +288,8 @@ kubectl get pods -n tunecloud
 
 Or connect your **ArgoCD** instance directly to the GitOps repository for automated continuous delivery.
 
+The Mix interface keeps TuneCloud’s peach accent and glass surfaces with consistent spacing and lighter typography. Design process adapted from [unslop by Damir Sokolovsky (@heydamir)](https://github.com/heydamir/unslop), licensed under CC BY 4.0.
+
 ## 📜 License
 
 GPL v3.0

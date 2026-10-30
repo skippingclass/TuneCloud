@@ -236,7 +236,7 @@ export function Header({
               }
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Search tracks, albums, artists..."
+            placeholder="Search your music"
             className="glass-input w-full pl-9 pr-9 py-1.5 text-xs sm:text-sm bg-white/[0.025]"
           />
           {searchQuery && (

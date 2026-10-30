@@ -39,7 +39,7 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick, compact = fal
   return (
     <div
       onClick={() => onClick?.(album)}
-      className={`glass-card group text-left cursor-pointer select-none flex flex-col justify-between ${
+      className={`shelf-album glass-card group text-left cursor-pointer select-none flex flex-col justify-between ${
         compact ? 'p-2 rounded-xl' : 'p-3 rounded-2xl'
       }`}
     >
