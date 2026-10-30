@@ -44,7 +44,11 @@ export function AlbumsView({ onAlbumClick, onArtistClick }) {
       .genres()
       .then((res) => {
         const list = Array.isArray(res) ? res : [];
-        setGenresList(list);
+        const names = list
+          .map((genre) => typeof genre === 'string' ? genre : genre?.name)
+          .filter((name) => typeof name === 'string' && name.trim())
+          .map((name) => name.trim());
+        setGenresList([...new Set(names)]);
       })
       .catch(() => {});
   }, []);
