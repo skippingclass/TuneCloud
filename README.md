@@ -1,295 +1,178 @@
-# TuneCloud - Cloud-Native Music Platform ☁️🎵
+# TuneCloud
 
-<div align="center">
-    <a href="https://www.docker.com/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/docker/docker-original-wordmark.svg" alt="docker" width="40" height="40"/>
-    </a>
-    <a href="https://www.nginx.com/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/nginx/nginx-original.svg" alt="nginx" width="40" height="40"/>
-    </a>
-    <a href="https://www.postgresql.org/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/postgresql/postgresql-original.svg" alt="postgresql" width="40" height="40"/>
-    </a>
-    <a href="https://kubernetes.io/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/kubernetes/kubernetes-plain.svg" alt="kubernetes" width="40" height="40"/>
-    </a>
-    <a href="https://helm.sh/" target="_blank" rel="noreferrer">
-        <img src="https://cdn.simpleicons.org/helm/white" alt="helm" width="40" height="40"/>
-    </a>
-    <a href="https://argo-cd.readthedocs.io/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/argocd/argocd-original.svg" alt="argocd" width="40" height="40"/>
-    </a>
-    <a href="https://prometheus.io/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/prometheus/prometheus-original.svg" alt="prometheus" width="40" height="40"/>
-    </a>
-    <a href="https://grafana.com/" target="_blank" rel="noreferrer">
-        <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/grafana/grafana-original.svg" alt="grafana" width="40" height="40"/>
-    </a>
-</div>
+A self-hosted music server with a React web player, a Subsonic-compatible API, and a Docker-to-Kubernetes delivery pipeline.
 
----
+[Production instance](https://tune.realgeek.ru/) · [Quickstart](#quickstart) · [Development](#development) · [GitOps repository](https://github.com/skippingclass/TuneCloud-GitOps)
 
-**TuneCloud** is a self-hosted music server and streaming platform built with Node.js, PostgreSQL, and React, designed from the ground up for automated cloud-native deployment. It combines a modern **Spotify-inspired glassmorphic Web UI** with **full Subsonic / OpenSubsonic API compatibility**, backed by a production-ready DevOps delivery lifecycle.
+![TuneCloud home and album spotlight](pictures/01_home_hub.png)
 
----
+## Features
 
-## 📸 Interface & UI/UX Showcase
+- **Your music, on your server.** Scan local folders, browse albums and artists, search the collection, and manage playlists and favorites.
+- **A web player built for listening.** A floating player, playback queue, cover viewer, and responsive layouts. The Mix design combines peach accents and glass surfaces with consistent spacing.
+- **Line-synchronized lyrics.** Highlighting, automatic scrolling, and click-to-seek from local files, embedded tags, [lrc.red](https://lrc.red), and [LRCLIB](https://lrclib.net). Word timestamps are reduced to line timing.
+- **Subsonic clients.** Native audio streaming with HTTP range requests, search, playlists, favorites, ratings, scrobbling, and saved queues. Streaming serves the original audio; server-side transcoding is not implemented.
+- **Incremental library scans.** Re-read changed files or run a full metadata scan. Missing files retain their IDs and playlist, favorite, and history references.
+- **Multiple users.** Administrator-managed accounts, personal listening history, session revocation, and optional MP3 tag editing.
 
-<div align="center">
-  <p><b>TuneCloud</b> features a refined <b>Midnight OLED</b> glassmorphic interface inspired by Spotify, crafted with responsive layouts, smooth micro-interactions, ambient cover glow, and live synchronized karaoke lyrics.</p>
-</div>
+## Screenshots
 
-### 🎬 Live Demonstrations (1080p Full HD)
-
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <b>Dynamic Home Hub & Floating Player Bar</b><br/>
-      <sub>Spotify-style 2×4 «On Repeat» quick grid, Spotlight with Ambient Glow & smooth scrolling</sub><br/><br/>
-      <a href="pictures/home_demo.mp4"><img src="pictures/home_demo.gif" alt="Dynamic Home Hub Demo 1080p" width="100%"/></a><br/>
-      <sub><b>Full HD 1080p:</b> <a href="pictures/home_demo.mp4">▶ MP4</a> · <a href="pictures/home_demo.webm">WebM</a></sub>
-    </td>
-    <td width="50%" align="center">
-      <b>Real-Time Fullscreen Karaoke Lyrics</b><br/>
-      <sub>Live synchronized LRCLIB tracking, active line glow & clean typography</sub><br/><br/>
-      <a href="pictures/lyrics_demo.mp4"><img src="pictures/lyrics_demo.gif" alt="Karaoke Lyrics Demo 1080p" width="100%"/></a><br/>
-      <sub><b>Full HD 1080p:</b> <a href="pictures/lyrics_demo.mp4">▶ MP4</a> · <a href="pictures/lyrics_demo.webm">WebM</a></sub>
-    </td>
-  </tr>
-</table>
-
-### 🖼️ High-Resolution Views
+The Mix interface with the music library from the [production instance](https://tune.realgeek.ru/). Select an image to open it at full resolution.
 
 <table>
   <tr>
     <td width="50%">
-      <h4 align="center">🏠 Spotify-Inspired Home Hub</h4>
-      <a href="pictures/01_home_hub.png"><img src="pictures/01_home_hub.png" alt="Dynamic Home Hub" width="100%"/></a>
-      <p align="center"><sub>Interactive 2×4 «On Repeat» quick grid, «Album of the Moment» hero card with ambient backglow, and algorithmic «Jump back in» history.</sub></p>
+      <a href="pictures/02_floating_player.png"><img src="pictures/02_floating_player.png" alt="Floating player with playback controls and queue access" width="100%" /></a>
+      <p><strong>Floating player</strong><br />Playback, seeking, lyrics, and queue controls stay within reach.</p>
     </td>
     <td width="50%">
-      <h4 align="center">🎵 Floating Player Bar</h4>
-      <a href="pictures/02_floating_player.png"><img src="pictures/02_floating_player.png" alt="Floating Player Bar" width="100%"/></a>
-      <p align="center"><sub>High-contrast frosted glass capsule, volume scroll wheel, draggable scrubber, queue drawer, and misclick-guarded close divider.</sub></p>
+      <a href="pictures/05_album_detail.png"><img src="pictures/05_album_detail.png" alt="Album artwork, metadata, and track list" width="100%" /></a>
+      <p><strong>Album view</strong><br />Artwork, credits, track order, and audio format in one place.</p>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <h4 align="center">🎤 Fullscreen Karaoke Lyrics</h4>
-      <a href="pictures/06_karaoke_lyrics.png"><img src="pictures/06_karaoke_lyrics.png" alt="Fullscreen Karaoke Lyrics" width="100%"/></a>
-      <p align="center"><sub>Real-time synchronized lyric scrolling via LRCLIB & embedded tags, Google Sans Flex font, active line scaling, and dynamic cover art glow.</sub></p>
+      <a href="pictures/03_albums_toolbar.png"><img src="pictures/03_albums_toolbar.png" alt="Album library with search, filters, and sorting" width="100%" /></a>
+      <p><strong>Album library</strong><br />Search, filter, and sort across the collection.</p>
     </td>
     <td width="50%">
-      <h4 align="center">💿 Album Deep Dive View</h4>
-      <a href="pictures/05_album_detail.png"><img src="pictures/05_album_detail.png" alt="Album Detail View" width="100%"/></a>
-      <p align="center"><sub>Clean tracklist omitting redundant album column, automatic guest feature highlighting (<code>feat.</code>), lossless FLAC/bitrate badges, and instant play queue.</sub></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <h4 align="center">📚 Albums Library — Sticky Toolbar</h4>
-      <a href="pictures/03_albums_toolbar.png"><img src="pictures/03_albums_toolbar.png" alt="Albums Toolbar Standard Density" width="100%"/></a>
-      <p align="center"><sub>Sticky header with total album count badge, instant search, genre and release year dropdown filters, and multi-mode sorting.</sub></p>
-    </td>
-    <td width="50%">
-      <h4 align="center">⚡ High-Density Compact Grid</h4>
-      <a href="pictures/04_compact_grid.png"><img src="pictures/04_compact_grid.png" alt="Albums Compact Grid" width="100%"/></a>
-      <p align="center"><sub>8-column compact view for large music collections with optimized typography and tight card margins.</sub></p>
+      <a href="pictures/04_compact_grid.png"><img src="pictures/04_compact_grid.png" alt="Compact album grid showing more releases per row" width="100%" /></a>
+      <p><strong>Compact layout</strong><br />A denser grid for browsing larger libraries.</p>
     </td>
   </tr>
 </table>
 
----
+<details>
+<summary>Lyrics and mobile views</summary>
 
-## 🎯 Project Goals (DevOps Showcase)
+<p><strong>Line-synchronized lyrics</strong> — surrounding text is blurred in this capture to keep the focus on the active line.</p>
+<a href="pictures/06_karaoke_lyrics.png"><img src="pictures/06_karaoke_lyrics.png" alt="Lyrics screen with a highlighted line, cover artwork, and playback controls" width="100%" /></a>
 
-The project was built to demonstrate practical, production-grade DevOps workflows around a real-world, high-traffic application:
+<p><strong>Mobile player</strong></p>
+<a href="pictures/07_mobile.png"><img src="pictures/07_mobile.png" alt="TuneCloud on a phone-sized screen with accessible player controls" width="320" /></a>
 
-* **Infrastructure as Code & GitOps**: Clear separation of application code and deployment configuration via a dedicated GitOps repository ([**TuneCloud-GitOps**](https://github.com/skippingclass/TuneCloud-GitOps)).
-* **Automated CI/CD Pipeline**: Multi-stage Docker builds using GitHub Actions, pushing versioned short-SHA tagged images to **GitHub Container Registry (GHCR)**, with automated GitOps updates via `yq`.
-* **GitOps Continuous Delivery**: **ArgoCD** continuously monitors the GitOps repository and synchronizes desired state to a **k3s Kubernetes** cluster with rolling zero-downtime updates.
-* **Kubernetes Orchestration**: Production-configured workloads with Helm, ConfigMaps, Secrets, Ingress routing, Persistent Volume Claims (PVCs), and health probes.
-* **Full-Stack Observability**: Native metrics scraped from `fastify-metrics` and `postgres-exporter` by Prometheus ServiceMonitors, visualized with custom Grafana dashboards.
-* **Security & Network Hardening**: Rate limiting (`@fastify/rate-limit`), security headers (`@fastify/helmet`), directory traversal protection, and token-authenticated audio streaming.
+</details>
 
----
+## DevOps focus
 
-## ✨ Application Features
+TuneCloud is primarily a DevOps portfolio project, with a working music server as the application behind it. The focus is on the full delivery and operations lifecycle: container builds, automated checks, image publishing, GitOps deployments to Kubernetes, persistent storage, health checks, and monitoring with Prometheus and Grafana. Application code lives here; Helm charts and deployment configuration are maintained in the separate [TuneCloud-GitOps repository](https://github.com/skippingclass/TuneCloud-GitOps).
 
-### 🎨 Modern Web Experience
-* **Spotify-Inspired Glassmorphism**: Clean dark aesthetic with glass panels and customizable accent palettes (Peach, Emerald, Amber, Violet, Cyan).
-* **Live Search**: Instant keyboard-driven global search dropdown with direct navigation to tracks, artists, and albums.
-* **Synchronized Lyrics**: Line-by-line highlighting, automatic scrolling, and click-to-seek, with local `.lrc` / `.txt` files, embedded tags, [lrc.red](https://lrc.red), and LRCLIB. Enhanced LRC word timestamps are removed; words are not individually animated.
-* **Interactive Player & Queue**: Volume scroll wheel, draggable playback scrubber, persistent queue drawer, and cover art lightbox.
-* **Dual-Mode Library Synchronization**:
-  * **Incremental Rescan**: Ultra-fast filesystem diffing based on `mtime`, detecting newly added/removed files and auto-healing unlinked tracks without re-reading unchanged files.
-  * **Full Rescan**: Deep tag re-parsing from disk, complete cover art re-extraction, and orphan metadata cleanup.
+## Quickstart
 
-### 📱 OpenSubsonic & Subsonic API (v1.16.1)
-Connect seamlessly with all popular Subsonic ecosystem clients (**Symfonium**, **Feishin**, **DSub**, **Tempo**, **Substreamer**):
-* **60+ Subsonic API Endpoints**: Full parity covering native audio streaming (HTTP byte-range seeking), scrobbling, playlists, star ratings, and search.
-* **Real Filesystem & ID3 Browsing**: Browse by artist/album ID3 tags or explore real disk folder hierarchies (`getIndexes` & `getMusicDirectory`).
-* **OpenSubsonic Extensions**: `songLyrics`, `playQueue`, `topSongsByArtistId`, `formPost`, and `playlistUpload`.
-* **Standard Authentication**: Token authentication (`u` + `t` + `s` MD5 salt) and clear/hex token support.
-
----
-
-## 🏗️ Architecture & Pipeline Visualization
-
-![CI Pipeline](pictures/1.png)
-
-![CD Pipeline & GitOps](pictures/2.png)
-
-![Monitoring Stack](pictures/3.png)
-
-![CI/CD Pipeline & Architecture](pictures/full.png)
-
----
-
-## 🏗️ Cloud-Native Architecture & Kubernetes
-
-The application is deployed on a **Kubernetes (k3s)** cluster using a custom **Helm Chart** stored in the dedicated GitOps repository: [**TuneCloud-GitOps**](https://github.com/skippingclass/TuneCloud-GitOps).
-
-### Kubernetes Resources
-
-* **Compute**
-
-  * `tunecloud-server`: Node.js backend API (Fastify)
-  * `tunecloud-client`: Nginx serving the React SPA
-  * `tunecloud-db`: PostgreSQL 16 database
-  * `postgres-exporter`: PostgreSQL metrics exporter
-
-* **Networking & Ingress**
-
-  * ClusterIP and NodePort Services for internal and external communication
-  * `ingress.yaml`: routes `tunecloud.local` to the client and `tunecloud.local/api` to the server
-  * `grafana-ingress.yaml`: routes `grafana.tunecloud.local` to Grafana
-
-* **Storage**
-
-  * `postgres-pvc`: persistent PostgreSQL data
-  * `covers-pvc`: persistent storage for album covers
-
-* **Configuration**
-
-  * `postgres-configmap`: SQL initialization scripts for database schema creation
-  * Kubernetes Secrets: `ghcr-secret`, `spotify-secret`, and `jwt-secret`
-
-Secrets used by the application are created manually during deployment and referenced by the workloads.
-
----
-
-## 🔄 CI/CD & GitOps Pipeline
-
-The delivery pipeline is automated using **GitHub Actions**, **Helm**, and **ArgoCD**, following a GitOps workflow.
-
-### 1. Continuous Integration
-
-* A push to the `main` branch triggers GitHub Actions.
-* Multi-stage Docker builds are executed for the client and server.
-* Images are tagged with the short Git commit SHA.
-* Images are pushed to **GitHub Container Registry (GHCR)**.
-
-### 2. GitOps Update
-
-* The CI pipeline uses `yq` to update image tags in `values.yaml` in the separate GitOps repository.
-* The updated configuration is committed and pushed automatically.
-
-### 3. ArgoCD Deployment
-
-* **ArgoCD** detects changes in the GitOps repository.
-* ArgoCD synchronizes the desired state with the k3s cluster.
-* Kubernetes performs a rolling update of the workloads, allowing new Pods to replace old ones without application downtime.
-
----
-
-## 📊 Monitoring & Observability
-
-Monitoring is implemented using the **kube-prometheus-stack**.
-
-* **ServiceMonitors**
-
-  * `server-monitor.yaml`: scrapes custom application metrics from `/metrics`, exposed by `fastify-metrics`
-  * `postgres-exporter-monitor.yaml`: scrapes PostgreSQL health and performance metrics
-
-* **Prometheus**
-
-  * Collects and stores metrics from the application and database.
-
-* **Grafana**
-
-  * Provides custom dashboards for visualizing application and infrastructure metrics.
-  * Accessible through `grafana.tunecloud.local`.
-
----
-
-## 💻 Tech Stack
-
-| Domain                             | Technologies                                      |
-| ---------------------------------- | ------------------------------------------------- |
-| **Infrastructure & Orchestration** | Kubernetes (k3s), Docker, Helm                    |
-| **CI/CD & GitOps**                 | GitHub Actions, ArgoCD, Git                       |
-| **Monitoring & Metrics**           | Prometheus, Grafana, Postgres Exporter            |
-| **Protocols & Integrations**       | OpenSubsonic / Subsonic v1.16.1, Spotify API, lrc.red, LRCLIB |
-| **Backend**                        | Node.js 22, Fastify, PostgreSQL 16                |
-| **Frontend**                       | React 18, Vite, Tailwind CSS 3, Lucide, Nginx     |
-
----
-
-## 🚀 Quick Start
-
-### Docker Compose
-
-The fastest way to deploy TuneCloud on a server, VPS, or local machine:
+Requires Docker Compose and a folder containing your music.
 
 ```bash
-# 1. Clone repository
-git clone https://github.com/skippingclass/TuneCloud.git tunecloud
-cd tunecloud
-
-# 2. Copy environment template and configure paths
+git clone https://github.com/skippingclass/TuneCloud.git
+cd TuneCloud
 cp .env.example .env
-# Edit .env: set your MUSIC_DIR path and change default passwords
-nano .env
+```
 
-# 3. Start the entire stack
+Edit `.env` before starting:
+
+| Variable | Set it to |
+| --- | --- |
+| `MUSIC_DIR` | Absolute path to your music folder |
+| `POSTGRES_PASSWORD` | A unique database password |
+| `JWT_SECRET` | A random secret of at least 32 characters; generate one with `openssl rand -hex 32` |
+| `ADMIN_PASSWORD` | A unique initial administrator password of at least 12 UTF-8 bytes, at most 72 |
+| `APP_PORT` | The public HTTP port; defaults to `80` |
+| `COOKIE_SECURE` | `true` when served over HTTPS; `false` for a local HTTP installation |
+
+```bash
 docker compose up -d
 ```
 
-> **Single Port Architecture**: TuneCloud Web UI, REST API, and OpenSubsonic API are all unified on port `APP_PORT` (default: `80`, configurable to `3000`, `8080`, etc. in `.env`).
+Open `http://YOUR_SERVER:APP_PORT`. Sign in with `ADMIN_USERNAME` (default `admin`) and the `ADMIN_PASSWORD` you configured, then start a library scan. There is no default administrator password.
 
-#### Connecting Clients
-- **Web Interface**: Open `http://YOUR_SERVER_IP:APP_PORT` in your browser.
-- **OpenSubsonic Apps** (Symfonium, Feishin, Substreamer, DSub, Tempo):
-  - **Server URL**: `http://YOUR_SERVER_IP:APP_PORT`
-  - **Username**: `admin` (or `ADMIN_USERNAME` set in `.env`)
-  - **Password**: `admin` (or `ADMIN_PASSWORD` set in `.env`)
+The web player, REST API, and Subsonic API share the same public port. For a Subsonic client, use the same server URL and account credentials. Client support varies by app and endpoint.
 
-### Web player lyrics
+To build the images from this checkout instead of using the published images:
 
-The web player uses cached synchronized lyrics first, then synchronized local files and embedded tags, followed by [lrc.red](https://lrc.red) and LRCLIB. Plain lyrics remain the fallback when no timed lyrics are available. Existing synchronized cache entries are retained; adding a provider does not replace them automatically. Subsonic lyrics behavior is unchanged.
-
-lrc.red requests run on the server, identify TuneCloud and its contact email, and fall back to LRCLIB on failures, rate limits, or unsuitable matches. Set `LRC_RED_CONTACT_EMAIL` to override the default project contact (`itzmeowzer@gmail.com`); Docker Compose passes it to the server. The web player credits and links to lrc.red when displaying its lyrics, in accordance with its [API terms](https://lrc.red/api).
-
-### Kubernetes & GitOps (Production)
-
-TuneCloud adheres to enterprise GitOps best practices: application source code and deployment configurations are strictly decoupled.
-
-All Kubernetes manifests, Helm charts, and ArgoCD configurations are maintained in [**TuneCloud-GitOps**](https://github.com/skippingclass/TuneCloud-GitOps).
-
-To deploy manually via Helm:
 ```bash
-git clone https://github.com/skippingclass/TuneCloud-GitOps.git
-cd TuneCloud-GitOps
-
-helm install tunecloud ./tunecloud -n tunecloud --create-namespace
-kubectl get pods -n tunecloud
+docker compose up -d --build
 ```
 
-Or connect your **ArgoCD** instance directly to the GitOps repository for automated continuous delivery.
+### Storage and configuration
 
-The Mix interface keeps TuneCloud’s peach accent and glass surfaces with consistent spacing and lighter typography. Design process adapted from [unslop by Damir Sokolovsky (@heydamir)](https://github.com/heydamir/unslop), licensed under CC BY 4.0.
+Music is mounted read-only by default. PostgreSQL data and cached artwork use the `pgdata` and `covers_data` volumes. Back up the database and music collection before moving an installation.
 
-## 📜 License
+To enable MP3 tag editing, set both `TAG_EDITING_ENABLED=true` and `MUSIC_MOUNT_MODE=rw`. Spotify artist lookup is optional; configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` to enable it.
 
-GPL v3.0
+Web lyrics prefer an existing synchronized cache entry, then local and embedded synchronized text, lrc.red, and LRCLIB. Plain text is the fallback. `LRC_RED_CONTACT_EMAIL` identifies your installation to lrc.red; its data is credited in the player. Set a stable `SUBSONIC_ENCRYPTION_KEY` before rotating `JWT_SECRET` to preserve encrypted Subsonic credentials. See [.env.example](.env.example) for the complete configuration.
+
+## Architecture
+
+The browser connects to Nginx, which serves the React app and proxies `/api/` and `/rest/` to Fastify. The server reads the music library, stores metadata and user data in PostgreSQL, and caches artwork on disk.
+
+| Layer | Technologies |
+| --- | --- |
+| Web interface | React 18, Vite 7, Tailwind CSS 4, Lucide |
+| API and storage | Node.js 22+, Fastify 5, PostgreSQL 16 |
+| Media integrations | Subsonic / OpenSubsonic, lrc.red, LRCLIB, Spotify / Deezer |
+| Containers and deployment | Docker Compose, Nginx, Kubernetes (k3s), Helm, Argo CD |
+| Delivery and monitoring | GitHub Actions, GHCR, Prometheus, Grafana |
+
+[![Application, delivery pipeline, and monitoring architecture](pictures/full.png)](pictures/full.png)
+
+<details>
+<summary>Individual architecture diagrams</summary>
+
+**Continuous integration**
+
+![CI pipeline](pictures/1.png)
+
+**GitOps delivery**
+
+![CD pipeline](pictures/2.png)
+
+**Monitoring**
+
+![Monitoring stack](pictures/3.png)
+
+</details>
+
+### Delivery and operations
+
+Pull requests and pushes to `main` run syntax checks, server tests against PostgreSQL, client tests, and a production frontend build. Successful pushes build and publish client and server images to GHCR using `latest` and short-SHA tags. A follow-up job updates the image references in the GitOps repository; Argo CD applies those changes to the cluster.
+
+Helm charts and Kubernetes configuration live in [TuneCloud-GitOps](https://github.com/skippingclass/TuneCloud-GitOps). Keep deployment secrets in the target environment. For a manual Helm installation:
+
+```bash
+git clone https://github.com/skippingclass/TuneCloud-GitOps.git
+helm install tunecloud ./TuneCloud-GitOps/tunecloud \
+  --namespace tunecloud --create-namespace
+```
+
+The API exposes `/api/health` for liveness, `/api/ready` for database readiness, and `/metrics` for Prometheus. Metrics include library size, scan results, and active audio streams. The GitOps setup integrates Prometheus and Grafana.
+
+## Development
+
+Use Node.js 22.15+ and PostgreSQL. Configure `server/.env` from [server/.env.example](server/.env.example) with a local database and music directory.
+
+```bash
+npm ci
+npm ci --prefix server
+npm ci --prefix client
+npm run db:migrate
+npm run dev
+```
+
+Vite serves the frontend on port `5173` and proxies API requests to the server on port `4000`.
+
+```bash
+npm run check --prefix server
+npm test
+npm run build
+```
+
+Database integration tests require `TEST_DATABASE_URL` pointing to a separate test database. Alternatively, with PostgreSQL tools installed, run `bash server/scripts/test-postgres.sh` to create a disposable cluster. Integration suites are skipped when `TEST_DATABASE_URL` is absent from a normal `npm test` run.
+
+### Refreshing screenshots
+
+The capture script uses headless Chromium against a running instance. Credentials are read from `TUNECLOUD_USERNAME` and `TUNECLOUD_PASSWORD`; they are never written to the script, screenshots, or browser state files. See [scripts/capture-readme.mjs](scripts/capture-readme.mjs) for setup and capture options.
+
+## Credits and license
+
+Design process adapted from [unslop by Damir Sokolovsky (@heydamir)](https://github.com/heydamir/unslop), licensed under CC BY 4.0. Album artwork and lyrics belong to their respective rights holders.
+
+TuneCloud is licensed under [GPL v3.0](LICENSE).
