@@ -90,7 +90,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
   };
 
   return (
-    <div className="fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/[0.12] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
+    <div className="tune-player fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/[0.12] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
       <div className="w-full h-full flex items-center justify-between gap-3 sm:gap-4">
         {/* Left: Track artwork & metadata */}
         <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-3 shrink-0">

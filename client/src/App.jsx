@@ -234,7 +234,7 @@ function MainLayout({ user, onLogout }) {
   const activePlaylist = route.view === 'playlist' ? (selectedPlaylist || route.param) : selectedPlaylist;
 
   const viewTitles = {
-    home: 'Home Hub',
+    home: 'Your library',
     albums: 'Albums',
     album: activeAlbum?.title || 'Album',
     artists: 'Artists',
@@ -250,7 +250,7 @@ function MainLayout({ user, onLogout }) {
   };
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-surface-950 text-surface-100">
+    <div className="tune-shell h-screen flex flex-col overflow-hidden bg-surface-950 text-surface-100">
       <div className="flex flex-1 min-h-0 overflow-hidden relative">
         {/* Left Sidebar */}
         <Sidebar
@@ -281,7 +281,7 @@ function MainLayout({ user, onLogout }) {
             currentViewTitle={viewTitles[route.view]}
           />
 
-          <main className="flex-1 overflow-y-auto p-4 sm:p-7 pb-[120px] sm:pb-[140px] bg-black/15">
+          <main className="tune-main flex-1 overflow-y-auto p-4 sm:p-7 pb-[120px] sm:pb-[140px] bg-black/15">
             {route.view === 'home' && (
               <HomeView
                 key={scanVersion}

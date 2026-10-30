@@ -115,7 +115,7 @@ export function Sidebar({
         />
       )}
       <aside
-        className={`fixed lg:static inset-y-0 left-0 z-50 w-64 glass-panel border-r border-white/[0.06] flex flex-col h-full select-none transition-transform duration-300 ease-out lg:translate-x-0 ${
+        className={`tune-sidebar fixed lg:static inset-y-0 left-0 z-50 w-64 glass-panel border-r border-white/[0.06] flex flex-col h-full select-none transition-transform duration-300 ease-out lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -181,7 +181,7 @@ export function Sidebar({
                   scanning ? 'animate-spin' : ''
                 }`}
               />
-              <span>{scanning ? 'Scanning...' : 'Rescan Library'}</span>
+              <span>{scanning ? 'Scanning...' : 'Rescan library'}</span>
             </span>
           </button>
 
@@ -194,7 +194,7 @@ export function Sidebar({
             }`}
           >
             <Settings className={`w-4 h-4 ${activeView === 'settings' ? 'text-accent' : 'text-surface-400'}`} />
-            <span>Settings & Themes</span>
+            <span>Settings</span>
           </button>
 
           {user?.is_admin && (
