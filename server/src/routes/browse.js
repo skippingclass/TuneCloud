@@ -61,7 +61,7 @@ export default async function browseRoutes(fastify) {
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
-         WHERE t.file_path = ANY($1::text[])`,
+         WHERE t.file_path = ANY($1::text[]) AND t.missing_since IS NULL`,
         [audioPaths]
       );
       for (const r of rows) {
@@ -112,6 +112,7 @@ export default async function browseRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
+       WHERE t.missing_since IS NULL
        ORDER BY al.title, t.disc_number, COALESCE(t.track_number, 999), t.file_name`
     );
 

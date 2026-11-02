@@ -202,7 +202,7 @@ export const ALBUM_SELECT = `
          COALESCE(SUM(t.duration), 0) AS duration
   FROM albums al
   LEFT JOIN artists a ON al.artist_id = a.id
-  LEFT JOIN tracks t ON t.album_id = al.id`;
+  LEFT JOIN tracks t ON t.album_id = al.id AND t.missing_since IS NULL`;
 
 export function albumSelectSql(userId = null) {
   if (!userId) return ALBUM_SELECT;
@@ -216,7 +216,7 @@ export function albumSelectSql(userId = null) {
            ur.rating AS user_rating
     FROM albums al
     LEFT JOIN artists a ON al.artist_id = a.id
-    LEFT JOIN tracks t ON t.album_id = al.id
+    LEFT JOIN tracks t ON t.album_id = al.id AND t.missing_since IS NULL
     LEFT JOIN user_starred_albums sa ON sa.album_id = al.id AND sa.user_id = ${uid}
     LEFT JOIN user_ratings ur ON ur.entity_type = 'album' AND ur.entity_id = al.id AND ur.user_id = ${uid}`;
 }
@@ -226,10 +226,14 @@ export const ARTIST_SELECT = `
          COUNT(DISTINCT al.id)::int AS album_count,
          MIN(al.id) FILTER (WHERE al.cover_path IS NOT NULL) AS sample_album_id
   FROM artists a
-  LEFT JOIN albums al ON al.artist_id = a.id`;
+  LEFT JOIN albums al ON al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)`;
 
 export function artistSelectSql(userId = null) {
-  if (!userId) return `${ARTIST_SELECT} WHERE a.name NOT LIKE '%,%' GROUP BY a.id, a.name ORDER BY a.name ASC`;
+  const availFilter = `(
+    EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL)
+    OR EXISTS (SELECT 1 FROM albums al2 WHERE al2.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al2.id AND t.missing_since IS NULL))
+  )`;
+  if (!userId) return `${ARTIST_SELECT} WHERE a.name NOT LIKE '%,%' AND ${availFilter} GROUP BY a.id, a.name ORDER BY a.name ASC`;
   const uid = Number(userId);
   return `
     SELECT a.id, a.name,
@@ -238,10 +242,11 @@ export function artistSelectSql(userId = null) {
            sar.created_at AS starred_at,
            ur.rating AS user_rating
     FROM artists a
-    LEFT JOIN albums al ON al.artist_id = a.id
+    LEFT JOIN albums al ON al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
     LEFT JOIN user_starred_artists sar ON sar.artist_id = a.id AND sar.user_id = ${uid}
     LEFT JOIN user_ratings ur ON ur.entity_type = 'artist' AND ur.entity_id = a.id AND ur.user_id = ${uid}
     WHERE a.name NOT LIKE '%,%'
+      AND ${availFilter}
     GROUP BY a.id, a.name, sar.created_at, ur.rating
     ORDER BY a.name ASC`;
 }

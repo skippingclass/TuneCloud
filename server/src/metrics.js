@@ -69,12 +69,12 @@ export async function refreshLibraryStats() {
   if (!metrics.libraryTracks) return;
   try {
     const { rows } = await query(`SELECT
-      (SELECT COUNT(*) FROM tracks) AS tracks,
-      (SELECT COUNT(*) FROM albums) AS albums,
-      (SELECT COUNT(*) FROM artists) AS artists,
+      (SELECT COUNT(*) FROM tracks WHERE missing_since IS NULL) AS tracks,
+      (SELECT COUNT(*) FROM albums al WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) AS albums,
+      (SELECT COUNT(*) FROM artists a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL))) AS artists,
       (SELECT COUNT(*) FROM users) AS users,
-      (SELECT COALESCE(SUM(duration), 0) FROM tracks) AS duration,
-      (SELECT COALESCE(SUM(file_size), 0) FROM tracks) AS size_bytes`);
+      (SELECT COALESCE(SUM(duration), 0) FROM tracks WHERE missing_since IS NULL) AS duration,
+      (SELECT COALESCE(SUM(file_size), 0) FROM tracks WHERE missing_since IS NULL) AS size_bytes`);
     const r = rows[0];
     metrics.libraryTracks.set(Number(r.tracks));
     metrics.libraryAlbums.set(Number(r.albums));

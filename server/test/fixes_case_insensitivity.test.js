@@ -191,18 +191,18 @@ test('Case-insensitivity: path rename synchronization, album/artist dedup, and a
       await fsp.unlink(ghostTrackPath);
       await scanDirectory(musicDir);
 
-      // Search again: track is returned with available: false, but ghost album is NOT returned in albums list!
+      // Search again: missing track and ghost album are NOT returned in search results
       const resMissing = await call('GET', '/api/search?q=Ghost');
       assert.equal(resMissing.statusCode, 200);
       const dataMissing = resMissing.json();
       assert.equal(dataMissing.albums.length, 0, 'Album with 0 available tracks must not appear in search albums');
-      assert.equal(dataMissing.tracks.length, 1);
-      assert.equal(dataMissing.tracks[0].available, false);
+      assert.equal(dataMissing.tracks.length, 0, 'Missing track must not appear in search tracks');
     });
   } finally {
+    await app.close();
+    await pool.end();
     await adminPool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await adminPool.end();
     await fsp.rm(musicDir, { recursive: true, force: true });
-    await app.close();
   }
 });

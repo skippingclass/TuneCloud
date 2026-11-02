@@ -205,7 +205,7 @@ export default async function scanRoutes(fastify) {
 
   // Cheap: no filesystem walk. File totals come from the last completed scan.
   fastify.get('/api/scan/status', { preHandler: requireAuth }, async () => {
-    const { rows } = await query('SELECT COUNT(*)::int AS count FROM tracks');
+    const { rows } = await query('SELECT COUNT(*)::int AS count FROM tracks WHERE missing_since IS NULL');
     const indexed = rows[0].count;
     const totalFiles = lastResult ? lastResult.total : null;
 

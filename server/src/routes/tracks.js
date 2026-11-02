@@ -34,7 +34,7 @@ export default async function trackRoutes(fastify) {
     };
     const orderClause = `${sortMap[sort] || 't.title ASC'}, t.id ASC`;
 
-    const conditions = [];
+    const conditions = ['t.missing_since IS NULL'];
     if (typeof q === 'string' && q.trim()) {
       if (q.length > 500) return reply.status(400).send({ error: 'Search query too long' });
     }
@@ -167,7 +167,9 @@ export default async function trackRoutes(fastify) {
     const safeLimit = isAll ? 5000 : Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
     const safeOffset = isAll ? 0 : Math.max(0, parseInt(offset, 10) || 0);
 
-    const conditions = [];
+    const conditions = [
+      'EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)',
+    ];
     const params = [];
 
     if (typeof q === 'string' && q.trim()) {
@@ -231,7 +233,7 @@ export default async function trackRoutes(fastify) {
                 MAX(last_played_at) as global_last_played_at,
                 SUM(play_count) as global_play_count
          FROM tracks
-         WHERE album_id IS NOT NULL
+         WHERE album_id IS NOT NULL AND missing_since IS NULL
          GROUP BY album_id
        ) ts ON ts.album_id = al.id
        LEFT JOIN (
@@ -240,7 +242,7 @@ export default async function trackRoutes(fastify) {
                 MAX(ph.played_at) as last_played_at
          FROM play_history ph
          JOIN tracks t ON ph.track_id = t.id
-         WHERE ph.user_id = $${userParamIndex} AND t.album_id IS NOT NULL
+         WHERE ph.user_id = $${userParamIndex} AND t.album_id IS NOT NULL AND t.missing_since IS NULL
          GROUP BY t.album_id
        ) ups ON ups.album_id = al.id
        ${whereClause}
@@ -276,7 +278,7 @@ export default async function trackRoutes(fastify) {
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
        LEFT JOIN artists al_a ON al.artist_id = al_a.id
-       WHERE t.album_id = $1
+       WHERE t.album_id = $1 AND t.missing_since IS NULL
        ORDER BY t.disc_number, COALESCE(t.track_number, 999), t.file_name`,
       [id]
     );
@@ -289,7 +291,13 @@ export default async function trackRoutes(fastify) {
     const safeLimit = isAll ? 5000 : Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
     const safeOffset = isAll ? 0 : Math.max(0, parseInt(offset, 10) || 0);
 
-    const conditions = ["a.name NOT LIKE '%,%'"];
+    const conditions = [
+      "a.name NOT LIKE '%,%'",
+      `(
+        EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL)
+        OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL))
+      )`,
+    ];
     const params = [];
 
     if (typeof q === 'string' && q.trim()) {
@@ -309,8 +317,8 @@ export default async function trackRoutes(fastify) {
 
     const { rows } = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
        ${whereClause}
        ORDER BY ${sortCol} ${sortDir}, a.id ASC
@@ -336,8 +344,8 @@ export default async function trackRoutes(fastify) {
     const trimmed = name.trim();
     let artistRes = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
        WHERE a.name ILIKE $1
        LIMIT 1`,
@@ -357,7 +365,8 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE (a.name ILIKE $1) OR (t.track_artist_credit ILIKE $2)
+       WHERE ((a.name ILIKE $1) OR (t.track_artist_credit ILIKE $2))
+         AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
       [trimmed, `%${trimmed}%`]
     );
@@ -383,11 +392,12 @@ export default async function trackRoutes(fastify) {
     const albumsRes = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
               (al.artist_id = $1) as is_primary_album,
-              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-              (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
-       WHERE al.artist_id = $1 OR al.id = ANY($2::int[])
+       WHERE (al.artist_id = $1 OR al.id = ANY($2::int[]))
+         AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
        ORDER BY (al.artist_id = $1) DESC, al.year DESC NULLS LAST, al.title ASC`,
       [artist.id, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
     );
@@ -408,8 +418,8 @@ export default async function trackRoutes(fastify) {
 
     const artistRes = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count
+              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
        WHERE a.id = $1`,
       [artistId]
@@ -431,7 +441,8 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE t.artist_id = $1 OR t.track_artist_credit ILIKE $2
+       WHERE (t.artist_id = $1 OR t.track_artist_credit ILIKE $2)
+         AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
       [artistId, `%${artist.name}%`]
     );
@@ -440,11 +451,12 @@ export default async function trackRoutes(fastify) {
     const albumsRes = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
               (al.artist_id = $1) as is_primary_album,
-              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-              (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration
+              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
-       WHERE al.artist_id = $1 OR al.id = ANY($2::int[])
+       WHERE (al.artist_id = $1 OR al.id = ANY($2::int[]))
+         AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
        ORDER BY (al.artist_id = $1) DESC, al.year DESC NULLS LAST, al.title ASC`,
       [artistId, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
     );
@@ -472,7 +484,8 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE t.title ILIKE $1 OR a.name ILIKE $1 OR t.track_artist_credit ILIKE $1 OR al.title ILIKE $1
+       WHERE (t.title ILIKE $1 OR a.name ILIKE $1 OR t.track_artist_credit ILIKE $1 OR al.title ILIKE $1)
+         AND t.missing_since IS NULL
        LIMIT $2`,
       [searchTerm, safeLimit]
     );
@@ -610,8 +623,8 @@ export default async function trackRoutes(fastify) {
 
       const { rows } = await query(
         `SELECT al.*, a.name as artist, al.artist_id,
-                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-                (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration,
+                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
+                (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration,
                 true as is_favorite
          FROM user_starred_albums sa
          JOIN albums al ON sa.album_id = al.id
@@ -650,8 +663,8 @@ export default async function trackRoutes(fastify) {
 
       const { rows } = await query(
         `SELECT a.*,
-                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count,
+                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count,
                 true as is_favorite
          FROM user_starred_artists sa
          JOIN artists a ON sa.artist_id = a.id
@@ -705,8 +718,8 @@ export default async function trackRoutes(fastify) {
       ),
       query(
         `SELECT al.*, a.name as artist, al.artist_id,
-                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id) as track_count,
-                (SELECT SUM(t.duration) FROM tracks t WHERE t.album_id = al.id) as duration,
+                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
+                (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration,
                 true as is_favorite
          FROM user_starred_albums sa
          JOIN albums al ON sa.album_id = al.id
@@ -718,8 +731,8 @@ export default async function trackRoutes(fastify) {
       ),
       query(
         `SELECT a.*,
-                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id) as track_count,
-                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id) as album_count,
+                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count,
                 true as is_favorite
          FROM user_starred_artists sa
          JOIN artists a ON sa.artist_id = a.id
@@ -807,7 +820,7 @@ export default async function trackRoutes(fastify) {
     const { rows } = await query(
       `SELECT genre as name, COUNT(*)::int as track_count
        FROM tracks
-       WHERE genre IS NOT NULL AND TRIM(genre) <> ''
+       WHERE genre IS NOT NULL AND TRIM(genre) <> '' AND missing_since IS NULL
        GROUP BY genre
        ORDER BY track_count DESC, genre ASC
        LIMIT 50`

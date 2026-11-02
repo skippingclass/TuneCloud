@@ -1,14 +1,79 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { computeFileHashes } from './file-fingerprints.js';
 import { glob } from 'glob';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from './db.js';
-import { extractAllMissingCovers } from './cover.js';
+import { extractAllMissingCovers, deleteTrackCover } from './cover.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
 const BATCH_SIZE = 300;
 const PARSE_CONCURRENCY = 12;
 const PG_INT_MAX = 2147483647;
+const MIN_UNIQUE_AUDIO_PAYLOAD_BYTES = 512;
+
+export function extractAudioPayload(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return Buffer.alloc(0);
+  let start = 0;
+  let end = buf.length;
+
+  // Strip leading ID3v2 tag(s) if valid syncsafe header
+  while (
+    start + 10 <= end &&
+    buf[start] === 0x49 &&
+    buf[start + 1] === 0x44 &&
+    buf[start + 2] === 0x33 &&
+    buf[start + 3] < 0xff &&
+    buf[start + 4] < 0xff &&
+    buf[start + 6] < 0x80 &&
+    buf[start + 7] < 0x80 &&
+    buf[start + 8] < 0x80 &&
+    buf[start + 9] < 0x80
+  ) {
+    const flags = buf[start + 5];
+    const tagSize =
+      ((buf[start + 6] & 0x7f) << 21) |
+      ((buf[start + 7] & 0x7f) << 14) |
+      ((buf[start + 8] & 0x7f) << 7) |
+      (buf[start + 9] & 0x7f);
+    const footer = (flags & 0x10) ? 10 : 0;
+    const nextStart = start + 10 + tagSize + footer;
+    if (nextStart <= end && nextStart > start) {
+      start = nextStart;
+    } else {
+      break;
+    }
+  }
+
+  // Strip trailing ID3v1 tag (128 bytes starting with 'TAG')
+  if (
+    end - start >= 128 &&
+    buf[end - 128] === 0x54 &&
+    buf[end - 127] === 0x41 &&
+    buf[end - 126] === 0x47
+  ) {
+    end -= 128;
+  }
+
+  return buf.subarray(start, end);
+}
+
+export { computeFileHashes } from './file-fingerprints.js';
+
+function stripExt(str) {
+  if (!str) return '';
+  return String(str).replace(/\.(mp3|flac|ogg|wav|m4a|aac|wma|opus)$/i, '').trim();
+}
+
+function extractFilenameTrackNumber(fileName) {
+  const s = stripExt(fileName);
+  if (!s) return null;
+  let m = s.match(/^\s*(?:(?:cd|disc|disk)\s*\d+\s*[-_.\s]+)?0*(\d{1,3})(?:\s*[-_.)\]]+|\s+)/i);
+  if (m) return Number(m[1]);
+  m = s.match(/^\s*track[\s_.-]*0*(\d{1,3})\b/i);
+  if (m) return Number(m[1]);
+  return null;
+}
 
 function isAudioFile(filePath) {
   return AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -18,6 +83,12 @@ function toInt(v) {
   if (v == null) return null;
   const n = Math.round(Number(v));
   return Number.isFinite(n) && Math.abs(n) <= PG_INT_MAX ? n : null;
+}
+
+function toBigIntStr(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? String(n) : null;
 }
 
 function cleanStr(v) {
@@ -309,7 +380,7 @@ async function flushTrackBatch(client, items) {
   }
 
   // 4. Tracks: each track links to canonical artistId, while preserving raw featuring credit
-  const cols = Array.from({ length: 18 }, () => []);
+  const cols = Array.from({ length: 23 }, () => []);
   for (const i of items) {
     const title = i.albumTitle || path.basename(normalizeAlbumFolder(i.folderPath));
     const normFolder = normalizeAlbumFolder(i.folderPath);
@@ -327,6 +398,7 @@ async function flushTrackBatch(client, items) {
       trackArtistId, albumId, i.trackNumber, i.discNumber, i.genre,
       i.year, i.bitrate, i.sampleRate, i.format, i.mtime, i.trackArtistCredit,
       i.albumArtistCredit, i.parseError,
+      i.dev ?? null, i.ino ?? null, i.birthtimeMs ?? null, i.contentHash ?? null, i.audioHash ?? null,
     ].forEach((v, idx) => cols[idx].push(v));
   }
 
@@ -335,13 +407,15 @@ async function flushTrackBatch(client, items) {
        file_path, file_name, file_size, duration, title,
        artist_id, album_id, track_number, disc_number, genre,
        year, bitrate, sample_rate, format, mtime, track_artist_credit,
-       album_artist_credit, parse_error
+       album_artist_credit, parse_error,
+       dev, ino, birthtime_ms, content_hash, audio_hash
      )
      SELECT * FROM unnest(
        $1::text[], $2::text[], $3::bigint[], $4::real[], $5::text[],
        $6::int[], $7::int[], $8::int[], $9::int[], $10::text[],
        $11::int[], $12::int[], $13::int[], $14::text[], $15::timestamptz[], $16::text[],
-       $17::text[], $18::boolean[]
+       $17::text[], $18::boolean[],
+       $19::bigint[], $20::bigint[], $21::bigint[], $22::text[], $23::text[]
      )
      ON CONFLICT (file_path) DO UPDATE SET
        file_name = EXCLUDED.file_name,
@@ -362,6 +436,11 @@ async function flushTrackBatch(client, items) {
        track_artist_credit = CASE WHEN EXCLUDED.parse_error THEN tracks.track_artist_credit ELSE EXCLUDED.track_artist_credit END,
        album_artist_credit = CASE WHEN EXCLUDED.parse_error THEN tracks.album_artist_credit ELSE EXCLUDED.album_artist_credit END,
        parse_error = EXCLUDED.parse_error,
+       dev = EXCLUDED.dev,
+       ino = EXCLUDED.ino,
+       birthtime_ms = EXCLUDED.birthtime_ms,
+       content_hash = EXCLUDED.content_hash,
+       audio_hash = EXCLUDED.audio_hash,
        updated_at = NOW()`,
     cols
   );
@@ -406,9 +485,10 @@ async function writeBatch(client, items, touchedAlbumIds) {
   return written;
 }
 
-/** Parses tags into a flat record. Never throws: unreadable tags fall back to a basic entry. */
-async function parseTrackFile({ path: filePath, size, mtime }) {
+/** Parses tags and hashes into a flat record. Never throws: unreadable tags fall back to a basic entry. */
+async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = null, nlink = 1, birthtimeMs = null }) {
   const fileName = path.basename(filePath);
+  const { contentHash, audioHash, audioPayloadSize } = await computeFileHashes(filePath);
   const base = {
     filePath,
     fileName,
@@ -427,6 +507,13 @@ async function parseTrackFile({ path: filePath, size, mtime }) {
     format: path.extname(filePath).toLowerCase().slice(1),
     folderPath: path.dirname(filePath),
     mtime,
+    dev,
+    ino,
+    nlink,
+    birthtimeMs,
+    contentHash,
+    audioHash,
+    audioPayloadSize,
   };
 
   try {
@@ -463,7 +550,7 @@ async function parseTrackFile({ path: filePath, size, mtime }) {
   }
 }
 
-/** Lists audio files with size/mtime in a single directory walk (stat follows symlinks). */
+/** Lists audio files with size/mtime/inode identity in a single directory walk (stat follows symlinks). */
 async function listAudioFiles(musicDir) {
   const physicalRoot = await fs.realpath(musicDir);
   const pattern = path.join(musicDir, '**/*').replace(/\\/g, '/');
@@ -478,10 +565,343 @@ async function listAudioFiles(musicDir) {
       if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
       const stat = await fs.stat(physical);
       if (!stat.isFile()) return null;
-      return { path: e.fullpath(), size: stat.size, mtime: stat.mtime };
+      return {
+        path: e.fullpath(),
+        size: stat.size,
+        mtime: stat.mtime,
+        dev: toBigIntStr(stat.dev),
+        ino: toBigIntStr(stat.ino),
+        nlink: Number.isFinite(stat.nlink) ? stat.nlink : 1,
+        birthtimeMs: Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
+          ? String(Math.round(stat.birthtimeMs))
+          : null,
+      };
     } catch { return null; }
   });
   return files.filter(Boolean);
+}
+
+/**
+ * Merges a verified duplicate pair (missing original track row `originalId` + live duplicate row `duplicateLiveId`)
+ * inside a transaction on `client`, preserving `originalId` and migrating all user references.
+ */
+export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveId) {
+  if (!originalId || !duplicateLiveId || originalId === duplicateLiveId) return false;
+
+  const { rows: mRows } = await client.query('SELECT * FROM tracks WHERE id = $1 FOR UPDATE', [originalId]);
+  const { rows: lRows } = await client.query('SELECT * FROM tracks WHERE id = $1 FOR UPDATE', [duplicateLiveId]);
+  if (mRows.length === 0 || lRows.length === 0) return false;
+
+  const m = mRows[0];
+  const l = lRows[0];
+
+  // Migrate user_starred_tracks
+  await client.query(
+    `UPDATE user_starred_tracks SET track_id = $1
+     WHERE track_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM user_starred_tracks u2
+         WHERE u2.user_id = user_starred_tracks.user_id AND u2.track_id = $1
+       )`,
+    [m.id, l.id]
+  );
+  await client.query('DELETE FROM user_starred_tracks WHERE track_id = $1', [l.id]);
+
+  // Migrate playlist_tracks
+  await client.query('UPDATE playlist_tracks SET track_id = $1 WHERE track_id = $2', [m.id, l.id]);
+
+  // Migrate play_history
+  await client.query('UPDATE play_history SET track_id = $1 WHERE track_id = $2', [m.id, l.id]);
+
+  // Migrate user_ratings
+  await client.query(
+    `UPDATE user_ratings SET entity_id = $1
+     WHERE entity_type = 'track' AND entity_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM user_ratings r2
+         WHERE r2.user_id = user_ratings.user_id AND r2.entity_type = 'track' AND r2.entity_id = $1
+       )`,
+    [m.id, l.id]
+  );
+  await client.query("DELETE FROM user_ratings WHERE entity_type = 'track' AND entity_id = $1", [l.id]);
+
+  // Migrate bookmarks
+  await client.query(
+    `UPDATE bookmarks SET track_id = $1
+     WHERE track_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM bookmarks b2
+         WHERE b2.user_id = bookmarks.user_id AND b2.track_id = $1
+       )`,
+    [m.id, l.id]
+  );
+  await client.query('DELETE FROM bookmarks WHERE track_id = $1', [l.id]);
+
+  // Migrate play_queues
+  await client.query('UPDATE play_queues SET current_track_id = $1 WHERE current_track_id = $2', [m.id, l.id]);
+  await client.query(
+    'UPDATE play_queues SET track_ids = array_replace(track_ids, $2, $1) WHERE $2 = ANY(track_ids)',
+    [m.id, l.id]
+  );
+
+  // Migrate track_lyrics
+  await client.query(
+    `UPDATE track_lyrics SET track_id = $1
+     WHERE track_id = $2
+       AND NOT EXISTS (SELECT 1 FROM track_lyrics tl2 WHERE tl2.track_id = $1)`,
+    [m.id, l.id]
+  );
+  await client.query('DELETE FROM track_lyrics WHERE track_id = $1', [l.id]);
+
+  // Migrate track_credits
+  await client.query(
+    `UPDATE track_credits SET track_id = $1
+     WHERE track_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM track_credits tc2
+         WHERE tc2.track_id = $1 AND tc2.artist_id = track_credits.artist_id AND tc2.role = track_credits.role
+       )`,
+    [m.id, l.id]
+  );
+  await client.query('DELETE FROM track_credits WHERE track_id = $1', [l.id]);
+
+  // Migrate track_genres
+  await client.query(
+    `UPDATE track_genres SET track_id = $1
+     WHERE track_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM track_genres tg2
+         WHERE tg2.track_id = $1 AND tg2.genre_id = track_genres.genre_id
+       )`,
+    [m.id, l.id]
+  );
+  await client.query('DELETE FROM track_genres WHERE track_id = $1', [l.id]);
+
+  // Delete the duplicate live row first to release UNIQUE(file_path)
+  await client.query('DELETE FROM tracks WHERE id = $1', [l.id]);
+
+  // Update the original track row with the live file path, metadata, and fingerprints
+  await client.query(
+    `UPDATE tracks SET
+       file_path = $1,
+       file_name = $2,
+       file_size = $3,
+       duration = $4,
+       title = $5,
+       artist_id = $6,
+       album_id = $7,
+       track_number = $8,
+       disc_number = $9,
+       genre = $10,
+       year = $11,
+       bitrate = $12,
+       sample_rate = $13,
+       format = $14,
+       cover_path = COALESCE($15, cover_path),
+       composer = COALESCE($16, composer),
+       track_artist_credit = $17,
+       album_artist_credit = $18,
+       parse_error = $19,
+       missing_since = NULL,
+       mtime = $20,
+       dev = $21,
+       ino = $22,
+       birthtime_ms = $23,
+       content_hash = $24,
+       audio_hash = $25,
+       play_count = COALESCE(play_count, 0) + COALESCE($26, 0),
+       last_played_at = GREATEST(last_played_at, $27),
+       updated_at = NOW()
+     WHERE id = $28`,
+    [
+      l.file_path,
+      l.file_name,
+      l.file_size,
+      l.duration,
+      l.title,
+      l.artist_id,
+      l.album_id,
+      l.track_number,
+      l.disc_number,
+      l.genre,
+      l.year,
+      l.bitrate,
+      l.sample_rate,
+      l.format,
+      l.cover_path,
+      l.composer,
+      l.track_artist_credit,
+      l.album_artist_credit,
+      l.parse_error,
+      l.mtime,
+      l.dev,
+      l.ino,
+      l.birthtime_ms,
+      l.content_hash,
+      l.audio_hash,
+      l.play_count,
+      l.last_played_at,
+      m.id,
+    ]
+  );
+
+  await deleteTrackCover(l.id).catch(() => {});
+  return true;
+}
+
+function hasCompatibleSlot(oldRow, newItemOrRow) {
+  const oldDisc = Number(oldRow.disc_number || 1);
+  const newDisc = Number(newItemOrRow.discNumber ?? newItemOrRow.disc_number ?? 1);
+  if (oldDisc !== newDisc) return false;
+
+  const oldTrackNo = oldRow.track_number != null ? Number(oldRow.track_number) : null;
+  const newTrackNo = (newItemOrRow.trackNumber ?? newItemOrRow.track_number) != null
+    ? Number(newItemOrRow.trackNumber ?? newItemOrRow.track_number)
+    : null;
+  if (oldTrackNo != null && newTrackNo != null && oldTrackNo !== newTrackNo) {
+    return false;
+  }
+
+  const oldFileTrackNo = extractFilenameTrackNumber(oldRow.file_name || path.basename(oldRow.file_path || ''));
+  const newFileTrackNo = extractFilenameTrackNumber(newItemOrRow.fileName || newItemOrRow.file_name || path.basename(newItemOrRow.filePath || newItemOrRow.file_path || ''));
+  if (oldFileTrackNo != null && newFileTrackNo != null && oldFileTrackNo !== newFileTrackNo) {
+    return false;
+  }
+
+  return true;
+}
+
+function hasCompatibleFormatAndDuration(oldRow, newItemOrRow) {
+  const oldFmt = String(oldRow.format || path.extname(oldRow.file_path || '').slice(1)).toLowerCase();
+  const newFmt = String(newItemOrRow.format || path.extname(newItemOrRow.filePath || newItemOrRow.file_path || '').slice(1)).toLowerCase();
+  if (oldFmt && newFmt && oldFmt !== newFmt) return false;
+
+  const oldDur = Number(oldRow.duration || 0);
+  const newDur = Number(newItemOrRow.duration || 0);
+  if (oldDur > 0 && newDur > 0 && Math.abs(oldDur - newDur) > 1.5) return false;
+
+  return true;
+}
+
+function hasCompatibleBirthtime(oldBirthtimeMs, newBirthtimeMs) {
+  const a = Number(oldBirthtimeMs || 0);
+  const b = Number(newBirthtimeMs || 0);
+  if (a > 0 && b > 0) {
+    return Math.abs(a - b) <= 5;
+  }
+  return true;
+}
+
+/**
+ * Reconciles already-created live + missing duplicate track pairs under `prefix`
+ * ONLY when both rows have matching verified stored hashes/fingerprints and 1:1 uniqueness.
+ * Never merges rows that lack stored hashes or rely on metadata similarity alone.
+ */
+async function reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds) {
+  const { rows: allRows } = await client.query(
+    `SELECT id, file_path, file_name, file_size, duration, title, artist_id, album_id,
+            track_number, disc_number, format, mtime, missing_since,
+            dev, ino, birthtime_ms, content_hash, audio_hash
+     FROM tracks
+     WHERE starts_with(file_path, $1)
+     ORDER BY id ASC`,
+    [prefix]
+  );
+
+  const missingRows = allRows.filter((r) => r.missing_since != null);
+  const liveRows = allRows.filter((r) => r.missing_since == null);
+  if (missingRows.length === 0 || liveRows.length === 0) return 0;
+
+  const missingContentCounts = new Map();
+  const liveContentCounts = new Map();
+  const missingDevInoCounts = new Map();
+  const liveDevInoCounts = new Map();
+
+  for (const m of missingRows) {
+    if (m.content_hash) {
+      missingContentCounts.set(m.content_hash, (missingContentCounts.get(m.content_hash) || 0) + 1);
+    }
+    if (m.dev != null && m.ino != null) {
+      const k = `${m.dev}:${m.ino}`;
+      missingDevInoCounts.set(k, (missingDevInoCounts.get(k) || 0) + 1);
+    }
+  }
+  for (const l of liveRows) {
+    if (l.content_hash) {
+      liveContentCounts.set(l.content_hash, (liveContentCounts.get(l.content_hash) || 0) + 1);
+    }
+    if (l.dev != null && l.ino != null) {
+      const k = `${l.dev}:${l.ino}`;
+      liveDevInoCounts.set(k, (liveDevInoCounts.get(k) || 0) + 1);
+    }
+  }
+
+  const matchedMissingIds = new Set();
+  const matchedLiveIds = new Set();
+  const pairs = [];
+
+  // Pass 1: Exact verified full-file content_hash match (1:1 between missing and live)
+  for (const m of missingRows) {
+    if (!m.content_hash || Number(m.file_size) <= 0) continue;
+    if (missingContentCounts.get(m.content_hash) !== 1) continue;
+    if (liveContentCounts.get(m.content_hash) !== 1) continue;
+
+    const l = liveRows.find((r) => !matchedLiveIds.has(r.id) && r.content_hash === m.content_hash);
+    if (!l) continue;
+    if (Number(l.file_size) !== Number(m.file_size)) continue;
+    if (!hasCompatibleFormatAndDuration(m, l)) continue;
+
+    const sameFolder =
+      normalizeAlbumFolder(path.dirname(m.file_path)).toLowerCase() ===
+      normalizeAlbumFolder(path.dirname(l.file_path)).toLowerCase();
+    if (sameFolder && !hasCompatibleSlot(m, l)) continue;
+
+    matchedMissingIds.add(m.id);
+    matchedLiveIds.add(l.id);
+    pairs.push({ missing: m, live: l });
+  }
+
+  // Pass 2: Durable (dev, ino) + verified audio_hash + birthtime guard (1:1 between missing and live)
+  for (const m of missingRows) {
+    if (matchedMissingIds.has(m.id)) continue;
+    if (m.dev == null || m.ino == null || !m.audio_hash) continue;
+    const key = `${m.dev}:${m.ino}`;
+    if (missingDevInoCounts.get(key) !== 1) continue;
+    if (liveDevInoCounts.get(key) !== 1) continue;
+
+    const l = liveRows.find(
+      (r) => !matchedLiveIds.has(r.id) && r.dev != null && r.ino != null && `${r.dev}:${r.ino}` === key
+    );
+    if (!l || !l.audio_hash || l.audio_hash !== m.audio_hash) continue;
+    if (!hasCompatibleBirthtime(m.birthtime_ms, l.birthtime_ms)) continue;
+    if (!hasCompatibleFormatAndDuration(m, l)) continue;
+    if (!hasCompatibleSlot(m, l)) continue;
+
+    const sameFolderOrAlbum =
+      (m.album_id != null && m.album_id === l.album_id) ||
+      normalizeAlbumFolder(path.dirname(m.file_path)).toLowerCase() ===
+        normalizeAlbumFolder(path.dirname(l.file_path)).toLowerCase();
+    if (!sameFolderOrAlbum) continue;
+
+    matchedMissingIds.add(m.id);
+    matchedLiveIds.add(l.id);
+    pairs.push({ missing: m, live: l });
+  }
+
+  let mergedCount = 0;
+  for (const { missing, live } of pairs) {
+    try {
+      const ok = await inTransaction(client, () => mergeDuplicateTrackPair(client, missing.id, live.id));
+      if (ok) {
+        mergedCount++;
+        if (missing.album_id) touchedAlbumIds.add(missing.album_id);
+        if (live.album_id) touchedAlbumIds.add(live.album_id);
+      }
+    } catch (err) {
+      console.error(`Failed to merge duplicate track pair (${missing.id} <- ${live.id}): ${err.message}`);
+    }
+  }
+  return mergedCount;
 }
 
 async function removeOrphans(client) {
@@ -497,7 +917,7 @@ async function removeOrphans(client) {
 
 /**
  * Recomputes and updates album-level metadata across all tracks belonging to the album
- * in the database, including unchanged tracks and across batch boundaries.
+ * in the database, preferring available tracks when present.
  */
 export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
   if (!touchedAlbumIds || touchedAlbumIds.size === 0) return;
@@ -505,9 +925,10 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
   if (albumIds.length === 0) return;
 
   for (const albumId of albumIds) {
-    const { rows: tracks } = await client.query(
+    const { rows: allTracks } = await client.query(
       `SELECT t.id, t.title, t.track_number, t.disc_number, t.genre, t.year,
               t.track_artist_credit, t.album_artist_credit, t.artist_id,
+              t.missing_since,
               a.name AS artist_name
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
@@ -515,9 +936,11 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
       [albumId]
     );
 
-    if (tracks.length === 0) continue;
+    if (allTracks.length === 0) continue;
+    const availableTracks = allTracks.filter((t) => t.missing_since == null);
+    const tracks = availableTracks.length > 0 ? availableTracks : allTracks;
 
-    // Disc count: max disc number across all tracks
+    // Disc count: max disc number across available tracks
     const maxDisc = Math.max(1, ...tracks.map((t) => t.disc_number || 1));
 
     // Consensus year: most frequent non-null year
@@ -552,7 +975,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
       }
     }
 
-    // Inferred album artist & compilation flag across all tracks
+    // Inferred album artist & compilation flag across tracks
     const tracksForInference = tracks.map((t) => ({
       albumArtistName: t.album_artist_credit,
       artistName: t.artist_name || t.track_artist_credit,
@@ -651,45 +1074,69 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const prefix = root.endsWith(path.sep) ? root : root + path.sep;
   const { rows: known } = await query(
-    'SELECT id, file_path, album_id, mtime, missing_since FROM tracks WHERE starts_with(file_path, $1)',
+    `SELECT id, file_path, file_name, file_size, duration, title, artist_id, album_id,
+            track_number, disc_number, format, mtime, missing_since,
+            dev, ino, birthtime_ms, content_hash, audio_hash
+     FROM tracks
+     WHERE starts_with(file_path, $1)`,
     [prefix]
   );
-  const knownByPath = new Map(known.map((r) => [r.file_path, r]));
-  const knownByLowerPath = new Map(known.map((r) => [r.file_path.toLowerCase(), r]));
 
-  const onDisk = new Set();
+  const onDisk = new Set(files.map((f) => f.path));
+  const knownByPath = new Map(known.map((r) => [r.file_path, r]));
+  const knownByLowerPath = new Map();
+  for (const r of known) {
+    if (!onDisk.has(r.file_path)) {
+      knownByLowerPath.set(r.file_path.toLowerCase(), r);
+    }
+  }
+
+  const claimedKnownIds = new Set();
   const toProcess = [];
+  const unmatchedFiles = [];
+  const needsIdentityBackfill = [];
   const touchedAlbumIds = new Set();
-  const pathCaseUpdates = [];
+  const pathUpdates = [];
 
   for (const f of files) {
-    onDisk.add(f.path);
     let k = knownByPath.get(f.path);
     if (!k) {
       const lowerCandidate = knownByLowerPath.get(f.path.toLowerCase());
-      if (lowerCandidate) {
+      if (lowerCandidate && !claimedKnownIds.has(lowerCandidate.id)) {
         const oldFolder = path.dirname(lowerCandidate.file_path);
         const newFolder = path.dirname(f.path);
-        pathCaseUpdates.push({
+        pathUpdates.push({
           id: lowerCandidate.id,
           newPath: f.path,
+          newFileName: path.basename(f.path),
           albumId: lowerCandidate.album_id,
           oldFolder,
           newFolder,
         });
         knownByPath.delete(lowerCandidate.file_path);
         lowerCandidate.file_path = f.path;
+        lowerCandidate.file_name = path.basename(f.path);
         lowerCandidate.missing_since = null;
         knownByPath.set(f.path, lowerCandidate);
         k = lowerCandidate;
         if (k.album_id) touchedAlbumIds.add(k.album_id);
       }
     }
+
+    if (k) {
+      claimedKnownIds.add(k.id);
+    } else {
+      unmatchedFiles.push(f);
+    }
+
     if (full || !k || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
+    } else if (k.dev == null || k.ino == null || k.content_hash == null || k.audio_hash == null) {
+      needsIdentityBackfill.push({ row: k, file: f });
     }
   }
+
   const unchanged = files.length - toProcess.length;
   console.log(`Unchanged: ${unchanged}, to process: ${toProcess.length}`);
 
@@ -701,7 +1148,193 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     unchanged,
   });
 
-  const staleRows = known.filter((r) => !onDisk.has(r.file_path));
+  // Pre-parse unmatched files when there are unclaimed DB rows so we can safely reconcile renames
+  // before writing batches or marking old rows as missing.
+  const parsedCache = new Map();
+  const unclaimedRows = known.filter((r) => !claimedKnownIds.has(r.id));
+
+  if (unmatchedFiles.length > 0 && unclaimedRows.length > 0) {
+    const parsedUnmatched = await mapLimit(unmatchedFiles, PARSE_CONCURRENCY, parseTrackFile);
+    for (const p of parsedUnmatched) {
+      parsedCache.set(p.filePath, p);
+    }
+
+    // Frequency maps for strict 1:1 uniqueness & hardlink/duplicate protection
+    const diskDevInoCounts = new Map();
+    for (const f of files) {
+      if (f.dev != null && f.ino != null) {
+        const key = `${f.dev}:${f.ino}`;
+        diskDevInoCounts.set(key, (diskDevInoCounts.get(key) || 0) + 1);
+      }
+    }
+
+    const claimedRows = known.filter((r) => claimedKnownIds.has(r.id));
+    const liveContentHashSet = new Set(claimedRows.map((r) => r.content_hash).filter(Boolean));
+    const liveAudioHashSet = new Set(claimedRows.map((r) => r.audio_hash).filter(Boolean));
+    const liveDevInoSet = new Set(
+      claimedRows.filter((r) => r.dev != null && r.ino != null).map((r) => `${r.dev}:${r.ino}`)
+    );
+
+    const unmatchedContentCounts = new Map();
+    const unmatchedAudioCounts = new Map();
+    const unmatchedDevInoCounts = new Map();
+    for (const item of parsedUnmatched) {
+      if (item.contentHash) {
+        unmatchedContentCounts.set(item.contentHash, (unmatchedContentCounts.get(item.contentHash) || 0) + 1);
+      }
+      if (item.audioHash) {
+        unmatchedAudioCounts.set(item.audioHash, (unmatchedAudioCounts.get(item.audioHash) || 0) + 1);
+      }
+      if (item.dev != null && item.ino != null) {
+        const key = `${item.dev}:${item.ino}`;
+        unmatchedDevInoCounts.set(key, (unmatchedDevInoCounts.get(key) || 0) + 1);
+      }
+    }
+
+    const unclaimedContentCounts = new Map();
+    const unclaimedAudioCounts = new Map();
+    const unclaimedDevInoCounts = new Map();
+    for (const r of unclaimedRows) {
+      if (r.content_hash) {
+        unclaimedContentCounts.set(r.content_hash, (unclaimedContentCounts.get(r.content_hash) || 0) + 1);
+      }
+      if (r.audio_hash) {
+        unclaimedAudioCounts.set(r.audio_hash, (unclaimedAudioCounts.get(r.audio_hash) || 0) + 1);
+      }
+      if (r.dev != null && r.ino != null) {
+        const key = `${r.dev}:${r.ino}`;
+        unclaimedDevInoCounts.set(key, (unclaimedDevInoCounts.get(key) || 0) + 1);
+      }
+    }
+
+    const reconciledRowIds = new Set();
+    const reconciledPaths = new Set();
+
+    const recordRenameMatch = (oldRow, item) => {
+      reconciledRowIds.add(oldRow.id);
+      reconciledPaths.add(item.filePath);
+      claimedKnownIds.add(oldRow.id);
+      const oldFolder = path.dirname(oldRow.file_path);
+      const newFolder = path.dirname(item.filePath);
+      pathUpdates.push({
+        id: oldRow.id,
+        newPath: item.filePath,
+        newFileName: item.fileName,
+        albumId: oldRow.album_id,
+        oldFolder,
+        newFolder,
+      });
+      knownByPath.delete(oldRow.file_path);
+      oldRow.file_path = item.filePath;
+      oldRow.file_name = item.fileName;
+      oldRow.missing_since = null;
+      knownByPath.set(item.filePath, oldRow);
+      if (oldRow.album_id) touchedAlbumIds.add(oldRow.album_id);
+    };
+
+    // Pass 1: Verified full-file content_hash match (1:1 between unclaimed DB rows and unmatched files)
+    for (const item of parsedUnmatched) {
+      if (reconciledPaths.has(item.filePath)) continue;
+      if (!item.contentHash || Number(item.fileSize) <= 0) continue;
+      if (unmatchedContentCounts.get(item.contentHash) !== 1) continue;
+      if (unclaimedContentCounts.get(item.contentHash) !== 1) continue;
+
+      const oldRow = unclaimedRows.find(
+        (r) => !reconciledRowIds.has(r.id) && r.content_hash === item.contentHash
+      );
+      if (!oldRow) continue;
+      if (Number(oldRow.file_size) !== Number(item.fileSize)) continue;
+      if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
+
+      const sameInode =
+        oldRow.dev != null &&
+        oldRow.ino != null &&
+        item.dev != null &&
+        item.ino != null &&
+        String(oldRow.dev) === String(item.dev) &&
+        String(oldRow.ino) === String(item.ino) &&
+        item.nlink === 1 &&
+        !liveDevInoSet.has(`${item.dev}:${item.ino}`);
+
+      // Guard against matching a newly added duplicate copy of an already-live track
+      if (liveContentHashSet.has(item.contentHash) && !sameInode) continue;
+
+      const sameFolder =
+        normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
+        normalizeAlbumFolder(item.folderPath).toLowerCase();
+      if (sameFolder && !hasCompatibleSlot(oldRow, item)) continue;
+
+      recordRenameMatch(oldRow, item);
+    }
+
+    // Pass 2: Durable (dev, ino) match with inode-reuse & hardlink guards
+    for (const item of parsedUnmatched) {
+      if (reconciledPaths.has(item.filePath)) continue;
+      if (item.dev == null || item.ino == null) continue;
+      if (item.nlink !== 1) continue;
+
+      const devInoKey = `${item.dev}:${item.ino}`;
+      if (diskDevInoCounts.get(devInoKey) !== 1) continue;
+      if (liveDevInoSet.has(devInoKey)) continue;
+      if (unmatchedDevInoCounts.get(devInoKey) !== 1) continue;
+      if (unclaimedDevInoCounts.get(devInoKey) !== 1) continue;
+
+      const oldRow = unclaimedRows.find(
+        (r) =>
+          !reconciledRowIds.has(r.id) &&
+          r.dev != null &&
+          r.ino != null &&
+          `${r.dev}:${r.ino}` === devInoKey
+      );
+      if (!oldRow) continue;
+
+      // Inode reuse guards:
+      // 1. Birthtime must match when available
+      if (!hasCompatibleBirthtime(oldRow.birthtime_ms, item.birthtimeMs)) continue;
+      // 2. Content hash or stripped audio payload hash must match
+      const hashMatches =
+        (oldRow.content_hash != null && item.contentHash != null && oldRow.content_hash === item.contentHash) ||
+        (oldRow.audio_hash != null && item.audioHash != null && oldRow.audio_hash === item.audioHash);
+      if (!hashMatches) continue;
+      // 3. Compatible format, duration, and non-conflicting disc/track slot
+      if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
+      if (!hasCompatibleSlot(oldRow, item)) continue;
+
+      const sameFolder =
+        normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
+        normalizeAlbumFolder(item.folderPath).toLowerCase();
+      const bothHaveBirthtime = Number(oldRow.birthtime_ms || 0) > 0 && Number(item.birthtimeMs || 0) > 0;
+      if (!sameFolder && !bothHaveBirthtime) continue;
+
+      recordRenameMatch(oldRow, item);
+    }
+
+    // Pass 3: Globally-unique verified non-stub audio_hash match in the same folder & track slot
+    // (handles tag editors that rewrite the file to a new temp inode during rename + retag)
+    for (const item of parsedUnmatched) {
+      if (reconciledPaths.has(item.filePath)) continue;
+      if (!item.audioHash || (item.audioPayloadSize || 0) <= MIN_UNIQUE_AUDIO_PAYLOAD_BYTES) continue;
+      if (liveAudioHashSet.has(item.audioHash)) continue;
+      if (unmatchedAudioCounts.get(item.audioHash) !== 1) continue;
+      if (unclaimedAudioCounts.get(item.audioHash) !== 1) continue;
+
+      const oldRow = unclaimedRows.find(
+        (r) => !reconciledRowIds.has(r.id) && r.audio_hash === item.audioHash
+      );
+      if (!oldRow) continue;
+      if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
+      if (!hasCompatibleSlot(oldRow, item)) continue;
+
+      const sameFolder =
+        normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
+        normalizeAlbumFolder(item.folderPath).toLowerCase();
+      if (!sameFolder) continue;
+
+      recordRenameMatch(oldRow, item);
+    }
+  }
+
+  const staleRows = known.filter((r) => !claimedKnownIds.has(r.id) && !onDisk.has(r.file_path));
   const staleIds = staleRows.map((r) => r.id);
   for (const r of staleRows) {
     if (r.album_id) touchedAlbumIds.add(r.album_id);
@@ -710,20 +1343,28 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   let processed = 0;
   let removed = 0;
   let parseErrors = 0;
+  let mergedPairs = 0;
 
   const client = await getClient();
   try {
-    if (pathCaseUpdates.length > 0) {
-      for (const upd of pathCaseUpdates) {
-        await client.query('UPDATE tracks SET file_path = $1, missing_since = NULL WHERE id = $2', [upd.newPath, upd.id]);
+    if (pathUpdates.length > 0) {
+      for (const upd of pathUpdates) {
+        await client.query(
+          'UPDATE tracks SET file_path = $1, file_name = $2, missing_since = NULL WHERE id = $3',
+          [upd.newPath, upd.newFileName, upd.id]
+        );
         if (upd.albumId && upd.oldFolder !== upd.newFolder) {
           const normNewFolder = normalizeAlbumFolder(upd.newFolder);
           await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [normNewFolder, upd.albumId]);
         }
       }
     }
+
     for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
-      const parsed = await mapLimit(toProcess.slice(i, i + BATCH_SIZE), PARSE_CONCURRENCY, parseTrackFile);
+      const slice = toProcess.slice(i, i + BATCH_SIZE);
+      const parsed = await mapLimit(slice, PARSE_CONCURRENCY, async (f) => {
+        return parsedCache.get(f.path) || parseTrackFile(f);
+      });
       for (const p of parsed) {
         if (p.parseError) parseErrors++;
       }
@@ -739,6 +1380,33 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       });
     }
 
+    // Backfill durable file identity & hashes for pre-migration unchanged live tracks
+    if (needsIdentityBackfill.length > 0) {
+      const backfilled = await mapLimit(needsIdentityBackfill, PARSE_CONCURRENCY, async ({ row, file }) => {
+        const { contentHash, audioHash } = await computeFileHashes(file.path);
+        return {
+          id: row.id,
+          dev: file.dev,
+          ino: file.ino,
+          birthtimeMs: file.birthtimeMs,
+          contentHash,
+          audioHash,
+        };
+      });
+      for (const b of backfilled) {
+        await client.query(
+          `UPDATE tracks
+           SET dev = $1,
+               ino = $2,
+               birthtime_ms = $3,
+               content_hash = $4,
+               audio_hash = $5
+           WHERE id = $6`,
+          [b.dev, b.ino, b.birthtimeMs, b.contentHash, b.audioHash, b.id]
+        );
+      }
+    }
+
     onProgress?.({ phase: 'cleaning', total: files.length, processed, unchanged, errors: parseErrors });
 
     // A disappearing mount is indistinguishable from deletion during one walk.
@@ -750,6 +1418,9 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     if (files.length) {
       await client.query('UPDATE tracks SET missing_since = NULL WHERE file_path = ANY($1::text[]) AND missing_since IS NOT NULL', [files.map(f => f.path)]);
     }
+
+    // Repair already-created live+missing duplicate pairs when BOTH have matching verified stored hashes
+    mergedPairs = await reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds);
 
     // Clean up empty albums/artists
     await removeOrphans(client);
@@ -796,15 +1467,26 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
   console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
-  const finalResult = { total: files.length, processed, unchanged, removed, missing: staleIds.length, errors: parseErrors, covers: coversExtracted, durationSeconds };
+  const remainingMissing = Math.max(0, staleIds.length - mergedPairs);
+  const finalResult = { total: files.length, processed, unchanged, removed, missing: remainingMissing, errors: parseErrors, covers: coversExtracted, durationSeconds };
   onProgress?.({ phase: 'complete', ...finalResult });
   return finalResult;
 }
 
 export async function scanSingleFile(filePath) {
   try {
-    const { size, mtime } = await fs.stat(filePath);
-    const item = await parseTrackFile({ path: filePath, size, mtime });
+    const stat = await fs.stat(filePath);
+    const item = await parseTrackFile({
+      path: filePath,
+      size: stat.size,
+      mtime: stat.mtime,
+      dev: toBigIntStr(stat.dev),
+      ino: toBigIntStr(stat.ino),
+      nlink: Number.isFinite(stat.nlink) ? stat.nlink : 1,
+      birthtimeMs: Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
+        ? String(Math.round(stat.birthtimeMs))
+        : null,
+    });
     const touched = new Set();
     const { rows: prev } = await query('SELECT album_id FROM tracks WHERE file_path = $1', [filePath]);
     if (prev[0]?.album_id) touched.add(prev[0].album_id);

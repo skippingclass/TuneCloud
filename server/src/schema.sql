@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS tracks (
   parse_error BOOLEAN NOT NULL DEFAULT false,
   missing_since TIMESTAMPTZ,
   mtime TIMESTAMPTZ,
+  dev BIGINT,
+  ino BIGINT,
+  birthtime_ms BIGINT,
+  content_hash TEXT,
+  audio_hash TEXT,
   play_count INTEGER NOT NULL DEFAULT 0,
   last_played_at TIMESTAMPTZ,
   created_at TIMESTAMP DEFAULT NOW(),
@@ -61,6 +66,9 @@ CREATE INDEX IF NOT EXISTS idx_tracks_file_path ON tracks(file_path);
 CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
 CREATE INDEX IF NOT EXISTS idx_tracks_mtime ON tracks(mtime);
 CREATE INDEX IF NOT EXISTS idx_tracks_missing_since ON tracks(missing_since) WHERE missing_since IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tracks_dev_ino ON tracks(dev, ino) WHERE dev IS NOT NULL AND ino IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tracks_content_hash ON tracks(content_hash) WHERE content_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tracks_audio_hash ON tracks(audio_hash) WHERE audio_hash IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,

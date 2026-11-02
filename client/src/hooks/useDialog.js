@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 const dialogs = [];
+export function hasOpenDialog() { return dialogs.length > 0; }
 const focusableSelector =
   'button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]';
 
@@ -19,6 +20,7 @@ export function useDialog(open, onClose) {
       [...node.querySelectorAll(focusableSelector)].filter((el) => el.getClientRects?.().length);
     const elements = visible();
     (
+      elements.find(element => element.getAttribute('data-autofocus') !== null) ||
       elements.find((element) => ['INPUT', 'TEXTAREA'].includes(element.tagName)) ||
       elements[0] ||
       node

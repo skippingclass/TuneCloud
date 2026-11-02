@@ -75,7 +75,8 @@ test('play next handles duplicate entries in shuffle and moving active entry doe
     await React.act(async () => view.player().playNext(tracks[0]));
     await React.act(async () => view.player().next());
     assert.equal(view.player().currentTrack.id, 1);
-    assert.equal(view.player().queueIndex, 4);
+    // The base queue is preserved while shuffled; the new duplicate follows index 0.
+    assert.equal(view.player().queueIndex, 1);
     assert.equal(view.player().queue.length, 5);
     assert.equal(audio.playCalls, calls + 1);
   } finally {

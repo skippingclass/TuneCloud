@@ -1,3 +1,6 @@
+import { SleepTimer } from './SleepTimer.jsx';
+import { RangeControl } from './RangeControl.jsx';
+export { SleepTimer } from './SleepTimer.jsx';
 import { createPortal } from 'react-dom';
 import {
   ChevronDown,
@@ -11,7 +14,6 @@ import {
   ListMusic,
   Mic2,
   Disc,
-  Moon,
 } from 'lucide-react';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
@@ -20,34 +22,6 @@ import { api } from '../../api.js';
 
 const time = (s) =>
   `${Math.floor((s || 0) / 60)}:${String(Math.floor((s || 0) % 60)).padStart(2, '0')}`;
-export function SleepTimer({ className = '' }) {
-  const { sleepUntil, setSleepTimer } = usePlayer();
-  return (
-    <label
-      className={`inline-flex items-center gap-2 text-xs ${sleepUntil ? 'text-accent' : 'text-surface-400'} ${className}`}
-    >
-      <Moon size={16} aria-hidden="true" />
-      <select
-        aria-label="Sleep timer"
-        value={sleepUntil === 'track' ? 'track' : typeof sleepUntil === 'number' ? 'active' : 'off'}
-        onChange={(e) => setSleepTimer(e.target.value)}
-        className="bg-transparent text-inherit rounded-lg py-2 outline-none"
-      >
-        <option value="off">Sleep timer off</option>
-        {typeof sleepUntil === 'number' && (
-          <option value="active">
-            Until{' '}
-            {new Date(sleepUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </option>
-        )}
-        <option value="15">15 minutes</option>
-        <option value="30">30 minutes</option>
-        <option value="60">60 minutes</option>
-        <option value="track">After this track</option>
-      </select>
-    </label>
-  );
-}
 
 export function NowPlaying({ onGoToAlbum, onGoToArtist }) {
   const {
@@ -141,16 +115,8 @@ export function NowPlaying({ onGoToAlbum, onGoToArtist }) {
           )}
         </div>
         <div>
-          <input
-            aria-label="Playback position"
-            type="range"
-            min="0"
-            max={duration || 0}
-            step="0.1"
-            value={Math.min(currentTime, duration || 0)}
-            onChange={(e) => seek(Number(e.target.value))}
-            className="w-full accent-accent h-6"
-          />
+          <RangeControl label="Playback position" max={duration} step={0.1} value={currentTime}
+            onChange={seek} valueText={`${time(currentTime)} of ${time(duration)}`} />
           <div className="flex justify-between text-xs text-surface-400 tabular-nums">
             <span>{time(currentTime)}</span>
             <span>{time(duration)}</span>

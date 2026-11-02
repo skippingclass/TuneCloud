@@ -304,11 +304,10 @@ test('Stage 2 fixes: album metadata rescan, tag clearing, availability, personal
       assert.equal(getMissingRes.statusCode, 200);
       assert.equal(getMissingRes.json().available, false);
 
-      // Search returns available: false
+      // Search excludes missing tracks from ordinary search browsing
       const searchRes = await call('GET', '/api/search?q=Available', user1);
       const searchedTrack = searchRes.json().tracks.find((t) => t.id === trackId);
-      assert.ok(searchedTrack);
-      assert.equal(searchedTrack.available, false);
+      assert.equal(searchedTrack, undefined);
 
       // Favorites return available: false, star is preserved
       const favRes = await call('GET', '/api/favorites', user1);

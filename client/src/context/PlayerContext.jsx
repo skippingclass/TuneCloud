@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { api } from '../api.js';
 import { shuffleOrder, readPlaybackSession } from '../utils/playback.js';
 import { toast } from '../components/layout/Toast.jsx';
@@ -42,6 +42,8 @@ export function PlayerProvider({ children, userId = 'local' }) {
   const playRequestIdRef = useRef(0);
 
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
+
+  const queueOrder = useMemo(() => shuffle ? order : queue.map((_, index) => index), [shuffle, order, queue]);
 
   const safePlay = useCallback((el) => {
     if (!el || typeof el.play !== 'function') return;
@@ -155,17 +157,17 @@ export function PlayerProvider({ children, userId = 'local' }) {
 
   const pickNext = useCallback(() => {
     if (!queue.length) return -1;
-    const sequence = shuffle ? order : queue.map((_, i) => i);
+    const sequence = queueOrder;
     const position = sequence.indexOf(queueIndex);
     return sequence[position + 1] ?? (repeat === 'all' ? sequence[0] ?? -1 : -1);
-  }, [queue, queueIndex, shuffle, repeat, order]);
+  }, [queue, queueIndex, repeat, queueOrder]);
 
   const pickPrev = useCallback(() => {
     if (!queue.length) return -1;
-    const sequence = shuffle ? order : queue.map((_, i) => i);
+    const sequence = queueOrder;
     const position = sequence.indexOf(queueIndex);
     return sequence[position - 1] ?? (repeat === 'all' ? sequence[sequence.length - 1] ?? -1 : -1);
-  }, [queue, queueIndex, shuffle, repeat, order]);
+  }, [queue, queueIndex, repeat, queueOrder]);
 
   const selectQueueIndex = useCallback((idx) => {
     if (!Number.isInteger(idx) || idx < 0 || idx >= queue.length || queue[idx].available === false) return;
@@ -412,20 +414,35 @@ export function PlayerProvider({ children, userId = 'local' }) {
 
   const moveInQueue = useCallback((from, to) => {
     if (!Number.isInteger(from) || !Number.isInteger(to) || from === to || from < 0 || to < 0 || from >= queue.length || to >= queue.length) return;
-    const indices = queue.map((_, i) => i);
+    if (shuffle) {
+      // Reordering the shuffled view must not scramble the source album order.
+      setOrder(previous => {
+        const result = [...previous];
+        const fromPosition = result.indexOf(from);
+        const toPosition = result.indexOf(to);
+        if (fromPosition < 0 || toPosition < 0) return previous;
+        result.splice(toPosition, 0, result.splice(fromPosition, 1)[0]);
+        return result;
+      });
+      return;
+    }
+    const indices = queue.map((_, index) => index);
     indices.splice(to, 0, indices.splice(from, 1)[0]);
-    setQueue(indices.map((i) => queue[i]));
+    setQueue(indices.map(index => queue[index]));
     setQueueIndex(indices.indexOf(queueIndex));
-    setOrder((prev) => {
-      const reordered = [...prev];
-      if (shuffle) {
-        const fromPosition = reordered.indexOf(from);
-        const toPosition = reordered.indexOf(to);
-        reordered.splice(toPosition, 0, reordered.splice(fromPosition, 1)[0]);
-      }
-      return reordered.map((i) => indices.indexOf(i));
-    });
+    setOrder(previous => previous.map(index => indices.indexOf(index)));
   }, [queue, queueIndex, shuffle]);
+
+  const clearUpcoming = useCallback(() => {
+    const position = queueOrder.indexOf(queueIndex);
+    if (position < 0) return;
+    const keep = queueOrder.slice(0, position + 1);
+    const kept = new Set(keep);
+    const indices = queue.map((_, index) => index).filter(index => kept.has(index));
+    setQueue(indices.map(index => queue[index]));
+    setQueueIndex(indices.indexOf(queueIndex));
+    setOrder(keep.map(index => indices.indexOf(index)));
+  }, [queue, queueIndex, queueOrder]);
 
   // Keep writes bounded during playback, and flush the exact position on pause/exit.
   const sessionRef = useRef(null);
@@ -610,7 +627,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
         currentTrack,
         queue,
         queueIndex,
-        queueOrder: shuffle ? order : queue.map((_, index) => index),
+        queueOrder,
         setQueueIndex: selectQueueIndex,
         isPlaying,
         currentTime,
@@ -636,8 +653,12 @@ export function PlayerProvider({ children, userId = 'local' }) {
         addManyToQueue,
         playNext: (track) => addToQueue(track, true),
         moveInQueue,
+        clearUpcoming,
         sleepUntil,
-        setSleepTimer: (value) => setSleepUntil(value === 'track' ? 'track' : Number(value) > 0 ? Date.now() + Number(value) * 60000 : null),
+        setSleepTimer: (value) => {
+          const minutes = Number(value);
+          setSleepUntil(value === 'track' ? 'track' : Number.isFinite(minutes) && minutes > 0 && minutes <= 480 ? Date.now() + minutes * 60000 : null);
+        },
         isNowPlayingOpen,
         setIsNowPlayingOpen,
         removeFromQueue,

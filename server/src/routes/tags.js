@@ -5,7 +5,7 @@ import NodeID3 from 'node-id3';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from '../db.js';
 import { requireAuth, requireAdmin } from '../auth.js';
-import { extractLeadingArtist } from '../scanner.js';
+import { extractLeadingArtist, computeFileHashes } from '../scanner.js';
 
 const MP3_EXTS = ['.mp3'];
 const TAG_EXTS = ['.mp3', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.wav'];
@@ -122,13 +122,32 @@ export default async function tagRoutes(fastify) {
         add('album_id', albumId);
       }
       const { mtime, size } = await fs.stat(staged);
+      const { contentHash, audioHash } = await computeFileHashes(staged);
       add('mtime', mtime);
       add('file_size', size);
+      add('content_hash', contentHash);
+      add('audio_hash', audioHash);
       params.push(req.params.id);
       await client.query(`UPDATE tracks SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${params.length}`, params);
       await fs.copyFile(filePath, backup);
       await fs.rename(staged, filePath);
       replaced = true;
+      const finalStat = await fs.stat(filePath);
+      await client.query(
+        `UPDATE tracks
+         SET dev = $1,
+             ino = $2,
+             birthtime_ms = $3,
+             mtime = $4
+         WHERE id = $5`,
+        [
+          Number.isSafeInteger(finalStat.dev) ? String(Math.trunc(finalStat.dev)) : null,
+          Number.isSafeInteger(finalStat.ino) ? String(Math.trunc(finalStat.ino)) : null,
+          Number.isFinite(finalStat.birthtimeMs) && finalStat.birthtimeMs > 0 ? String(Math.round(finalStat.birthtimeMs)) : null,
+          finalStat.mtime,
+          req.params.id,
+        ]
+      );
       await client.query('COMMIT');
       committed = true;
       return { success: true };

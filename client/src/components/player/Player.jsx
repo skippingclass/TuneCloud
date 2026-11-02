@@ -1,367 +1,91 @@
-import { NowPlaying, SleepTimer } from './NowPlaying.jsx';
 import { useState, useEffect } from 'react';
-import {
-  Play,
-  Pause,
-  SkipBack,
-  SkipForward,
-  Shuffle,
-  Repeat,
-  Volume2,
-  VolumeX,
-  Heart,
-  ListMusic,
-  Mic2,
-  X,
-  Disc,
-  Maximize2,
-  FolderPlus,
-  Moon,
-} from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Shuffle, Repeat, Repeat1, Volume2, VolumeX, Heart, ListMusic, Mic2, X, Disc, Maximize2, Plus } from 'lucide-react';
+import { NowPlaying } from './NowPlaying.jsx';
+import { SleepTimer } from './SleepTimer.jsx';
+import { RangeControl } from './RangeControl.jsx';
 import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { CoverModal } from '../modals/CoverModal.jsx';
 import { ArtistLinks } from '../common/ArtistLinks.jsx';
-
-function formatDuration(sec) {
-  if (!sec || sec <= 0) return '0:00';
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
+const time = sec => `${Math.floor(Math.max(0, sec || 0) / 60)}:${String(Math.floor(Math.max(0, sec || 0) % 60)).padStart(2, '0')}`;
 
 export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
-  const {
-    currentTrack,
-    setIsNowPlayingOpen,
-    isPlaying,
-    currentTime,
-    duration,
-    volume,
-    muted,
-    repeat,
-    shuffle,
-    isLyricsOpen,
-    setIsLyricsOpen,
-    isQueueOpen,
-    setIsQueueOpen,
-    togglePlay,
-    seek,
-    next,
-    prev,
-    setVolume,
-    toggleMute,
-    toggleRepeat,
-    toggleShuffle,
-    clearQueue,
-    hasNext,
-    hasPrev,
-  } = usePlayer();
-
+  const { currentTrack: track, setIsNowPlayingOpen, isPlaying, currentTime, duration, volume, muted, repeat, shuffle,
+    isLyricsOpen, setIsLyricsOpen, isQueueOpen, setIsQueueOpen, togglePlay, seek, next, prev, setVolume,
+    toggleMute, toggleRepeat, toggleShuffle, clearQueue, hasNext, hasPrev } = usePlayer();
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
-  const [showFullCover, setShowFullCover] = useState(false);
+  const [showCover, setShowCover] = useState(false);
   const [volumeNode, setVolumeNode] = useState(null);
-
-  // Prevent background page scrolling on volume wheel by using a non-passive listener
   useEffect(() => {
     if (!volumeNode) return;
-
-    const handleWheel = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const step = 0.05;
-      const delta = e.deltaY < 0 ? step : -step;
-      setVolume((prev) => Math.min(1, Math.max(0, Math.round((prev + delta) * 100) / 100)));
-    };
-
-    volumeNode.addEventListener('wheel', handleWheel, { passive: false });
-    return () => {
-      volumeNode.removeEventListener('wheel', handleWheel);
-    };
+    const wheel = event => { event.preventDefault(); event.stopPropagation(); setVolume(value => Math.max(0, Math.min(1, value + (event.deltaY < 0 ? 0.05 : -0.05)))); };
+    volumeNode.addEventListener('wheel', wheel, { passive: false });
+    return () => volumeNode.removeEventListener('wheel', wheel);
   }, [volumeNode, setVolume]);
-
   useEffect(() => {
-    const handler = (event) => {
-      if (!currentTrack || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat) return;
-      const target = event.target;
-      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(target?.tagName) || target?.isContentEditable || document.querySelector('[role="dialog"]')) return;
+    const handler = event => {
+      if (!track || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat) return;
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(event.target?.tagName) || event.target?.isContentEditable || document.querySelector('[role="dialog"]')) return;
       if (event.key === ' ') { event.preventDefault(); togglePlay(); }
       else if (event.key === 'ArrowRight') { event.preventDefault(); seek(currentTime + 10); }
       else if (event.key === 'ArrowLeft') { event.preventDefault(); seek(currentTime - 10); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [currentTrack, currentTime, togglePlay, seek]);
-
-  if (!currentTrack) return null;
-
-  const starred = isTrackStarred(currentTrack.id);
-  const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
-
-  return (
-    <>
+  }, [track, currentTime, togglePlay, seek]);
+  if (!track) return null;
+  const title = track.title || track.fileName || track.file_name;
+  const starred = isTrackStarred(track.id);
+  const goAlbum = () => onGoToAlbum?.({ id: track.album_id, title: track.album, artist: track.artist, cover_path: track.cover_path });
+  const progress = duration > 0 ? Math.min(100, currentTime / duration * 100) : 0;
+  return <>
     <div className="mobile-mini-player">
-      <button className="mini-track" onClick={() => setIsNowPlayingOpen(true)} aria-label={`Expand player: ${currentTrack.title || currentTrack.file_name}`}>
-        {currentTrack.cover_path ? <img src={api.coverUrl(currentTrack.cover_path)} alt="" /> : <Disc size={32} />}
-        <span><strong>{currentTrack.title || currentTrack.file_name}</strong><small>{currentTrack.artist || 'Unknown artist'}</small></span>
+      <button className="mini-track" onClick={() => setIsNowPlayingOpen(true)} aria-label={`Expand player: ${title}`}>
+        {track.cover_path ? <img src={api.coverUrl(track.cover_path)} alt="" /> : <Disc size={32} />}
+        <span><strong>{title}</strong><small>{track.artist || 'Unknown artist'}</small></span>
       </button>
       <button onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}</button>
-      <button onClick={next} disabled={!hasNext} aria-label="Next track"><SkipForward size={21} /></button>
-      <div className="mini-progress" style={{ width: `${progressPct}%` }} />
+      <button onClick={() => setIsQueueOpen(value => !value)} aria-label="Open queue"><ListMusic size={20} /></button>
+      <div className="mini-progress" style={{ width: `${progress}%` }} />
     </div>
     <NowPlaying onGoToAlbum={onGoToAlbum} onGoToArtist={onGoToArtist} />
-    <div className="tune-player fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/[0.12] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
-      <div className="w-full h-full flex items-center justify-between gap-3 sm:gap-4">
-        {/* Left: Track artwork & metadata */}
-        <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-3 shrink-0">
-          <div
-            onClick={() => currentTrack.cover_path && setShowFullCover(true)}
-            className={`w-12 h-12 sm:w-14 sm:h-14 rounded-xl overflow-hidden bg-surface-900 shrink-0 ring-1 ring-white/[0.1] shadow-md relative group ${
-              currentTrack.cover_path ? 'cursor-pointer' : ''
-            }`}
-            title={currentTrack.cover_path ? 'Click to view full cover' : ''}
-          >
-            {currentTrack.cover_path ? (
-              <>
-                <img
-                  src={api.coverUrl(currentTrack.cover_path)}
-                  alt=""
-                  className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
-                  draggable="false"
-                />
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                  <Maximize2 className="w-4 h-4 text-white drop-shadow-md" />
-                </div>
-              </>
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-white/[0.03]">
-                <Disc className="w-6 h-6 text-surface-500" />
-              </div>
-            )}
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <p
-              onClick={() => {
-                if (currentTrack.album_id || currentTrack.album) {
-                  onGoToAlbum?.({
-                    id: currentTrack.album_id,
-                    title: currentTrack.album,
-                    artist: currentTrack.artist,
-                    cover_path: currentTrack.cover_path,
-                  });
-                }
-              }}
-              className={`text-xs sm:text-sm font-semibold truncate text-white leading-tight ${
-                currentTrack.album_id || currentTrack.album
-                  ? 'hover:underline hover:text-accent cursor-pointer'
-                  : ''
-              }`}
-              title={currentTrack.album ? `Go to album: ${currentTrack.album}` : ''}
-            >
-              {currentTrack.title || currentTrack.fileName || currentTrack.file_name}
-            </p>
-            <p className="text-[11px] sm:text-xs text-surface-400 truncate mt-0.5">
-              <ArtistLinks
-                artist={currentTrack.artist}
-                primaryArtistId={currentTrack.artist_id}
-                onGoToArtist={onGoToArtist}
-              />
-            </p>
-          </div>
-
-          <button
-            onClick={() => toggleFavoriteTrack(currentTrack.id)}
-            className={`p-2 rounded-full transition-all shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-              starred
-                ? 'text-accent scale-110'
-                : 'text-surface-400 hover:text-accent hover:scale-110'
-            }`}
-            title={starred ? 'Unlike' : 'Like'}
-          >
-            <Heart className={`w-4 h-4 ${starred ? 'fill-accent' : ''}`} />
-          </button>
-
-          <button
-            onClick={() => onAddToPlaylist?.(currentTrack)}
-            className="p-2 rounded-full transition-all shrink-0 text-surface-400 hover:text-accent hover:scale-110 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
-            title="Add to Playlist"
-          >
-            <FolderPlus className="w-4 h-4" />
-          </button>
+    <section className="playback-bar" aria-label="Music player">
+      <div className="playback-track">
+        <button className="playback-art" onClick={() => track.cover_path ? setShowCover(true) : setIsNowPlayingOpen(true)} aria-label="View cover">
+          {track.cover_path ? <img src={api.coverUrl(track.cover_path)} alt="" draggable="false" /> : <Disc size={23} />}
+          <span><Maximize2 size={16} /></span>
+        </button>
+        <div className="playback-meta">
+          <button className="playback-title" onClick={goAlbum} disabled={!track.album_id && !track.album} title={title}>{title}</button>
+          <div className="playback-artist"><ArtistLinks artist={track.artist} primaryArtistId={track.artist_id} onGoToArtist={onGoToArtist} /></div>
         </div>
-
-        {/* Center: Playback controls & Seekbar (centered & balanced) */}
-        <div className="flex-1 max-w-2xl lg:max-w-3xl flex flex-col items-center justify-center px-2 sm:px-4">
-          {/* Buttons row */}
-          <div className="flex items-center gap-3 sm:gap-4 mb-1.5">
-            <button
-              onClick={toggleShuffle}
-              className={`p-2 rounded-lg transition-all drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-                shuffle
-                  ? 'text-accent bg-accent/15 shadow-glow'
-                  : 'text-surface-300 hover:text-white'
-              }`}
-              title="Shuffle"
-            >
-              <Shuffle className="w-4 h-4" />
-            </button>
-
-            <button
-              onClick={prev}
-              disabled={!hasPrev}
-              className={`p-2 rounded-lg transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-                hasPrev
-                  ? 'text-surface-200 hover:text-white'
-                  : 'text-surface-600 cursor-default'
-              }`}
-              title="Previous Track"
-            >
-              <SkipBack className="w-4 h-4" />
-            </button>
-
-            <button
-              onClick={togglePlay}
-              className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-gradient-to-tr from-accent to-accent-hover text-surface-950 flex items-center justify-center shadow-glow hover:scale-105 active:scale-95 transition-all"
-              title={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isPlaying ? (
-                <Pause className="w-5 h-5 fill-surface-950" />
-              ) : (
-                <Play className="w-5 h-5 fill-surface-950 ml-0.5" />
-              )}
-            </button>
-
-            <button
-              onClick={next}
-              disabled={!hasNext}
-              className={`p-2 rounded-lg transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-                hasNext
-                  ? 'text-surface-200 hover:text-white'
-                  : 'text-surface-600 cursor-default'
-              }`}
-              title="Next Track"
-            >
-              <SkipForward className="w-4 h-4" />
-            </button>
-
-            <button
-              onClick={toggleRepeat}
-              className={`p-2 rounded-lg transition-all relative drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-                repeat !== 'none'
-                  ? 'text-accent bg-accent/15 shadow-glow'
-                  : 'text-surface-300 hover:text-white'
-              }`}
-              title={`Repeat: ${repeat}`}
-            >
-              <Repeat className="w-4 h-4" />
-              {repeat === 'one' && (
-                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-accent text-[9px] font-bold text-surface-950 flex items-center justify-center">
-                  1
-                </span>
-              )}
-            </button>
-          </div>
-
-          {/* Timeline progress slider */}
-          <div className="w-full flex items-center gap-3 text-[11px] text-surface-400 font-mono select-none">
-            <span className="w-10 text-right tabular-nums text-surface-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-              {formatDuration(currentTime)}
-            </span>
-            <input type="range" min="0" max={duration || 0} step="0.1" value={Math.min(currentTime, duration || 0)} onChange={(event) => seek(Number(event.target.value))} aria-label="Playback position" className="flex-1 min-w-0 h-5 accent-accent cursor-pointer" />
-            <span className="w-10 text-left tabular-nums text-surface-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-              {formatDuration(duration)}
-            </span>
-          </div>
-        </div>
-
-        {/* Right: Lyrics, Queue, Volume & Close (Protected from misclicks) */}
-        <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-1.5 sm:gap-2 shrink-0 justify-end">
-          <details className="relative hidden md:block">
-            <summary className="p-2 rounded-xl text-surface-400 hover:text-white cursor-pointer list-none" aria-label="Sleep timer"><Moon className="w-4 h-4" /></summary>
-            <div className="absolute right-0 bottom-full mb-4 rounded-xl bg-surface-900 border border-white/10 px-3 py-1 shadow-xl"><SleepTimer /></div>
-          </details>
-          {/* Lyrics toggle */}
-          <button
-            onClick={() => setIsLyricsOpen((v) => !v)}
-            className={`p-2 rounded-xl transition-all drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-              isLyricsOpen
-                ? 'text-accent bg-accent/15 border border-accent/25 shadow-glow'
-                : 'text-surface-300 hover:text-white hover:bg-white/[0.05]'
-            }`}
-            title="Lyrics"
-          >
-            <Mic2 className="w-4 h-4" />
-          </button>
-
-          {/* Queue toggle */}
-          <button
-            onClick={() => setIsQueueOpen((v) => !v)}
-            className={`p-2 rounded-xl transition-all drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] ${
-              isQueueOpen
-                ? 'text-accent bg-accent/15 border border-accent/25 shadow-glow'
-                : 'text-surface-300 hover:text-white hover:bg-white/[0.05]'
-            }`}
-            title="Queue"
-          >
-            <ListMusic className="w-4 h-4" />
-          </button>
-
-          {/* Volume slider with native mousewheel adjustment */}
-          <div
-            ref={setVolumeNode}
-            className="hidden sm:flex items-center gap-2 text-surface-300 pl-2 py-2 cursor-pointer select-none"
-            title="Scroll mouse wheel to change volume"
-          >
-            <button
-              onClick={toggleMute}
-              className="hover:text-white transition-colors drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
-              title={muted ? 'Unmute' : 'Mute'}
-            >
-              {muted || volume === 0 ? (
-                <VolumeX className="w-4 h-4 text-surface-500" />
-              ) : (
-                <Volume2 className="w-4 h-4 text-surface-200" />
-              )}
-            </button>
-            <input
-              type="range"
-              aria-label="Volume"
-              min="0"
-              max="1"
-              step="0.01"
-              value={muted ? 0 : volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="w-16 sm:w-20 lg:w-24 h-1 appearance-none bg-surface-700/80 rounded-full cursor-pointer accent-accent"
-            />
-          </div>
-
-          {/* Anti-misclick separator: 16px margin-left + 1px solid rgba(255,255,255,0.1) */}
-          <div className="h-6 w-px bg-white/10 ml-4 mr-1 shrink-0 hidden sm:block" />
-
-          {/* Close player */}
-          <button
-            onClick={clearQueue}
-            className="p-2 text-surface-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition-colors shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]"
-            title="Close Player"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <button className={`player-icon playback-like ${starred ? 'is-active' : ''}`} onClick={() => toggleFavoriteTrack(track.id)} aria-label={starred ? 'Unlike' : 'Like'} aria-pressed={starred} title={starred ? 'Unlike' : 'Like'}><Heart size={17} fill={starred ? 'currentColor' : 'none'} /></button>
+        {onAddToPlaylist && <button className="player-icon playback-add" onClick={() => onAddToPlaylist(track)} aria-label="Add to playlist" title="Add to playlist"><Plus size={17} /></button>}
       </div>
-
-      {/* Lightbox Cover Modal */}
-      {showFullCover && currentTrack.cover_path && (
-        <CoverModal
-          coverPath={currentTrack.cover_path}
-          title={currentTrack.title || currentTrack.fileName || currentTrack.file_name}
-          artist={currentTrack.artist}
-          year={currentTrack.year}
-          onClose={() => setShowFullCover(false)}
-        />
-      )}
-    </div>
-    </>
-  );
+      <div className="playback-center">
+        <div className="playback-buttons">
+          <button className={`player-icon ${shuffle ? 'is-active' : ''}`} onClick={toggleShuffle} aria-label="Shuffle" aria-pressed={shuffle} title="Shuffle"><Shuffle size={16} /></button>
+          <button className="player-icon" onClick={prev} disabled={!hasPrev} aria-label="Previous track" title="Previous track"><SkipBack size={19} fill="currentColor" /></button>
+          <button className="playback-play" onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'} title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button>
+          <button className="player-icon" onClick={next} disabled={!hasNext} aria-label="Next track" title="Next track"><SkipForward size={19} fill="currentColor" /></button>
+          <button className={`player-icon ${repeat !== 'none' ? 'is-active' : ''}`} onClick={toggleRepeat} aria-label={`Repeat: ${repeat}`} aria-pressed={repeat !== 'none'} title={`Repeat: ${repeat}`}>{repeat === 'one' ? <Repeat1 size={16} /> : <Repeat size={16} />}</button>
+        </div>
+        <div className="playback-timeline"><span>{time(currentTime)}</span><RangeControl label="Playback position" max={duration} step={0.1} value={currentTime} onChange={seek} valueText={`${time(currentTime)} of ${time(duration)}`} /><span>{time(duration)}</span></div>
+      </div>
+      <div className="playback-tools">
+        <SleepTimer compact />
+        <button className={`player-icon ${isLyricsOpen ? 'is-active' : ''}`} onClick={() => setIsLyricsOpen(value => !value)} aria-label="Lyrics" aria-pressed={isLyricsOpen} title="Lyrics"><Mic2 size={17} /></button>
+        <button className={`player-icon ${isQueueOpen ? 'is-active' : ''}`} onClick={() => setIsQueueOpen(value => !value)} aria-label="Queue" aria-expanded={isQueueOpen} title="Queue"><ListMusic size={18} /></button>
+        <div ref={setVolumeNode} className="playback-volume" title="Scroll to change volume">
+          <button className="player-icon" onClick={toggleMute} aria-label={muted ? 'Unmute' : 'Mute'}>{muted || volume === 0 ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>
+          <RangeControl label="Volume" value={muted ? 0 : volume} onChange={setVolume} valueText={`${Math.round((muted ? 0 : volume) * 100)}%`} />
+        </div>
+        <button className="player-icon playback-expand" onClick={() => setIsNowPlayingOpen(true)} aria-label="Expand player" title="Now playing"><Maximize2 size={16} /></button>
+        <span className="playback-divider" />
+        <button className="player-icon playback-close" onClick={clearQueue} aria-label="Close player" title="Close player"><X size={16} /></button>
+      </div>
+    </section>
+    {showCover && track.cover_path && <CoverModal coverPath={track.cover_path} title={title} artist={track.artist} year={track.year} onClose={() => setShowCover(false)} />}
+  </>;
 }
