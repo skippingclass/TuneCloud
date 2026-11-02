@@ -1,23 +1,17 @@
-import { useEffect } from 'react';
+import { useDialog } from '../../hooks/useDialog.js';
 import { createPortal } from 'react-dom';
 import { X, ExternalLink } from 'lucide-react';
 import { api } from '../../api.js';
 
 export function CoverModal({ coverPath, title, artist, year, onClose }) {
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') onClose?.();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  const dialogRef = useDialog(true, onClose);
 
   if (!coverPath) return null;
 
   const url = api.coverUrl(coverPath);
 
   return createPortal(
-    <div
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Album artwork" tabIndex={-1}
       className="fixed inset-0 z-[110] flex items-center justify-center p-4 sm:p-8 bg-black/85 backdrop-blur-2xl animate-fade-in select-none"
       onClick={onClose}
     >
@@ -59,6 +53,7 @@ export function CoverModal({ coverPath, title, artist, year, onClose }) {
 
             <button
               onClick={onClose}
+            aria-label="Close dialog"
               className="p-2 text-surface-300 hover:text-rose-400 glass-panel rounded-xl hover:bg-white/[0.08] transition-colors"
               title="Close (Esc)"
             >

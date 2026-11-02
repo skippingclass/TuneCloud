@@ -1,3 +1,4 @@
+import { useLibraryState } from '../hooks/useLibraryState.js';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Search,
@@ -20,14 +21,14 @@ export const DEFAULT_ALBUMS_PAGE_SIZE = 48;
 export function AlbumsView({ onAlbumClick, onArtistClick }) {
   const [albums, setAlbums] = useState([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useLibraryState('AlbumsView.jsx:page', 1);
   const [loading, setLoading] = useState(true);
 
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState('all');
-  const [selectedYear, setSelectedYear] = useState('all');
-  const [sortBy, setSortBy] = useState('recent'); // 'recent' | 'title_asc' | 'title_desc' | 'year_desc' | 'year_asc' | 'duration'
+  const [search, setSearch] = useLibraryState('AlbumsView.jsx:search', '');
+  const [debouncedSearch, setDebouncedSearch] = useState(search.trim());
+  const [selectedGenre, setSelectedGenre] = useLibraryState('AlbumsView.jsx:selectedGenre', 'all');
+  const [selectedYear, setSelectedYear] = useLibraryState('AlbumsView.jsx:selectedYear', 'all');
+  const [sortBy, setSortBy] = useLibraryState('AlbumsView.jsx:sortBy', 'recent'); // 'recent' | 'title_asc' | 'title_desc' | 'year_desc' | 'year_asc' | 'duration'
   const [genresList, setGenresList] = useState([]);
 
   const [density, setDensity] = useState(() => {
@@ -56,6 +57,7 @@ export function AlbumsView({ onAlbumClick, onArtistClick }) {
   // Debounce search
   useEffect(() => {
     const trimmed = search.trim();
+    if (trimmed === debouncedSearch) return;
     const timer = setTimeout(() => {
       setDebouncedSearch(trimmed);
       setPage(1);

@@ -1,3 +1,6 @@
+import { Home, Search, Library } from 'lucide-react';
+import { useScrollRestoration } from './hooks/useScrollRestoration.js';
+import { HistoryView } from './views/HistoryView.jsx';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api, setAuthToken, getAuthToken, onAuthExpired } from './api.js';
 import { ThemeProvider } from './context/ThemeContext.jsx';
@@ -53,6 +56,8 @@ export function buildUrl(view, param = null) {
       const plId = param?.id != null ? param.id : '';
       return plId ? `/playlist/${plId}` : '/playlists';
     }
+    case 'history':
+      return '/history';
     case 'favorites':
       return '/favorites';
     case 'browse': {
@@ -119,6 +124,8 @@ export function parseLocation(pathname, search) {
     return { view: 'playlist', param: !isNaN(num) ? { id: num } : null };
   }
 
+  if (cleanPath === '/history') return { view: 'history', param: null };
+
   if (cleanPath === '/favorites') {
     return { view: 'favorites', param: null };
   }
@@ -149,6 +156,8 @@ function MainLayout({ user, onLogout }) {
   const [route, setRoute] = useState(() => parseLocation());
   const [historyDepth, setHistoryDepth] = useState(() => (typeof window !== 'undefined' && window.history ? window.history.state?.idx ?? 0 : 0));
 
+  const maxHistoryDepth = useRef(historyDepth);
+
   const [selectedAlbum, setSelectedAlbum] = useState(() => (route.view === 'album' ? route.param : null));
   const [selectedArtist, setSelectedArtist] = useState(() => (route.view === 'artist' ? route.param : null));
   const [selectedPlaylist, setSelectedPlaylist] = useState(() => (route.view === 'playlist' ? route.param : null));
@@ -161,6 +170,7 @@ function MainLayout({ user, onLogout }) {
   const [scanVersion, setScanVersion] = useState(0);
 
   const { currentTrack, playTrack } = usePlayer();
+  const mainRef = useScrollRestoration(buildUrl(route.view, route.param));
 
   const navigateTo = useCallback(
     (targetView, param = null, { replace = false } = {}) => {
@@ -190,6 +200,7 @@ function MainLayout({ user, onLogout }) {
         } else if (typeof window.history.pushState === 'function') {
           window.history.pushState(stateObj, '', targetUrl);
         }
+        if (!replace) maxHistoryDepth.current = nextDepth;
         setHistoryDepth(nextDepth);
       }
 
@@ -242,6 +253,7 @@ function MainLayout({ user, onLogout }) {
     tracks: 'Tracks Library',
     playlists: 'Playlists',
     playlist: activePlaylist?.name || 'Playlist',
+    history: 'Listening history',
     favorites: 'Favorites',
     browse: 'Folder Browser',
     search: 'Search Library',
@@ -266,12 +278,15 @@ function MainLayout({ user, onLogout }) {
         {/* Center Main Content Area */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           <Header
-            canGoBack={historyDepth > 0 || (typeof window !== 'undefined' && (window.history?.length || 0) > 1)}
+            canGoBack={historyDepth > 0}
             onBack={handleBack}
-            canGoForward={true}
+            canGoForward={historyDepth < maxHistoryDepth.current}
             onForward={handleForward}
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={(q) => {
+              setSearchQuery(q);
+              if (route.view === 'search') navigateTo('search', q, { replace: true });
+            }}
             onSubmitSearch={(q) => navigateTo('search', q)}
             onSelectAlbum={handleAlbumClick}
             onSelectArtist={handleArtistClick}
@@ -281,7 +296,7 @@ function MainLayout({ user, onLogout }) {
             currentViewTitle={viewTitles[route.view]}
           />
 
-          <main className="tune-main flex-1 overflow-y-auto p-4 sm:p-7 pb-[120px] sm:pb-[140px] bg-black/15">
+          <main ref={mainRef} className="tune-main flex-1 overflow-y-auto p-4 sm:p-7 pb-[120px] sm:pb-[140px] bg-black/15">
             {route.view === 'home' && (
               <HomeView
                 key={scanVersion}
@@ -353,6 +368,10 @@ function MainLayout({ user, onLogout }) {
                 onAddToPlaylist={(t) => setAddToPlaylistTrack(t)}
               />
             )}
+            {route.view === 'history' && (
+              <HistoryView user={user} onGoToAlbum={handleAlbumClick} onGoToArtist={handleArtistClick}
+                onEditTags={setEditingTrack} onAddToPlaylist={setAddToPlaylistTrack} />
+            )}
             {route.view === 'favorites' && (
               <FavoritesView
                 user={user}
@@ -377,6 +396,7 @@ function MainLayout({ user, onLogout }) {
             {route.view === 'search' && (
               <SearchView
                 initialQuery={searchQuery}
+                onQueryChange={setSearchQuery}
                 onAlbumClick={handleAlbumClick}
                 onArtistClick={handleArtistClick}
                 user={user}
@@ -395,6 +415,13 @@ function MainLayout({ user, onLogout }) {
         </div>
       </div>
 
+      <nav className="mobile-navigation" aria-label="Main navigation">
+        {[['home', 'Home', Home], ['search', 'Search', Search], ['albums', 'Library', Library]].map(([view, label, Icon]) => (
+          <button key={view} onClick={() => navigateTo(view)} aria-current={route.view === view ? 'page' : undefined}>
+            <Icon size={20} /><span>{label}</span>
+          </button>
+        ))}
+      </nav>
       {/* Floating Bottom Player */}
       <Player
         onGoToAlbum={handleAlbumClick}
@@ -581,7 +608,7 @@ export default function App() {
   return (
     <ThemeProvider>
       <FavoritesProvider>
-        <PlayerProvider>
+        <PlayerProvider key={user.id} userId={user.id}>
           <MainLayout user={user} onLogout={handleLogout} />
         </PlayerProvider>
       </FavoritesProvider>

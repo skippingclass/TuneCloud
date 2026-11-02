@@ -9,10 +9,11 @@ A self-hosted music server with a React web player, a Subsonic-compatible API, a
 ## Features
 
 - **Your music, on your server.** Scan local folders, browse albums and artists, search the collection, and manage playlists and favorites.
-- **A web player built for listening.** A floating player, playback queue, cover viewer, and responsive layouts. The Mix design combines peach accents and glass surfaces with consistent spacing.
+- **A web player built for listening.** A floating player, mobile now-playing screen, editable playback queue, sleep timer, cover viewer, and responsive layouts. Playback position and queue are restored on this browser, paused, separately for each account. The Mix design combines peach accents and glass surfaces with consistent spacing.
 - **Line-synchronized lyrics.** Highlighting, automatic scrolling, and click-to-seek from local files, embedded tags, [lrc.red](https://lrc.red), and [LRCLIB](https://lrclib.net). Word timestamps are reduced to line timing.
 - **Subsonic clients.** Native audio streaming with HTTP range requests, search, playlists, favorites, ratings, scrobbling, and saved queues. Streaming serves the original audio; server-side transcoding is not implemented.
 - **Incremental library scans.** Re-read changed files or run a full metadata scan. Missing files retain their IDs and playlist, favorite, and history references.
+- **Listening history.** A personal timeline with repeated plays, dates, and pagination. Select multiple tracks to add them to favorites, a playlist, or the queue.
 - **Multiple users.** Administrator-managed accounts, personal listening history, session revocation, and optional MP3 tag editing.
 
 ## Screenshots

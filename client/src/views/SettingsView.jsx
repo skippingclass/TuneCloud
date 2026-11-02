@@ -1,85 +1,10 @@
-import { useState, useEffect } from 'react';
-import { Palette, RefreshCw, Check, Sparkles, Info, Shield, ExternalLink, Loader2 } from 'lucide-react';
+import { useLibraryScan } from '../hooks/useLibraryScan.js';
+import { Palette, RefreshCw, Check, Sparkles, Info, ExternalLink, Loader2 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext.jsx';
-import { api } from '../api.js';
-import { toast } from '../components/layout/Toast.jsx';
 
 export function SettingsView({ user, onScanComplete }) {
   const { theme, setTheme, themes } = useTheme();
-  const [scanning, setScanning] = useState(false); // false | 'incremental' | 'full'
-  const [progress, setProgress] = useState(null);
-
-  // Auto-detect ongoing scan on mount
-  useEffect(() => {
-    let timer = null;
-    let mounted = true;
-
-    const checkStatus = async () => {
-      try {
-        const data = await api.scanStatus();
-        if (!mounted) return;
-        if (data.isScanning) {
-          setScanning(data.progress?.full ? 'full' : 'incremental');
-          setProgress(data.progress);
-          timer = setTimeout(checkStatus, 1200);
-        } else {
-          setScanning(false);
-          setProgress(null);
-        }
-      } catch {}
-    };
-
-    checkStatus();
-    return () => {
-      mounted = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
-
-  const handleRescan = async ({ full = false, reextractCovers = false } = {}) => {
-    if (scanning) return;
-    const mode = full ? 'full' : 'incremental';
-    setScanning(mode);
-    setProgress({ phase: 'starting', total: 0, processed: 0 });
-
-    try {
-      await api.scan({ full, reextractCovers });
-
-      // Poll until background scan completes
-      let active = true;
-      const poll = async () => {
-        if (!active) return;
-        try {
-          const st = await api.scanStatus();
-          if (st.isScanning) {
-            setProgress(st.progress);
-            setTimeout(poll, 1200);
-          } else {
-            setScanning(false);
-            setProgress(null);
-            if (st.progress?.phase === 'error') {
-              toast(`Scan failed: ${st.progress.error}`, 'error');
-            } else {
-              const r = st.lastResult || {};
-              toast(
-                `Scan complete: ${r.processed || 0} tracks, ${r.covers || 0} covers in ${r.durationSeconds || 0}s`,
-                'success'
-              );
-              onScanComplete?.();
-            }
-          }
-        } catch {
-          setTimeout(poll, 2000);
-        }
-      };
-
-      setTimeout(poll, 800);
-    } catch (err) {
-      toast(`Could not start scan: ${err.message}`, 'error');
-      setScanning(false);
-      setProgress(null);
-    }
-  };
+  const { scanning, progress, connectionLost, startScan: handleRescan } = useLibraryScan(onScanComplete);
 
   return (
     <div className="max-w-3xl space-y-8 animate-fade-in">
@@ -157,6 +82,7 @@ export function SettingsView({ user, onScanComplete }) {
           </div>
         </div>
 
+        {connectionLost && <p className="text-[11px] text-surface-500" role="status">Scan status unavailable · Reconnecting…</p>}
         {/* Live scanning progress banner */}
         {scanning && (
           <div className="p-4 sm:p-5 rounded-2xl bg-accent/10 border border-accent/30 space-y-3 animate-fade-in">

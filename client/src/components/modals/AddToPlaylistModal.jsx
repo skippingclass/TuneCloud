@@ -1,9 +1,13 @@
+import { useDialog } from '../../hooks/useDialog.js';
 import { useState, useEffect, useRef } from 'react';
 import { X, Plus, Search, Check, ListMusic, Loader2, Music2 } from 'lucide-react';
 import { api } from '../../api.js';
 import { toast } from '../layout/Toast.jsx';
 
 export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
+  const dialogRef = useDialog(true, onClose);
+  const selectedTracks = Array.isArray(track) ? track : track ? [track] : [];
+  const trackIds = selectedTracks.map((t) => t.id).filter((id) => id != null);
   const [playlists, setPlaylists] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -32,13 +36,8 @@ export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
         if (mounted) setLoading(false);
       });
 
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
     return () => {
       mounted = false;
-      window.removeEventListener('keydown', handleKeyDown);
     };
   }, [onClose]);
 
@@ -49,10 +48,10 @@ export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
   }, [showCreateInput]);
 
   const handleAddToPlaylist = async (playlist) => {
-    if (addingId || !track?.id) return;
+    if (addingId || !trackIds.length) return;
     setAddingId(playlist.id);
     try {
-      await api.addTracksToPlaylist(playlist.id, track.id);
+      await api.addTracksToPlaylist(playlist.id, trackIds);
       toast(`Added to "${playlist.name}"`, 'success');
       onClose();
     } catch (err) {
@@ -70,9 +69,9 @@ export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
     try {
       const created = await api.createPlaylist({
         name,
-        trackIds: track?.id ? [track.id] : [],
+        trackIds,
       });
-      toast(`Created "${name}" and added song`, 'success');
+      toast(`Created "${name}" and added ${trackIds.length} tracks`, 'success');
       onPlaylistCreated?.(created);
       onClose();
     } catch (err) {
@@ -87,7 +86,7 @@ export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
   );
 
   return (
-    <div
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Add to playlist" tabIndex={-1}
       className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-fade-in"
       onClick={onClose}
     >
@@ -102,11 +101,12 @@ export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
               Add to Playlist
             </h2>
             <p className="text-xs text-surface-400 truncate">
-              {track ? `${track.title || track.file_name} — ${track.artist || 'Unknown'}` : 'Select playlist'}
+              {selectedTracks.length > 1 ? `${selectedTracks.length} selected tracks` : track ? `${track.title || track.file_name} — ${track.artist || 'Unknown'}` : 'Select playlist'}
             </p>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close dialog"
             className="p-1.5 rounded-xl text-surface-400 hover:text-white hover:bg-white/[0.06] transition-colors shrink-0"
           >
             <X className="w-4 h-4" />

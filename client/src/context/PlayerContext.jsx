@@ -1,19 +1,27 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../api.js';
+import { shuffleOrder, readPlaybackSession } from '../utils/playback.js';
 import { toast } from '../components/layout/Toast.jsx';
 
 const VOL_KEY = 'tunecloud-volume';
 const PlayerContext = createContext(null);
 
-export function PlayerProvider({ children }) {
+export function PlayerProvider({ children, userId = 'local' }) {
+  const sessionKey = `tunecloud-playback:${userId}`;
+  const [saved] = useState(() => readPlaybackSession(sessionKey));
+  const restoringRef = useRef(Boolean(saved));
+  const pendingSeekRef = useRef(saved?.currentTime ?? null);
   const audioRef = useRef(null);
-  const [queue, setQueue] = useState([]);
-  const [queueIndex, setQueueIndex] = useState(-1);
+  const [queue, setQueue] = useState(saved?.queue || []);
+  const [queueIndex, setQueueIndex] = useState(saved?.queueIndex ?? -1);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [currentTime, setCurrentTime] = useState(saved?.currentTime || 0);
   const [duration, setDuration] = useState(0);
-  const [repeat, setRepeat] = useState('none'); // 'none' | 'all' | 'one'
-  const [shuffle, setShuffle] = useState(false);
+  const [repeat, setRepeat] = useState(saved?.repeat || 'none'); // 'none' | 'all' | 'one'
+  const [shuffle, setShuffle] = useState(saved?.shuffle || false);
+  const [order, setOrder] = useState(saved?.order || []);
+  const [sleepUntil, setSleepUntil] = useState(null); // timestamp or 'track'
+  const [isNowPlayingOpen, setIsNowPlayingOpen] = useState(false);
   const [isLyricsOpen, setIsLyricsOpen] = useState(false);
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [volume, setVolumeState] = useState(() => {
@@ -30,13 +38,14 @@ export function PlayerProvider({ children }) {
   });
   const [muted, setMuted] = useState(false);
   const [playbackKey, setPlaybackKey] = useState(0);
-  const scrobbledRef = useRef(false);
+  const scrobbledRef = useRef(saved?.scrobbled || false);
   const playRequestIdRef = useRef(0);
 
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
 
   const safePlay = useCallback((el) => {
     if (!el || typeof el.play !== 'function') return;
+    restoringRef.current = false;
     const reqId = ++playRequestIdRef.current;
     try {
       const playPromise = el.play();
@@ -89,8 +98,9 @@ export function PlayerProvider({ children }) {
   }, []);
 
   const toggleShuffle = useCallback(() => {
+    if (!shuffle) setOrder(shuffleOrder(queue.length, queueIndex));
     setShuffle((s) => !s);
-  }, []);
+  }, [shuffle, queue.length, queueIndex]);
 
   // Window title update
   useEffect(() => {
@@ -144,45 +154,34 @@ export function PlayerProvider({ children }) {
   }, [isPlaying, currentTrack]);
 
   const pickNext = useCallback(() => {
-    if (queue.length === 0) return -1;
-    if (shuffle) {
-      if (queue.length === 1) return 0;
-      let nextIdx;
-      do {
-        nextIdx = Math.floor(Math.random() * queue.length);
-      } while (nextIdx === queueIndex && queue.length > 1);
-      return nextIdx;
-    }
-    const nextIdx = queueIndex + 1;
-    if (nextIdx >= queue.length) return repeat === 'all' ? 0 : -1;
-    return nextIdx;
-  }, [queue.length, queueIndex, shuffle, repeat]);
+    if (!queue.length) return -1;
+    const sequence = shuffle ? order : queue.map((_, i) => i);
+    const position = sequence.indexOf(queueIndex);
+    return sequence[position + 1] ?? (repeat === 'all' ? sequence[0] ?? -1 : -1);
+  }, [queue, queueIndex, shuffle, repeat, order]);
 
   const pickPrev = useCallback(() => {
-    if (queue.length === 0) return -1;
-    if (shuffle) {
-      if (queue.length === 1) return 0;
-      let prevIdx;
-      do {
-        prevIdx = Math.floor(Math.random() * queue.length);
-      } while (prevIdx === queueIndex && queue.length > 1);
-      return prevIdx;
-    }
-    const prevIdx = queueIndex - 1;
-    if (prevIdx < 0) return repeat === 'all' ? queue.length - 1 : -1;
-    return prevIdx;
-  }, [queue.length, queueIndex, shuffle, repeat]);
+    if (!queue.length) return -1;
+    const sequence = shuffle ? order : queue.map((_, i) => i);
+    const position = sequence.indexOf(queueIndex);
+    return sequence[position - 1] ?? (repeat === 'all' ? sequence[sequence.length - 1] ?? -1 : -1);
+  }, [queue, queueIndex, shuffle, repeat, order]);
 
   const selectQueueIndex = useCallback((idx) => {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= queue.length || queue[idx].available === false) return;
+    restoringRef.current = false;
+    pendingSeekRef.current = null;
     scrobbledRef.current = false;
     setCurrentTime(0);
     setQueueIndex(idx);
     setPlaybackKey((k) => k + 1);
-  }, []);
+  }, [queue]);
 
   const next = useCallback(() => {
     const idx = pickNext();
     if (idx >= 0) {
+      restoringRef.current = false;
+      pendingSeekRef.current = null;
       scrobbledRef.current = false;
       setCurrentTime(0);
       setQueueIndex(idx);
@@ -193,6 +192,8 @@ export function PlayerProvider({ children }) {
   const prev = useCallback(() => {
     const idx = pickPrev();
     if (idx >= 0) {
+      restoringRef.current = false;
+      pendingSeekRef.current = null;
       scrobbledRef.current = false;
       setCurrentTime(0);
       setQueueIndex(idx);
@@ -203,6 +204,12 @@ export function PlayerProvider({ children }) {
   const seek = useCallback((time) => {
     const el = audioRef.current;
     const safeTime = Number.isFinite(time) ? Math.max(0, time) : 0;
+    if (el?.readyState === 0) {
+      pendingSeekRef.current = safeTime;
+      setCurrentTime(safeTime);
+      return;
+    }
+    pendingSeekRef.current = null;
     if (el) {
       const maxDur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null;
       const targetTime = maxDur !== null ? Math.min(safeTime, maxDur) : safeTime;
@@ -227,6 +234,11 @@ export function PlayerProvider({ children }) {
   }, []);
 
   const clearQueue = useCallback(() => {
+    restoringRef.current = false;
+    pendingSeekRef.current = null;
+    setOrder([]);
+    setSleepUntil(null);
+    setIsNowPlayingOpen(false);
     playRequestIdRef.current += 1;
     scrobbledRef.current = false;
     setQueue([]);
@@ -309,6 +321,9 @@ export function PlayerProvider({ children }) {
       const activeTrack = list[targetIdx];
       const isSameTrack = currentTrack?.id != null && currentTrack.id === activeTrack.id;
 
+      restoringRef.current = false;
+      pendingSeekRef.current = null;
+      setOrder(shuffleOrder(list.length, targetIdx));
       setQueue(list);
       setQueueIndex(targetIdx);
 
@@ -341,9 +356,15 @@ export function PlayerProvider({ children }) {
   }, [safePlay]);
 
   const addToQueue = useCallback(
-    (track) => {
+    (track, nextUp = false) => {
       if (!track || track.available === false) return;
-      setQueue((prev) => [...prev, track]);
+      const insertAt = nextUp && queueIndex >= 0 ? queueIndex + 1 : queue.length;
+      setQueue((prev) => [...prev.slice(0, insertAt), track, ...prev.slice(insertAt)]);
+      setOrder((prev) => {
+        const mapped = prev.map((i) => i >= insertAt ? i + 1 : i);
+        const position = nextUp ? mapped.indexOf(queueIndex) + 1 : mapped.length;
+        return [...mapped.slice(0, position), insertAt, ...mapped.slice(position)];
+      });
       if (queueIndex === -1) {
         scrobbledRef.current = false;
         setCurrentTime(0);
@@ -352,32 +373,87 @@ export function PlayerProvider({ children }) {
         setPlaybackKey((k) => k + 1);
       }
     },
-    [queueIndex]
+    [queueIndex, queue.length]
   );
 
-  const removeFromQueue = useCallback(
-    (index) => {
-      setQueue((prev) => prev.filter((_, i) => i !== index));
-      if (index === queueIndex) {
-        scrobbledRef.current = false;
-        setCurrentTime(0);
-        if (queue.length <= 1) {
-          playRequestIdRef.current += 1;
-          setQueueIndex(-1);
-          setIsPlaying(false);
-          setDuration(0);
-        } else if (index >= queue.length - 1) {
-          setQueueIndex(queue.length - 2);
-          setPlaybackKey((k) => k + 1);
-        } else {
-          setPlaybackKey((k) => k + 1);
-        }
-      } else if (index < queueIndex) {
-        setQueueIndex((i) => i - 1);
+  const addManyToQueue = useCallback((tracks) => {
+    const available = tracks.filter((track) => track?.id != null && track.available !== false);
+    if (!available.length) return;
+    setQueue((prev) => [...prev, ...available]);
+    setOrder((prev) => [...prev, ...available.map((_, i) => queue.length + i)]);
+    if (queueIndex < 0) {
+      restoringRef.current = false;
+      pendingSeekRef.current = null;
+      setQueueIndex(0);
+      setPlaybackKey((key) => key + 1);
+    }
+  }, [queue.length, queueIndex]);
+
+  const removeFromQueue = useCallback((index) => {
+    if (!Number.isInteger(index) || index < 0 || index >= queue.length) return;
+    if (queue.length === 1) { clearQueue(); return; }
+    setOrder((previous) => previous.filter((i) => i !== index).map((i) => i > index ? i - 1 : i));
+    setQueue((previous) => previous.filter((_, i) => i !== index));
+    if (index === queueIndex) {
+      restoringRef.current = false;
+      pendingSeekRef.current = null;
+      scrobbledRef.current = false;
+      setCurrentTime(0);
+      const nextIndex = pickNext();
+      const previousIndex = pickPrev();
+      const target = nextIndex >= 0 && nextIndex !== index ? nextIndex
+        : previousIndex >= 0 && previousIndex !== index ? previousIndex : (index === 0 ? 1 : index - 1);
+      setQueueIndex(target > index ? target - 1 : target);
+      setPlaybackKey((key) => key + 1);
+    } else if (index < queueIndex) {
+      setQueueIndex((i) => i - 1);
+    }
+  }, [queue.length, queueIndex, pickNext, pickPrev, clearQueue]);
+
+  const moveInQueue = useCallback((from, to) => {
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to || from < 0 || to < 0 || from >= queue.length || to >= queue.length) return;
+    const indices = queue.map((_, i) => i);
+    indices.splice(to, 0, indices.splice(from, 1)[0]);
+    setQueue(indices.map((i) => queue[i]));
+    setQueueIndex(indices.indexOf(queueIndex));
+    setOrder((prev) => {
+      const reordered = [...prev];
+      if (shuffle) {
+        const fromPosition = reordered.indexOf(from);
+        const toPosition = reordered.indexOf(to);
+        reordered.splice(toPosition, 0, reordered.splice(fromPosition, 1)[0]);
       }
-    },
-    [queue.length, queueIndex]
-  );
+      return reordered.map((i) => indices.indexOf(i));
+    });
+  }, [queue, queueIndex, shuffle]);
+
+  // Keep writes bounded during playback, and flush the exact position on pause/exit.
+  const sessionRef = useRef(null);
+  sessionRef.current = { queue, queueIndex, currentTime, repeat, shuffle, order, scrobbled: scrobbledRef.current };
+  const persist = useCallback(() => {
+    try {
+      const state = sessionRef.current;
+      if (!state.queue.length) localStorage.removeItem(sessionKey);
+      else localStorage.setItem(sessionKey, JSON.stringify(state));
+    } catch { /* Full or unavailable browser storage must not interrupt playback. */ }
+  }, [sessionKey]);
+  const timeBucket = Math.floor(currentTime / 5);
+  useEffect(persist, [persist, queue, queueIndex, repeat, shuffle, order, isPlaying, timeBucket]);
+  useEffect(() => {
+    window.addEventListener('pagehide', persist);
+    return () => { persist(); window.removeEventListener('pagehide', persist); };
+  }, [persist]);
+
+  useEffect(() => {
+    if (typeof sleepUntil !== 'number') return;
+    const timer = setTimeout(() => {
+      playRequestIdRef.current += 1;
+      audioRef.current?.pause();
+      setIsPlaying(false);
+      setSleepUntil(null);
+    }, Math.max(0, sleepUntil - Date.now()));
+    return () => clearTimeout(timer);
+  }, [sleepUntil]);
 
   // Start playback and reset per-play state when active track or playbackKey changes
   useEffect(() => {
@@ -389,6 +465,10 @@ export function PlayerProvider({ children }) {
       return;
     }
 
+    if (restoringRef.current) {
+      setDuration(currentTrack.duration || 0);
+      return;
+    }
     scrobbledRef.current = false;
     setCurrentTime(0);
     setDuration(
@@ -438,6 +518,7 @@ export function PlayerProvider({ children }) {
     };
 
     const onTime = () => {
+      if (pendingSeekRef.current !== null && el.readyState === 0) return;
       const cur = Number.isFinite(el.currentTime) && el.currentTime >= 0 ? el.currentTime : 0;
       setCurrentTime(cur);
       const effDur = getEffectiveDuration();
@@ -456,12 +537,23 @@ export function PlayerProvider({ children }) {
 
     const onMeta = () => {
       const effDur = getEffectiveDuration();
+      if (pendingSeekRef.current !== null && el.readyState !== 0 && effDur > 0) {
+        el.currentTime = Math.min(pendingSeekRef.current, effDur);
+        setCurrentTime(el.currentTime);
+        pendingSeekRef.current = null;
+      }
       setDuration(effDur);
       syncMediaSessionPosition();
     };
 
     const onEnd = () => {
       scrobbledRef.current = false;
+      if (sleepUntil === 'track') {
+        setSleepUntil(null);
+        setIsPlaying(false);
+        el.pause();
+        return;
+      }
       if (repeat === 'one') {
         try {
           el.currentTime = 0;
@@ -498,6 +590,7 @@ export function PlayerProvider({ children }) {
     el.addEventListener('play', onPlay);
     el.addEventListener('pause', onPause);
     el.addEventListener('error', onError);
+    if (el.readyState >= 1) onMeta();
 
     return () => {
       el.removeEventListener('timeupdate', onTime);
@@ -508,7 +601,7 @@ export function PlayerProvider({ children }) {
       el.removeEventListener('pause', onPause);
       el.removeEventListener('error', onError);
     };
-  }, [currentTrack, repeat, pickNext, safePlay]);
+  }, [currentTrack, repeat, pickNext, safePlay, sleepUntil]);
 
   return (
     <PlayerContext.Provider
@@ -517,6 +610,7 @@ export function PlayerProvider({ children }) {
         currentTrack,
         queue,
         queueIndex,
+        queueOrder: shuffle ? order : queue.map((_, index) => index),
         setQueueIndex: selectQueueIndex,
         isPlaying,
         currentTime,
@@ -539,6 +633,13 @@ export function PlayerProvider({ children }) {
         toggleRepeat,
         toggleShuffle,
         addToQueue,
+        addManyToQueue,
+        playNext: (track) => addToQueue(track, true),
+        moveInQueue,
+        sleepUntil,
+        setSleepTimer: (value) => setSleepUntil(value === 'track' ? 'track' : Number(value) > 0 ? Date.now() + Number(value) * 60000 : null),
+        isNowPlayingOpen,
+        setIsNowPlayingOpen,
         removeFromQueue,
         clearQueue,
         hasNext: pickNext() >= 0,

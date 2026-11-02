@@ -42,6 +42,8 @@ export function Header({
   const inputRef = useRef(null);
   const [results, setResults] = useState({ tracks: [], albums: [], artists: [] });
   const [loading, setLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [retry, setRetry] = useState(0);
   const searchContainerRef = useRef(null);
   const requestIdRef = useRef(0);
   const abortRef = useRef(null);
@@ -52,6 +54,18 @@ export function Header({
     setDropdownOpen(false);
     inputRef.current?.blur();
   };
+
+  useEffect(() => {
+    const handler = (event) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target?.tagName) || target?.isContentEditable || document.querySelector('[role="dialog"]')) return;
+      event.preventDefault();
+      inputRef.current?.focus();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // Close dropdown on outside click or touch
   useEffect(() => {
@@ -83,6 +97,7 @@ export function Header({
       abortRef.current = null;
     }
 
+    setSearchError(false);
     const q = (searchQuery || '').trim();
     if (!q || currentView === 'search') {
       setResults({ tracks: [], albums: [], artists: [] });
@@ -119,6 +134,8 @@ export function Header({
             return;
           }
           setResults({ tracks: [], albums: [], artists: [] });
+          setSearchError(true);
+          setDropdownOpen(false);
         })
         .finally(() => {
           if (reqId === requestIdRef.current && !controller.signal.aborted) {
@@ -134,7 +151,7 @@ export function Header({
         abortRef.current = null;
       }
     };
-  }, [searchQuery, currentView]);
+  }, [searchQuery, currentView, retry]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
@@ -221,6 +238,7 @@ export function Header({
           )}
           <input
             ref={inputRef}
+            aria-label="Search your music"
             type="text"
             value={searchQuery || ''}
             onChange={(e) => onSearchChange?.(e.target.value)}
@@ -250,6 +268,9 @@ export function Header({
           )}
         </div>
 
+        {searchError && currentView !== 'search' && <div role="status" className="absolute right-0 top-full mt-1 flex items-center gap-2 text-[11px] text-surface-500">
+          <span>Search unavailable</span><button onClick={() => setRetry((value) => value + 1)} className="hover:text-surface-200" aria-label="Retry quick search">Retry</button>
+        </div>}
         {/* Dropdown Results Popover */}
         {dropdownOpen && currentView !== 'search' && (
           <div
@@ -257,7 +278,7 @@ export function Header({
             className="absolute top-full left-0 right-0 sm:-left-12 sm:-right-12 mt-2 glass-panel rounded-2xl shadow-glass-lg border border-white/[0.1] backdrop-blur-2xl overflow-hidden z-50 animate-fade-in max-h-[75vh] flex flex-col"
           >
             <div className="p-2 space-y-3 overflow-y-auto flex-1">
-              {!hasAnyResults && !loading && (
+              {!hasAnyResults && !loading && !searchError && (
                 <div className="py-6 text-center text-xs text-surface-500">
                   No matching results for "{searchQuery}"
                 </div>

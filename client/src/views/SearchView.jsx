@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Disc, Users, Music2, Loader2 } from 'lucide-react';
+import { Search, Disc, Users, Music2, Loader2, RefreshCw, WifiOff } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { AlbumCard } from '../components/cards/AlbumCard.jsx';
@@ -7,6 +7,7 @@ import { usePlayer } from '../context/PlayerContext.jsx';
 
 export function SearchView({
   initialQuery = '',
+  onQueryChange,
   onAlbumClick,
   onArtistClick,
   user,
@@ -16,6 +17,9 @@ export function SearchView({
   const [query, setQuery] = useState(initialQuery);
   const [results, setResults] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [tab, setTab] = useState('all');
   const requestIdRef = useRef(0);
   const abortRef = useRef(null);
   const { currentTrack, playTrack } = usePlayer();
@@ -31,6 +35,7 @@ export function SearchView({
       abortRef.current = null;
     }
 
+    setError(false);
     const q = query.trim();
     if (!q) {
       setResults(null);
@@ -61,7 +66,8 @@ export function SearchView({
           ) {
             return;
           }
-          setResults({ tracks: [], albums: [], artists: [] });
+          setResults(null);
+          setError(true);
         })
         .finally(() => {
           if (reqId === requestIdRef.current && !controller.signal.aborted) {
@@ -77,16 +83,18 @@ export function SearchView({
         abortRef.current = null;
       }
     };
-  }, [query]);
+  }, [query, retry]);
 
   return (
     <div className="space-y-8 animate-fade-in">
-      <div className="relative max-w-xl">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+      {!onQueryChange && <div className="relative w-full max-w-xl">
         <Search className="w-5 h-5 text-surface-500 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search library"
           placeholder="Search by title, artist, album, genre..."
           className="glass-input w-full pl-11 pr-4 py-3 text-base"
           autoFocus
@@ -94,12 +102,25 @@ export function SearchView({
         {searching && (
           <Loader2 className="w-4 h-4 text-accent animate-spin absolute right-4 top-1/2 -translate-y-1/2" />
         )}
+      </div>}
+        <div className="flex gap-1" aria-label="Search categories">
+          {['all', 'tracks', 'albums', 'artists'].map((value) => (
+            <button key={value} onClick={() => setTab(value)} aria-pressed={tab === value}
+              className={`px-3 py-2 rounded-full text-xs capitalize transition-colors ${tab === value ? 'bg-white/10 text-white' : 'text-surface-400 hover:text-white'}`}>{value}</button>
+          ))}
+        </div>
+        <div className="ml-auto min-h-8 flex items-center gap-2 text-[11px] text-surface-500" role="status" aria-live="polite">
+          {searching ? <><Loader2 className="w-3 h-3 animate-spin" /> Searching library</> : error ? <>
+            <WifiOff className="w-3 h-3" /><span>Search unavailable</span>
+            <button onClick={() => setRetry((v) => v + 1)} className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-white/5 hover:text-surface-200" aria-label="Retry search"><RefreshCw className="w-3 h-3" /> Retry</button>
+          </> : query.trim() && results ? 'Results from your library' : null}
+        </div>
       </div>
-
-      {results && (
+      {!query.trim() && <p className="text-sm text-surface-500">Find a song, album or artist in your library.</p>}
+      {results && !searching && !error && (
         <div className="space-y-8">
           {/* Artists */}
-          {results.artists.length > 0 && (
+          {(tab === 'all' || tab === 'artists') && results.artists.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Users className="w-4 h-4 text-accent" />
@@ -121,7 +142,7 @@ export function SearchView({
           )}
 
           {/* Albums */}
-          {results.albums.length > 0 && (
+          {(tab === 'all' || tab === 'albums') && results.albums.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Disc className="w-4 h-4 text-accent" />
@@ -141,7 +162,7 @@ export function SearchView({
           )}
 
           {/* Tracks */}
-          {results.tracks.length > 0 && (
+          {(tab === 'all' || tab === 'tracks') && results.tracks.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Music2 className="w-4 h-4 text-accent" />
@@ -182,9 +203,7 @@ export function SearchView({
             </div>
           )}
 
-          {results.tracks.length === 0 &&
-            results.albums.length === 0 &&
-            results.artists.length === 0 && (
+          {(tab === 'all' ? Object.values(results).every((list) => list.length === 0) : results[tab].length === 0) && (
               <p className="text-surface-500 text-sm">
                 No matching results found for "{query}"
               </p>

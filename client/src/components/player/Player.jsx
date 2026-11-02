@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { NowPlaying, SleepTimer } from './NowPlaying.jsx';
+import { useState, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -15,6 +16,7 @@ import {
   Disc,
   Maximize2,
   FolderPlus,
+  Moon,
 } from 'lucide-react';
 import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
@@ -32,6 +34,7 @@ function formatDuration(sec) {
 export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
   const {
     currentTrack,
+    setIsNowPlayingOpen,
     isPlaying,
     currentTime,
     duration,
@@ -78,18 +81,36 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
     };
   }, [volumeNode, setVolume]);
 
+  useEffect(() => {
+    const handler = (event) => {
+      if (!currentTrack || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat) return;
+      const target = event.target;
+      if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(target?.tagName) || target?.isContentEditable || document.querySelector('[role="dialog"]')) return;
+      if (event.key === ' ') { event.preventDefault(); togglePlay(); }
+      else if (event.key === 'ArrowRight') { event.preventDefault(); seek(currentTime + 10); }
+      else if (event.key === 'ArrowLeft') { event.preventDefault(); seek(currentTime - 10); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [currentTrack, currentTime, togglePlay, seek]);
+
   if (!currentTrack) return null;
 
   const starred = isTrackStarred(currentTrack.id);
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
-  const handleSeekClick = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
-    seek(pct * duration);
-  };
-
   return (
+    <>
+    <div className="mobile-mini-player">
+      <button className="mini-track" onClick={() => setIsNowPlayingOpen(true)} aria-label={`Expand player: ${currentTrack.title || currentTrack.file_name}`}>
+        {currentTrack.cover_path ? <img src={api.coverUrl(currentTrack.cover_path)} alt="" /> : <Disc size={32} />}
+        <span><strong>{currentTrack.title || currentTrack.file_name}</strong><small>{currentTrack.artist || 'Unknown artist'}</small></span>
+      </button>
+      <button onClick={togglePlay} aria-label={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}</button>
+      <button onClick={next} disabled={!hasNext} aria-label="Next track"><SkipForward size={21} /></button>
+      <div className="mini-progress" style={{ width: `${progressPct}%` }} />
+    </div>
+    <NowPlaying onGoToAlbum={onGoToAlbum} onGoToArtist={onGoToArtist} />
     <div className="tune-player fixed bottom-4 sm:bottom-6 z-40 left-4 right-4 sm:left-6 sm:right-6 lg:left-72 lg:right-72 max-w-6xl mx-auto bg-[#0a0a0e]/95 backdrop-blur-2xl border border-white/[0.12] rounded-2xl sm:rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.85)] px-4 sm:px-6 select-none animate-slide-up h-20 sm:h-[84px]">
       <div className="w-full h-full flex items-center justify-between gap-3 sm:gap-4">
         {/* Left: Track artwork & metadata */}
@@ -248,19 +269,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
             <span className="w-10 text-right tabular-nums text-surface-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
               {formatDuration(currentTime)}
             </span>
-            <div
-              onClick={handleSeekClick}
-              className="flex-1 h-1.5 hover:h-2 bg-white/[0.1] hover:bg-white/[0.15] rounded-full cursor-pointer relative group transition-all"
-            >
-              <div
-                className="h-full bg-gradient-to-r from-accent to-accent-hover rounded-full shadow-glow"
-                style={{ width: `${progressPct}%` }}
-              />
-              <div
-                className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ left: `calc(${progressPct}% - 7px)` }}
-              />
-            </div>
+            <input type="range" min="0" max={duration || 0} step="0.1" value={Math.min(currentTime, duration || 0)} onChange={(event) => seek(Number(event.target.value))} aria-label="Playback position" className="flex-1 min-w-0 h-5 accent-accent cursor-pointer" />
             <span className="w-10 text-left tabular-nums text-surface-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
               {formatDuration(duration)}
             </span>
@@ -269,6 +278,10 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
 
         {/* Right: Lyrics, Queue, Volume & Close (Protected from misclicks) */}
         <div className="w-1/4 min-w-[180px] sm:min-w-[200px] max-w-[340px] flex items-center gap-1.5 sm:gap-2 shrink-0 justify-end">
+          <details className="relative hidden md:block">
+            <summary className="p-2 rounded-xl text-surface-400 hover:text-white cursor-pointer list-none" aria-label="Sleep timer"><Moon className="w-4 h-4" /></summary>
+            <div className="absolute right-0 bottom-full mb-4 rounded-xl bg-surface-900 border border-white/10 px-3 py-1 shadow-xl"><SleepTimer /></div>
+          </details>
           {/* Lyrics toggle */}
           <button
             onClick={() => setIsLyricsOpen((v) => !v)}
@@ -314,6 +327,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
             </button>
             <input
               type="range"
+              aria-label="Volume"
               min="0"
               max="1"
               step="0.01"
@@ -348,5 +362,6 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
         />
       )}
     </div>
+    </>
   );
 }

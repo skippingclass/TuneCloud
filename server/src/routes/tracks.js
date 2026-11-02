@@ -106,6 +106,30 @@ export default async function trackRoutes(fastify) {
     return { tracks: rows, total };
   });
 
+  // Personal listening events, including repeated plays of the same track.
+  fastify.get('/api/history', { preHandler: requireAuth }, async (req) => {
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const userId = req.user.id;
+    const { rows } = await query(
+      `SELECT ph.id AS history_id, ph.played_at, t.id, t.title, t.file_name,
+              t.duration, t.format, t.track_number, t.year,
+              (t.missing_since IS NULL) AS available,
+              COALESCE(t.track_artist_credit, a.name) AS artist, a.id AS artist_id,
+              al.title AS album, al.id AS album_id,
+              COALESCE(t.cover_path, al.cover_path) AS cover_path
+       FROM play_history ph
+       JOIN tracks t ON t.id = ph.track_id
+       LEFT JOIN artists a ON a.id = t.artist_id
+       LEFT JOIN albums al ON al.id = t.album_id
+       WHERE ph.user_id = $1
+       ORDER BY ph.played_at DESC, ph.id DESC LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+    const count = await query('SELECT COUNT(*) FROM play_history WHERE user_id = $1', [userId]);
+    return { tracks: rows, total: Number(count.rows[0].count) };
+  });
+
   fastify.get('/api/tracks/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params;
     const userId = req.user?.id || 0;

@@ -1,3 +1,4 @@
+import { useLibraryState } from '../hooks/useLibraryState.js';
 import { useState, useEffect, useRef } from 'react';
 import { Search, Users, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api } from '../api.js';
@@ -23,10 +24,10 @@ function saveArtistImageCache(cache) {
 export function ArtistsView({ onArtistClick }) {
   const [artists, setArtists] = useState([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useLibraryState('ArtistsView.jsx:page', 1);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [filter, setFilter] = useLibraryState('ArtistsView.jsx:filter', '');
+  const [debouncedQuery, setDebouncedQuery] = useState(filter.trim());
   const [artistImages, setArtistImages] = useState(() => loadArtistImageCache());
 
   const reqIdRef = useRef(0);
@@ -35,6 +36,7 @@ export function ArtistsView({ onArtistClick }) {
   // Debounce search filter
   useEffect(() => {
     const trimmed = filter.trim();
+    if (trimmed === debouncedQuery) return;
     const timer = setTimeout(() => {
       setDebouncedQuery(trimmed);
       setPage(1);

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus, FolderPlus, Trash2 } from 'lucide-react';
+import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus, ListStart, FolderPlus, Trash2 } from 'lucide-react';
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { ArtistLinks } from '../common/ArtistLinks.jsx';
@@ -29,6 +29,9 @@ export function TrackRow({
   showAlbum = true,
   showArtist = true,
   albumArtist = null,
+  selectionMode = false,
+  selected = false,
+  onSelect,
 }) {
   const [hover, setHover] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -37,7 +40,7 @@ export function TrackRow({
   const menuRef = useRef(null);
 
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
-  const { addToQueue } = usePlayer();
+  const { addToQueue, playNext, togglePlay, currentTrack, isPlaying: actuallyPlaying } = usePlayer();
   const starred = isTrackStarred(track.id);
   const isAvailable = track.available !== false;
   const canPlay = track.id != null && isAvailable;
@@ -60,8 +63,10 @@ export function TrackRow({
         setMenuOpen(false);
       }
     };
+    const escape = (e) => { if (e.key === 'Escape') { setMenuOpen(false); btnRef.current?.focus(); } };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    window.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('mousedown', handler); window.removeEventListener('keydown', escape); };
   }, [menuOpen]);
 
   const openMenu = (e) => {
@@ -78,7 +83,7 @@ export function TrackRow({
 
   return (
     <tr
-      className={`group transition-all duration-150 select-none ${
+      className={`track-row group transition-all duration-150 select-none ${
         !isAvailable ? 'opacity-50 text-surface-400' : ''
       } ${
         canPlay ? 'hover:bg-white/[0.04] cursor-pointer' : ''
@@ -96,8 +101,9 @@ export function TrackRow({
     >
       {/* Track number / Play button */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm w-12 text-center relative">
+        {selectionMode ? <input type="checkbox" checked={selected} onChange={() => onSelect?.(track.id)} aria-label={`Select ${track.title || track.file_name}`} className="w-4 h-4 accent-accent" /> : <>
         <span
-          className={`inline-flex items-center justify-center w-5 h-5 font-medium ${
+          className={`track-number inline-flex items-center justify-center w-5 h-5 font-medium ${
             isPlaying ? 'text-accent' : 'text-surface-500'
           } ${hover && canPlay ? 'invisible' : ''}`}
         >
@@ -107,31 +113,36 @@ export function TrackRow({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onPlay?.(track);
+              if (currentTrack?.id === track.id) togglePlay();
+              else onPlay?.(track);
             }}
-            className={`absolute inset-0 flex items-center justify-center text-white hover:text-accent transition-colors ${
+            aria-label={`${currentTrack?.id === track.id && actuallyPlaying ? 'Pause' : 'Play'} ${track.title || track.file_name}`}
+            className={`track-play absolute inset-0 flex items-center justify-center text-white hover:text-accent transition-colors ${
               hover ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}
           >
-            {isPlaying ? (
+            {currentTrack?.id === track.id && actuallyPlaying ? (
               <Pause className="w-4 h-4 fill-current text-accent" />
             ) : (
               <Play className="w-4 h-4 fill-current text-white" />
             )}
           </button>
         )}
+        </>}
       </td>
 
       {/* Favorite Heart */}
       <td className="w-8 px-1 py-2 text-center">
         <button
           onClick={handleFavorite}
-          className={`p-1 rounded transition-colors ${
+          className={`track-favorite p-2 rounded transition-colors ${
             starred
               ? 'text-accent opacity-100'
               : 'text-surface-500 opacity-0 group-hover:opacity-100 hover:text-accent'
           }`}
           title={starred ? 'Unlike' : 'Like'}
+          aria-label={`${starred ? 'Unlike' : 'Like'} ${track.title || track.file_name}`}
+          aria-pressed={starred}
         >
           <Heart className={`w-3.5 h-3.5 ${starred ? 'fill-accent' : ''}`} />
         </button>
@@ -222,6 +233,8 @@ export function TrackRow({
       <td className="px-2 py-2.5 text-sm w-9 text-right">
         <button
           ref={btnRef}
+          aria-label={`Actions for ${track.title || track.file_name}`}
+          aria-expanded={menuOpen}
           onClick={openMenu}
           className={`p-1.5 rounded-lg transition-colors text-surface-500 hover:text-white hover:bg-white/[0.06] ${
             menuOpen ? 'text-white bg-white/[0.08]' : ''
@@ -239,6 +252,7 @@ export function TrackRow({
             className="fixed glass-panel rounded-2xl py-1.5 min-w-[190px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
             style={{ top: menuPos.top, right: menuPos.right }}
           >
+            {canPlay && <button onClick={(e) => { e.stopPropagation(); setMenuOpen(false); playNext(track); }} className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white"><ListStart className="w-3.5 h-3.5 text-accent" /><span>Play Next</span></button>}
             {canPlay && (
               <button
                 onClick={(e) => {

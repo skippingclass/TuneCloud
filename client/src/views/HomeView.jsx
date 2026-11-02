@@ -1,3 +1,4 @@
+import { shuffled as shuffleTracks } from '../utils/playback.js';
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Disc,
@@ -71,7 +72,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
         const tracks = (rawTracks || []).filter((t) => t.available !== false);
         if (tracks.length > 0) {
           const list = shouldShuffle
-            ? [...tracks].sort(() => Math.random() - 0.5)
+            ? shuffleTracks(tracks)
             : tracks;
           playTrack(list[0], list);
         }

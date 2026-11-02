@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useDialog } from '../../hooks/useDialog.js';
+import { useState, useRef, useId } from 'react';
 import { X, ListMusic, Globe, Lock, Loader2 } from 'lucide-react';
 import { api } from '../../api.js';
 import { toast } from '../layout/Toast.jsx';
 
-export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
+export function CreatePlaylistModal({ playlist, initialTrackIds = [], onClose, onSaved }) {
+  const formId = useId();
+  const dialogRef = useDialog(true, onClose);
   const isEditing = Boolean(playlist?.id);
   const [name, setName] = useState(playlist?.name || '');
   const [comment, setComment] = useState(playlist?.comment || '');
@@ -12,14 +15,6 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -43,6 +38,7 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
         onSaved?.(updated);
       } else {
         const created = await api.createPlaylist({
+          trackIds: initialTrackIds,
           name: trimmedName,
           comment: comment.trim() || null,
           is_public: isPublic,
@@ -59,7 +55,7 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
   };
 
   return (
-    <div
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Playlist" tabIndex={-1}
       className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-fade-in"
       onClick={onClose}
     >
@@ -84,6 +80,7 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
           </div>
           <button
             onClick={onClose}
+            aria-label="Close dialog"
             className="p-1.5 rounded-xl text-surface-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <X className="w-5 h-5" />
@@ -99,11 +96,12 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Name input */}
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-surface-300 block">
+            <label htmlFor={`${formId}-name`} className="text-xs font-semibold text-surface-300 block">
               Playlist Name <span className="text-accent">*</span>
             </label>
             <input
               ref={inputRef}
+              id={`${formId}-name`}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -116,10 +114,10 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
 
           {/* Description input */}
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-surface-300 block">
+            <label htmlFor={`${formId}-description`} className="text-xs font-semibold text-surface-300 block">
               Description <span className="text-surface-500 font-normal">(optional)</span>
             </label>
-            <textarea
+            <textarea id={`${formId}-description`}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               placeholder="What makes this playlist special?"
@@ -130,7 +128,7 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
           </div>
 
           {/* Public / Private toggle */}
-          <div
+          <button type="button" role="switch" aria-checked={isPublic} aria-label="Public playlist"
             onClick={() => setIsPublic(!isPublic)}
             className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.04] cursor-pointer transition-colors"
           >
@@ -154,7 +152,7 @@ export function CreatePlaylistModal({ playlist, onClose, onSaved }) {
             >
               <div className="w-4 h-4 rounded-full bg-white shadow-sm" />
             </div>
-          </div>
+          </button>
 
           {/* Action buttons */}
           <div className="flex items-center justify-end gap-3 pt-2">

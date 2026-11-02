@@ -1,3 +1,5 @@
+import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
+import { shuffled as shuffleTracks } from '../utils/playback.js';
 import { useState, useEffect, useRef } from 'react';
 import {
   Heart,
@@ -28,6 +30,7 @@ export function FavoritesView({
 }) {
   const [tab, setTab] = useState('tracks'); // 'tracks' | 'albums'
   const [tracks, setTracks] = useState([]);
+  const selection = useTrackSelection(tracks, onAddToPlaylist);
   const [totalTracks, setTotalTracks] = useState(0);
   const [trackPage, setTrackPage] = useState(1);
   const [trackFilter, setTrackFilter] = useState('');
@@ -196,7 +199,7 @@ export function FavoritesView({
     try {
       const allAvailable = await fetchAllMatchingFavoriteTracks();
       if (allAvailable.length > 0) {
-        const shuffled = [...allAvailable].sort(() => Math.random() - 0.5);
+        const shuffled = shuffleTracks(allAvailable);
         playTrack(shuffled[0], shuffled);
         toast(`Playing ${shuffled.length} liked tracks in shuffle`, 'success');
       } else {
@@ -329,6 +332,7 @@ export function FavoritesView({
         ) : (
           <div className="space-y-4">
             <div className="glass-panel rounded-3xl overflow-hidden border border-white/[0.06]">
+              {selection.toolbar}
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-white/[0.06] text-surface-500 text-[11px] font-semibold uppercase tracking-wider">
@@ -345,6 +349,7 @@ export function FavoritesView({
                 <tbody className="divide-y divide-white/[0.03]">
                   {tracks.map((track, idx) => (
                     <TrackRow
+                        {...selection.rowProps(track)}
                       key={track.id}
                       track={track}
                       index={(trackPage - 1) * DEFAULT_FAVORITES_PAGE_SIZE + idx}

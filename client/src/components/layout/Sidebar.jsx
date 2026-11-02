@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useLibraryScan } from '../../hooks/useLibraryScan.js';
 import {
   Home,
+  History,
   Disc,
   Users,
   Music2,
@@ -14,8 +15,6 @@ import {
   Shield,
   X,
 } from 'lucide-react';
-import { api } from '../../api.js';
-import { toast } from './Toast.jsx';
 
 export function Sidebar({
   activeView,
@@ -26,31 +25,7 @@ export function Sidebar({
   open,
   onClose,
 }) {
-  const [scanning, setScanning] = useState(false);
-
-  useEffect(() => {
-    let timer = null;
-    let mounted = true;
-
-    const check = async () => {
-      try {
-        const st = await api.scanStatus();
-        if (!mounted) return;
-        if (st.isScanning) {
-          setScanning(true);
-          timer = setTimeout(check, 1200);
-        } else {
-          setScanning(false);
-        }
-      } catch {}
-    };
-
-    check();
-    return () => {
-      mounted = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
+  const { scanning, startScan } = useLibraryScan(onScanComplete);
 
   const mainLinks = [
     { id: 'home', label: 'Home', icon: Home },
@@ -58,6 +33,7 @@ export function Sidebar({
     { id: 'artists', label: 'Artists', icon: Users },
     { id: 'tracks', label: 'Tracks', icon: Music2 },
     { id: 'playlists', label: 'Playlists', icon: ListMusic },
+    { id: 'history', label: 'History', icon: History },
     { id: 'favorites', label: 'Favorites', icon: Heart },
     { id: 'browse', label: 'Folders', icon: Folder },
     { id: 'search', label: 'Search', icon: Search },
@@ -68,43 +44,7 @@ export function Sidebar({
     onClose?.();
   };
 
-  const handleRescan = async () => {
-    if (scanning) return;
-    setScanning(true);
-    try {
-      await api.scan({ full: false });
-
-      let active = true;
-      const poll = async () => {
-        if (!active) return;
-        try {
-          const st = await api.scanStatus();
-          if (st.isScanning) {
-            setTimeout(poll, 1200);
-          } else {
-            setScanning(false);
-            if (st.progress?.phase === 'error') {
-              toast(`Scan failed: ${st.progress.error}`, 'error');
-            } else {
-              const r = st.lastResult || {};
-              toast(
-                `Scan complete: ${r.processed || 0} tracks, ${r.covers || 0} covers in ${r.durationSeconds || 0}s`,
-                'success'
-              );
-              onScanComplete?.();
-            }
-          }
-        } catch {
-          setTimeout(poll, 2000);
-        }
-      };
-
-      setTimeout(poll, 800);
-    } catch (err) {
-      toast(`Could not start scan: ${err.message}`, 'error');
-      setScanning(false);
-    }
-  };
+  const handleRescan = () => startScan();
 
   return (
     <>

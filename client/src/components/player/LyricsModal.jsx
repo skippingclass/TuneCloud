@@ -1,3 +1,4 @@
+import { useDialog } from '../../hooks/useDialog.js';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X,
@@ -54,6 +55,8 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     isLyricsOpen,
     setIsLyricsOpen,
   } = usePlayer();
+
+  const dialogRef = useDialog(isLyricsOpen && Boolean(currentTrack), () => { if (!document.fullscreenElement) setIsLyricsOpen(false); });
 
   const { isTrackStarred, toggleFavoriteTrack, toggleTrackStar } = useFavorites();
   const handleToggleFavorite = toggleFavoriteTrack || toggleTrackStar;
@@ -163,9 +166,6 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
     };
     const onKeyDown = (e) => {
       if (!isLyricsOpen) return;
-      if (e.key === 'Escape' && !document.fullscreenElement) {
-        setIsLyricsOpen(false);
-      }
       if (e.key === 'f' || e.key === 'F') {
         if (!e.target.matches('input, textarea')) {
           toggleFullscreen();
@@ -424,7 +424,7 @@ export function LyricsModal({ onGoToAlbum, onGoToArtist }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 w-screen h-screen bg-[#040508] text-white flex flex-col select-none overflow-hidden animate-fade-in font-lyrics">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Lyrics" tabIndex={-1} className="fixed inset-0 z-[100] w-screen h-screen bg-[#040508] text-white flex flex-col select-none overflow-hidden animate-fade-in font-lyrics">
       {/* Dynamic blurred mesh gradient backdrop */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
         <div

@@ -1,3 +1,6 @@
+import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
+import { useLibraryState } from '../hooks/useLibraryState.js';
+import { shuffled as shuffleTracks } from '../utils/playback.js';
 import { useState, useEffect, useRef } from 'react';
 import {
   Search,
@@ -24,14 +27,15 @@ export function TracksView({
 }) {
   const safePageSize = Math.min(200, Math.max(1, Number(pageSize) || DEFAULT_TRACKS_PAGE_SIZE));
   const [tracks, setTracks] = useState([]);
+  const selection = useTrackSelection(tracks, onAddToPlaylist);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useLibraryState('TracksView.jsx:page', 1);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState('');
   const bulkAbortRef = useRef(null);
-  const [filter, setFilter] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [filter, setFilter] = useLibraryState('TracksView.jsx:filter', '');
+  const [debouncedQuery, setDebouncedQuery] = useState(filter.trim());
 
   const requestIdRef = useRef(0);
   const abortRef = useRef(null);
@@ -202,7 +206,7 @@ export function TracksView({
       if (controller.signal.aborted) return;
       const availableTracks = allTracks.filter((t) => t.available !== false);
       if (availableTracks.length === 0) return;
-      const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
+      const shuffled = shuffleTracks(availableTracks);
       playTrack(shuffled[0], shuffled);
     } catch (err) {
       if (err.name !== 'AbortError' && !controller.signal.aborted) setError(err.message || 'Unable to load playback queue');
@@ -270,6 +274,7 @@ export function TracksView({
         <>
           <div className="glass-panel rounded-3xl overflow-hidden border border-white/[0.06]">
             <div className="overflow-x-auto">
+              {selection.toolbar}
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-white/[0.06] text-surface-500 text-[11px] font-semibold uppercase tracking-wider">
@@ -286,6 +291,7 @@ export function TracksView({
                 <tbody className="divide-y divide-white/[0.03]">
                   {boundedTracks.map((track, idx) => (
                     <TrackRow
+                        {...selection.rowProps(track)}
                       key={track.id}
                       track={track}
                       index={(page - 1) * safePageSize + idx}

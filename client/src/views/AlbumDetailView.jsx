@@ -1,3 +1,5 @@
+import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
+import { shuffled as shuffleTracks } from '../utils/playback.js';
 import { useState, useEffect, useMemo } from 'react';
 import { Play, Pause, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2, Maximize2 } from 'lucide-react';
 import { api } from '../api.js';
@@ -23,6 +25,7 @@ export function AlbumDetailView({
   onAddToPlaylist,
 }) {
   const [tracks, setTracks] = useState([]);
+  const selection = useTrackSelection(tracks, onAddToPlaylist);
   const [loading, setLoading] = useState(true);
   const { currentTrack, isPlaying, playTrack, togglePlay } = usePlayer();
   const { isAlbumStarred, toggleFavoriteAlbum } = useFavorites();
@@ -83,7 +86,7 @@ export function AlbumDetailView({
   const handleShufflePlay = () => {
     const availableTracks = tracks.filter((t) => t.available !== false);
     if (availableTracks.length === 0) return;
-    const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
+    const shuffled = shuffleTracks(availableTracks);
     playTrack(shuffled[0], shuffled);
   };
 
@@ -217,7 +220,8 @@ export function AlbumDetailView({
       ) : (
         <div className="glass-panel rounded-3xl overflow-hidden border border-white/[0.06]">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            {selection.toolbar}
+              <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-white/[0.06] text-surface-500 text-[11px] font-semibold uppercase tracking-wider">
                   <th className="px-3 sm:px-4 py-3 text-center w-12">#</th>
@@ -232,6 +236,7 @@ export function AlbumDetailView({
               <tbody className="divide-y divide-white/[0.03]">
                 {tracks.map((track, idx) => (
                   <TrackRow
+                        {...selection.rowProps(track)}
                     key={track.id}
                     track={track}
                     index={idx}

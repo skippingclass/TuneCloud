@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useDialog } from '../../hooks/useDialog.js';
+import { useState, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Save, Edit3 } from 'lucide-react';
 import { api } from '../../api.js';
 import { toast } from '../layout/Toast.jsx';
 
 export function EditTrackModal({ track, onClose, onSaved }) {
+  const formId = useId();
+  const dialogRef = useDialog(true, onClose);
   const [form, setForm] = useState({
     title: track.title || '',
     artist: track.artist || '',
@@ -46,7 +49,7 @@ export function EditTrackModal({ track, onClose, onSaved }) {
   };
 
   return createPortal(
-    <div
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Edit track tags" tabIndex={-1}
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fade-in"
       onClick={onClose}
     >
@@ -61,6 +64,7 @@ export function EditTrackModal({ track, onClose, onSaved }) {
           </h3>
           <button
             onClick={onClose}
+            aria-label="Close dialog"
             className="p-1.5 text-surface-400 hover:text-white rounded-lg hover:bg-white/[0.06] transition-colors"
           >
             <X className="w-5 h-5" />
@@ -73,10 +77,10 @@ export function EditTrackModal({ track, onClose, onSaved }) {
 
         <form onSubmit={handleSave} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-surface-400 mb-1.5">
+            <label htmlFor={`${formId}-title`} className="block text-xs font-semibold text-surface-400 mb-1.5">
               Track Title
             </label>
-            <input
+            <input id={`${formId}-title`}
               className="glass-input w-full"
               value={form.title}
               onChange={set('title')}
@@ -84,10 +88,10 @@ export function EditTrackModal({ track, onClose, onSaved }) {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-surface-400 mb-1.5">
+            <label htmlFor={`${formId}-artist`} className="block text-xs font-semibold text-surface-400 mb-1.5">
               Artist Name
             </label>
-            <input
+            <input id={`${formId}-artist`}
               className="glass-input w-full"
               value={form.artist}
               onChange={set('artist')}
@@ -95,10 +99,10 @@ export function EditTrackModal({ track, onClose, onSaved }) {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-surface-400 mb-1.5">
+            <label htmlFor={`${formId}-album`} className="block text-xs font-semibold text-surface-400 mb-1.5">
               Album Title
             </label>
-            <input
+            <input id={`${formId}-album`}
               className="glass-input w-full"
               value={form.album}
               onChange={set('album')}
@@ -107,10 +111,10 @@ export function EditTrackModal({ track, onClose, onSaved }) {
 
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-surface-400 mb-1.5">
+              <label htmlFor={`${formId}-trackNumber`} className="block text-xs font-semibold text-surface-400 mb-1.5">
                 Track #
               </label>
-              <input
+              <input id={`${formId}-trackNumber`}
                 type="number"
                 min="0"
                 className="glass-input w-full font-mono"
@@ -119,10 +123,10 @@ export function EditTrackModal({ track, onClose, onSaved }) {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-surface-400 mb-1.5">
+              <label htmlFor={`${formId}-year`} className="block text-xs font-semibold text-surface-400 mb-1.5">
                 Year
               </label>
-              <input
+              <input id={`${formId}-year`}
                 type="number"
                 min="0"
                 className="glass-input w-full font-mono"
@@ -131,10 +135,10 @@ export function EditTrackModal({ track, onClose, onSaved }) {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-surface-400 mb-1.5">
+              <label htmlFor={`${formId}-genre`} className="block text-xs font-semibold text-surface-400 mb-1.5">
                 Genre
               </label>
-              <input
+              <input id={`${formId}-genre`}
                 className="glass-input w-full"
                 value={form.genre}
                 onChange={set('genre')}

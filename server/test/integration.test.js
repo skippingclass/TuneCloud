@@ -368,6 +368,26 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       const extensions = extRes.json()['subsonic-response'].openSubsonicExtensions;
       assert.equal(extensions.some(e => e.name === 'transcodeOffset'), false);
     });
+    await t.test('listening history preserves repeated plays, pagination and user isolation', async () => {
+      await query('DELETE FROM play_history WHERE user_id = $1 OR user_id = $2', [owner.id, other.id]);
+      await query(`INSERT INTO play_history (user_id, track_id, played_at)
+                   VALUES ($1, $3, '2026-11-01T10:00:00Z'),
+                          ($1, $3, '2026-11-02T10:00:00Z'),
+                          ($2, $4, '2026-11-03T10:00:00Z')`, [owner.id, other.id, track.id, second.id]);
+      const first = await call('GET', '/api/history?limit=1', owner);
+      assert.equal(first.statusCode, 200);
+      assert.equal(first.json().total, 2);
+      assert.equal(first.json().tracks.length, 1);
+      assert.equal(first.json().tracks[0].id, track.id);
+      assert.equal(new Date(first.json().tracks[0].played_at).toISOString(), '2026-11-02T10:00:00.000Z');
+      const next = (await call('GET', '/api/history?limit=1&offset=1', owner)).json();
+      assert.notEqual(next.tracks[0].history_id, first.json().tracks[0].history_id);
+      assert.equal(next.tracks[0].id, track.id);
+      const personal = (await call('GET', '/api/history', other)).json();
+      assert.equal(personal.total, 1);
+      assert.equal(personal.tracks[0].id, second.id);
+      assert.equal((await app.inject('/api/history')).statusCode, 401);
+    });
   } finally {
     await app.close();
     await pool.end();

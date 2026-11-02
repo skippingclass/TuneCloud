@@ -1,3 +1,5 @@
+import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
+import { shuffled as shuffleTracks } from '../utils/playback.js';
 import { useState, useEffect } from 'react';
 import {
   Play,
@@ -103,6 +105,7 @@ export function PlaylistDetailView({
   }, [playlist.id]);
 
   const tracks = data?.tracks || [];
+  const selection = useTrackSelection(tracks, onAddToPlaylist);
   const canManage = data?.is_owner || user?.is_admin;
 
   const isThisPlaylist =
@@ -129,7 +132,7 @@ export function PlaylistDetailView({
       toast('No available tracks to play in this playlist', 'info');
       return;
     }
-    const shuffled = [...availableTracks].sort(() => Math.random() - 0.5);
+    const shuffled = shuffleTracks(availableTracks);
     playTrack(shuffled[0], shuffled);
     toast(`Playing "${data?.name || 'Playlist'}" in shuffle`, 'success');
   };
@@ -343,7 +346,8 @@ export function PlaylistDetailView({
           </div>
         ) : (
           <div className="glass-panel rounded-2xl border border-white/[0.06] overflow-hidden">
-            <table className="w-full text-left border-collapse">
+            {selection.toolbar}
+              <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-white/[0.06] text-surface-500 text-xs uppercase tracking-wider font-semibold">
                   <th className="px-3 sm:px-4 py-3 w-12 text-center">#</th>
@@ -361,6 +365,7 @@ export function PlaylistDetailView({
                   const isCurrent = currentTrack?.id === track.id;
                   return (
                     <TrackRow
+                        {...selection.rowProps(track)}
                       key={track.playlist_track_id || track.id}
                       track={track}
                       index={index}
