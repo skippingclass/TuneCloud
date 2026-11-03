@@ -83,6 +83,6 @@ export function SleepTimer({ compact = false, className = '' }) {
         {active && <button type="button" className="sleep-cancel" onClick={() => start(null)}>Turn off timer</button>}
         <p className="sleep-footnote">Your queue stays right where you left it.</p>
       </div>
-    </>, document.body)}
+    </>, document.fullscreenElement || document.body)}
   </>;
 }

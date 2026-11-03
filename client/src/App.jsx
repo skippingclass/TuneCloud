@@ -169,7 +169,7 @@ function MainLayout({ user, onLogout }) {
   const [editingTrack, setEditingTrack] = useState(null);
   const [scanVersion, setScanVersion] = useState(0);
 
-  const { currentTrack, playTrack, isQueueOpen } = usePlayer();
+  const { currentTrack, playTrack, isQueueOpen, isNowPlayingOpen } = usePlayer();
   const mainRef = useScrollRestoration(buildUrl(route.view, route.param));
 
   const navigateTo = useCallback(
@@ -262,7 +262,7 @@ function MainLayout({ user, onLogout }) {
   };
 
   return (
-    <div className={`tune-shell ${isQueueOpen ? 'queue-is-open' : ''} h-screen flex flex-col overflow-hidden bg-surface-950 text-surface-100`}>
+    <div className={`tune-shell ${isQueueOpen ? 'queue-is-open' : ''} ${isNowPlayingOpen ? 'now-playing-is-open' : ''} h-screen flex flex-col overflow-hidden bg-surface-950 text-surface-100`}>
       <div className="flex flex-1 min-h-0 overflow-hidden relative">
         {/* Left Sidebar */}
         <Sidebar
@@ -435,7 +435,7 @@ function MainLayout({ user, onLogout }) {
         onGoToArtist={handleArtistClick}
       />
 
-      {/* Fullscreen Karaoke Lyrics Modal */}
+      {/* Full player: artwork and lyrics */}
       <LyricsModal
         onGoToAlbum={handleAlbumClick}
         onGoToArtist={handleArtistClick}

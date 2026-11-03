@@ -23,6 +23,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
   const [sleepUntil, setSleepUntil] = useState(null); // timestamp or 'track'
   const [isNowPlayingOpen, setIsNowPlayingOpen] = useState(false);
   const [isLyricsOpen, setIsLyricsOpen] = useState(false);
+  const [playerView, setPlayerView] = useState('lyrics');
   const [isQueueOpen, setIsQueueOpen] = useState(false);
   const [volume, setVolumeState] = useState(() => {
     try {
@@ -241,6 +242,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     setOrder([]);
     setSleepUntil(null);
     setIsNowPlayingOpen(false);
+    setIsLyricsOpen(false);
     playRequestIdRef.current += 1;
     scrobbledRef.current = false;
     setQueue([]);
@@ -639,6 +641,8 @@ export function PlayerProvider({ children, userId = 'local' }) {
         shuffle,
         isLyricsOpen,
         setIsLyricsOpen,
+        playerView,
+        setPlayerView,
         isQueueOpen,
         setIsQueueOpen,
         playTrack,

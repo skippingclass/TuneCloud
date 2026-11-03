@@ -8,7 +8,7 @@ import { FavoritesProvider } from '../src/context/FavoritesContext.jsx';
 import { LyricsModal } from '../src/components/player/LyricsModal.jsx';
 import { setAuthToken } from '../src/api.js';
 
-DOMNode.prototype.scrollIntoView = function () { this.scrollCalls = (this.scrollCalls || 0) + 1; };
+DOMNode.prototype.scrollTo = function () { this.scrollCalls = (this.scrollCalls || 0) + 1; };
 
 async function harness() {
   createTestDOM();
@@ -35,9 +35,11 @@ test('lyrics modal highlights whole lines, credits lrc.red, seeks and scrolls on
     const audio = view.player().audioRef.current;
     await React.act(async () => { audio.currentTime = 1.5; audio.dispatchEvent({ type: 'timeupdate' }); });
     assert.equal(line('First line').getAttribute('aria-current'), 'true');
-    const scrolls = line('First line').scrollCalls;
+    const scroll = view.container.find(el => el.className === 'lyrics-scroll');
+    const scrolls = scroll.scrollCalls;
     await React.act(async () => { audio.currentTime = 2; audio.dispatchEvent({ type: 'timeupdate' }); });
-    assert.equal(line('First line').scrollCalls, scrolls);
+    assert.ok(scrolls > 0);
+    assert.equal(scroll.scrollCalls, scrolls);
     await click(line('Second line'));
     assert.equal(audio.currentTime, 3);
     assert.equal(line('Second line').getAttribute('aria-current'), 'true');
