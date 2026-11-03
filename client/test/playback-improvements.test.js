@@ -320,3 +320,61 @@ test('seeking before audio metadata is ready keeps the requested position', asyn
     assert.equal(audio.currentTime, 42);
   } finally { await view.unmount(); }
 });
+
+test('history numbers listening events and activates only the selected repeated occurrence', async () => {
+  const original = api.history;
+  const events = [
+    { ...tracks[0], history_id: 31, track_number: 99, played_at: '2026-11-02T12:00:00Z' },
+    { ...tracks[1], history_id: 32, track_number: 7, played_at: '2026-11-02T11:00:00Z' },
+    { ...tracks[0], history_id: 33, track_number: 99, played_at: '2026-11-01T12:00:00Z' },
+  ];
+  api.history = async ({ offset }) => ({
+    total: 51,
+    tracks: offset === 0 ? events : [{ ...events[0], history_id: 44 }],
+  });
+  let player;
+  function Probe() { player = usePlayer(); return null; }
+  const view = await render(
+    <FavoritesProvider><PlayerProvider><Probe /><HistoryView /></PlayerProvider></FavoritesProvider>,
+  );
+  const rows = () => view.container.findAll(el => el.tagName === 'TR' && el.className.includes('track-row'));
+  const numbers = () => rows().map(row => row.find(el => el.className.includes('track-number')).textContent);
+  const activeRows = () => rows().filter(row => row.className.includes('bg-accent/10'));
+  try {
+    await flushAsync();
+    assert.deepEqual(numbers(), ['1', '2', '3']);
+    // Playback started outside history selects the latest visible occurrence.
+    await React.act(async () => player.playTrack(tracks[0]));
+    assert.equal(activeRows().length, 1);
+    assert.equal(activeRows()[0], rows()[0]);
+    assert.equal(rows().filter(row => row.find(el => el.getAttribute('aria-label') === 'Pause Song 1')).length, 1);
+
+    // The other occurrence must start/select that queue entry, not pause the
+    // current track or resolve to the first entry with the same track ID.
+    await click(rows()[2].find(el => el.getAttribute('aria-label') === 'Play Song 1'));
+    assert.equal(player.currentTrack.history_id, 33);
+    assert.equal(player.queueIndex, 2);
+    assert.equal(player.isPlaying, true);
+    assert.equal(activeRows().length, 1);
+    assert.equal(activeRows()[0], rows()[2]);
+    assert.ok(rows()[0].find(el => el.getAttribute('aria-label') === 'Play Song 1'));
+    assert.ok(rows()[2].find(el => el.getAttribute('aria-label') === 'Pause Song 1'));
+    await React.act(async () => player.prev());
+    assert.equal(player.currentTrack.history_id, 32);
+    assert.deepEqual(activeRows(), [rows()[1]]);
+    await React.act(async () => player.next());
+    assert.equal(player.currentTrack.history_id, 33);
+    assert.deepEqual(activeRows(), [rows()[2]]);
+    await click(rows()[2].find(el => el.getAttribute('aria-label') === 'Pause Song 1'));
+    assert.equal(player.isPlaying, false);
+    assert.equal(activeRows().length, 1);
+
+    await click(view.container.find(el => el.getAttribute('aria-label') === 'Next history page'));
+    await flushAsync();
+    assert.deepEqual(numbers(), ['51']);
+    assert.equal(activeRows().length, 0);
+  } finally {
+    api.history = original;
+    await view.unmount();
+  }
+});

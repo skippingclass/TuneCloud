@@ -315,10 +315,11 @@ export function PlayerProvider({ children, userId = 'local' }) {
         toast('This track is unavailable (file missing on disk)', 'warning');
         return;
       }
-      const rawList = trackList || (queue.some((t) => t.id === track.id) ? queue : [track]);
+      const matchesEntry = (t) => t.id === track.id && (track.history_id == null || t.history_id === track.history_id);
+      const rawList = trackList || (queue.some(matchesEntry) ? queue : [track]);
       const list = rawList.filter((t) => t.available !== false);
       if (list.length === 0) return;
-      const idx = list.findIndex((t) => t.id === track.id);
+      const idx = list.findIndex(matchesEntry);
       const targetIdx = idx >= 0 ? idx : 0;
       const activeTrack = list[targetIdx];
       const isSameTrack = currentTrack?.id != null && currentTrack.id === activeTrack.id;

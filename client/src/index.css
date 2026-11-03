@@ -1,7 +1,19 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
-:root, .theme-peach {
+:root, .theme-oled {
+  --theme-primary-rgb: 255 255 255;
+  --theme-secondary-rgb: 161 161 170;
+  --theme-primary: #ffffff;
+  --theme-secondary: #a1a1aa;
+  --theme-glow: rgba(255, 255, 255, 0.25);
+  --theme-ambient-1: rgba(255, 255, 255, 0.015);
+  --theme-ambient-2: rgba(0, 0, 0, 0);
+  --theme-bg: #000000;
+  --theme-panel-bg: rgba(4, 4, 4, 0.95);
+}
+
+.theme-peach {
   --theme-primary-rgb: 255 183 178;
   --theme-secondary-rgb: 254 214 188;
   --theme-primary: #FFB7B2;
@@ -9,18 +21,6 @@
   --theme-glow: rgba(255, 183, 178, 0.35);
   --theme-ambient-1: rgba(255, 183, 178, 0.08);
   --theme-ambient-2: rgba(254, 214, 188, 0.04);
-  --theme-bg: #0a0b10;
-  --theme-panel-bg: rgba(11, 12, 19, 0.70);
-}
-
-.theme-violet {
-  --theme-primary-rgb: 192 132 252;
-  --theme-secondary-rgb: 232 121 249;
-  --theme-primary: #c084fc;
-  --theme-secondary: #e879f9;
-  --theme-glow: rgba(192, 132, 252, 0.35);
-  --theme-ambient-1: rgba(192, 132, 252, 0.08);
-  --theme-ambient-2: rgba(147, 51, 234, 0.05);
   --theme-bg: #0a0b10;
   --theme-panel-bg: rgba(11, 12, 19, 0.70);
 }
@@ -59,30 +59,6 @@
   --theme-ambient-2: rgba(255, 255, 255, 0.02);
   --theme-bg: #0a0b10;
   --theme-panel-bg: rgba(11, 12, 19, 0.70);
-}
-
-.theme-oled {
-  --theme-primary-rgb: 255 255 255;
-  --theme-secondary-rgb: 161 161 170;
-  --theme-primary: #ffffff;
-  --theme-secondary: #a1a1aa;
-  --theme-glow: rgba(255, 255, 255, 0.25);
-  --theme-ambient-1: rgba(255, 255, 255, 0.015);
-  --theme-ambient-2: rgba(0, 0, 0, 0);
-  --theme-bg: #000000;
-  --theme-panel-bg: rgba(4, 4, 4, 0.95);
-}
-
-.theme-cyberpunk {
-  --theme-primary-rgb: 255 0 127;
-  --theme-secondary-rgb: 0 240 255;
-  --theme-primary: #ff007f;
-  --theme-secondary: #00f0ff;
-  --theme-glow: rgba(255, 0, 127, 0.40);
-  --theme-ambient-1: rgba(255, 0, 127, 0.10);
-  --theme-ambient-2: rgba(0, 240, 255, 0.06);
-  --theme-bg: #090611;
-  --theme-panel-bg: rgba(14, 9, 24, 0.75);
 }
 
 .theme-nord {

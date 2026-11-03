@@ -29,14 +29,15 @@ export function HistoryView({ user, onGoToAlbum, onGoToArtist, onAddToPlaylist, 
     return () => controller.abort();
   }, [page, retry]);
   const groups = new Map();
-  for (const track of data.tracks) {
+  const activeHistoryId = currentTrack?.history_id ?? data.tracks.find((track) => track.id === currentTrack?.id)?.history_id;
+  for (const [index, track] of data.tracks.entries()) {
     const date = new Date(track.played_at).toLocaleDateString(undefined, {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
     });
     if (!groups.has(date)) groups.set(date, []);
-    groups.get(date).push(track);
+    groups.get(date).push({ track, displayIndex: page * 50 + index + 1 });
   }
   return (
     <div className="space-y-6 animate-fade-in">
@@ -84,12 +85,13 @@ export function HistoryView({ user, onGoToAlbum, onGoToArtist, onAddToPlaylist, 
                   </tr>
                 </thead>
                 <tbody>
-                  {tracks.map((track, index) => (
+                  {tracks.map(({ track, displayIndex }) => (
                     <TrackRow
-                      index={index}
+                      displayIndex={displayIndex}
                       key={track.history_id}
                       track={track}
-                      isPlaying={currentTrack?.id === track.id}
+                      isPlaying={currentTrack?.id === track.id && activeHistoryId === track.history_id}
+                      isCurrentTrack={currentTrack?.id === track.id && activeHistoryId === track.history_id}
                       user={user}
                       onPlay={(t) => playTrack(t, data.tracks)}
                       onGoToAlbum={onGoToAlbum}

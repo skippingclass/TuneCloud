@@ -17,6 +17,7 @@ export function TrackRow({
   track,
   onPlay,
   isPlaying,
+  isCurrentTrack,
   index,
   displayIndex,
   user,
@@ -41,6 +42,7 @@ export function TrackRow({
 
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
   const { addToQueue, playNext, togglePlay, currentTrack, isPlaying: actuallyPlaying } = usePlayer();
+  const isCurrent = isCurrentTrack ?? (currentTrack?.id === track.id);
   const starred = isTrackStarred(track.id);
   const isAvailable = track.available !== false;
   const canPlay = track.id != null && isAvailable;
@@ -113,15 +115,15 @@ export function TrackRow({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              if (currentTrack?.id === track.id) togglePlay();
+              if (isCurrent) togglePlay();
               else onPlay?.(track);
             }}
-            aria-label={`${currentTrack?.id === track.id && actuallyPlaying ? 'Pause' : 'Play'} ${track.title || track.file_name}`}
+            aria-label={`${isCurrent && actuallyPlaying ? 'Pause' : 'Play'} ${track.title || track.file_name}`}
             className={`track-play absolute inset-0 flex items-center justify-center text-white hover:text-accent transition-colors ${
               hover ? 'opacity-100' : 'opacity-0 pointer-events-none'
             }`}
           >
-            {currentTrack?.id === track.id && actuallyPlaying ? (
+            {isCurrent && actuallyPlaying ? (
               <Pause className="w-4 h-4 fill-current text-accent" />
             ) : (
               <Play className="w-4 h-4 fill-current text-white" />
