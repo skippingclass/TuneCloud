@@ -281,7 +281,7 @@ async function flushTrackBatch(client, items) {
       const { rows: inserted } = await client.query(
         `INSERT INTO artists (name)
          SELECT n FROM unnest($1::text[]) AS n
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+         ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name
          RETURNING id, name`,
         [newArtistNames]
       );
@@ -995,7 +995,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
       } else {
         const artRes = await client.query(
           `INSERT INTO artists (name) VALUES ($1)
-           ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+           ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name
            RETURNING id`,
           [canonicalAlbumArtist]
         );
@@ -1019,11 +1019,25 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
       );
       if (conflictRows.length > 0) {
         const targetAlbumId = conflictRows[0].id;
-        await client.query('UPDATE tracks SET album_id = $1 WHERE album_id = $2', [targetAlbumId, albumId]);
-        await client.query('UPDATE user_starred_albums SET album_id = $1 WHERE album_id = $2 ON CONFLICT DO NOTHING', [targetAlbumId, albumId]);
-        await client.query("UPDATE user_ratings SET entity_id = $1 WHERE entity_type = 'album' AND entity_id = $2 ON CONFLICT DO NOTHING", [targetAlbumId, albumId]);
-        await client.query('DELETE FROM albums WHERE id = $1', [albumId]);
+        await inTransaction(client, async () => {
+          await client.query('SELECT id FROM albums WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [[albumId, targetAlbumId]]);
+          await client.query('UPDATE tracks SET album_id = $1 WHERE album_id = $2', [targetAlbumId, albumId]);
+          await client.query(`INSERT INTO user_starred_albums (user_id, album_id, created_at)
+            SELECT user_id, $1, created_at FROM user_starred_albums WHERE album_id = $2
+            ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
+          await client.query(`INSERT INTO user_ratings (user_id, entity_type, entity_id, rating, created_at)
+            SELECT user_id, entity_type, $1, rating, created_at FROM user_ratings
+            WHERE entity_type = 'album' AND entity_id = $2 ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
+          await client.query("DELETE FROM user_ratings WHERE entity_type = 'album' AND entity_id = $1", [albumId]);
+          await client.query(`INSERT INTO album_credits (album_id, artist_id, role, credited_as)
+            SELECT $1, artist_id, role, credited_as FROM album_credits WHERE album_id = $2
+            ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
+          await client.query(`UPDATE albums target SET cover_path = COALESCE(target.cover_path, source.cover_path)
+            FROM albums source WHERE target.id = $1 AND source.id = $2`, [targetAlbumId, albumId]);
+          await client.query('DELETE FROM albums WHERE id = $1', [albumId]);
+        });
         touchedAlbumIds.add(targetAlbumId);
+        if (!albumIds.includes(targetAlbumId)) albumIds.push(targetAlbumId);
         continue;
       }
     }

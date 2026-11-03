@@ -14,7 +14,7 @@ A self-hosted music server with a React web player, a Subsonic-compatible API, a
 - **Subsonic clients.** Native audio streaming with HTTP range requests, search, playlists, favorites, ratings, scrobbling, and saved queues. Streaming serves the original audio; server-side transcoding is not implemented.
 - **Incremental library scans.** Re-read changed files or run a full metadata scan. Missing files retain their IDs and playlist, favorite, and history references.
 - **Listening history.** A personal timeline with repeated plays, dates, and pagination. Select multiple tracks to add them to favorites, a playlist, or the queue.
-- **Multiple users.** Administrator-managed accounts, personal listening history, session revocation, and optional MP3 tag editing.
+- **Multiple users.** Administrator-managed accounts, personal listening history, session revocation, and optional tag editing for MP3, FLAC, Ogg, Opus, and M4A.
 
 ## Screenshots
 
@@ -97,7 +97,7 @@ docker compose up -d --build
 
 Music is mounted read-only by default. PostgreSQL data and cached artwork use the `pgdata` and `covers_data` volumes. Back up the database and music collection before moving an installation.
 
-To enable MP3 tag editing, set both `TAG_EDITING_ENABLED=true` and `MUSIC_MOUNT_MODE=rw`. Spotify artist lookup is optional; configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` to enable it.
+To enable tag editing for MP3, FLAC, Ogg, Opus, and M4A, set both `TAG_EDITING_ENABLED=true` and `MUSIC_MOUNT_MODE=rw`. Spotify artist lookup is optional; configure `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` to enable it.
 
 Web lyrics prefer an existing synchronized cache entry, then local and embedded synchronized text, lrc.red, and LRCLIB. Plain text is the fallback. Set `LRC_RED_CONTACT_EMAIL` to the contact email of the person running your server; it is sent to lrc.red in the server's User-Agent. There is no built-in contact address: when the variable is empty or invalid, new requests skip lrc.red and continue to LRCLIB. Cached lyrics remain available, and lrc.red data is credited in the player. Set a stable `SUBSONIC_ENCRYPTION_KEY` before rotating `JWT_SECRET` to preserve encrypted Subsonic credentials. See [.env.example](.env.example) for the complete configuration.
 

@@ -441,7 +441,7 @@ function MainLayout({ user, onLogout }) {
         onGoToArtist={handleArtistClick}
       />
 
-      {/* Edit ID3 Tags Modal */}
+      {/* Edit Tags Modal */}
       {editingTrack && (
         <EditTrackModal
           track={editingTrack}

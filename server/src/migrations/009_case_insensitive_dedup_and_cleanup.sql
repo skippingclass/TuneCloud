@@ -1,102 +1,81 @@
--- Merge duplicate artists and albums that differ only in case,
--- and add case-insensitive unique indexes.
+-- Merge case-only artist/album duplicates, preserving every track and user link.
+-- This migration also runs on populated pre-009 databases. The exact-case
+-- constraint must be suspended while artists are reassigned, before album merge.
+ALTER TABLE albums DROP CONSTRAINT IF EXISTS albums_title_artist_id_key;
 
-DO $$
-DECLARE
-  dup RECORD;
-  target_id INT;
-  source_id INT;
-  t_src RECORD;
-  t_tgt INT;
-BEGIN
-  -- 1. Merge duplicate artists by LOWER(name)
-  FOR dup IN
-    SELECT LOWER(name) as l_name, array_agg(id ORDER BY id ASC) as ids
-    FROM artists
-    GROUP BY LOWER(name)
-    HAVING COUNT(*) > 1
-  LOOP
-    target_id := dup.ids[1];
-    FOR i IN 2..array_length(dup.ids, 1) LOOP
-      source_id := dup.ids[i];
+CREATE TEMP TABLE case_artist_merge ON COMMIT DROP AS
+  SELECT id AS source_id, MIN(id) OVER (PARTITION BY LOWER(name)) AS target_id
+  FROM artists;
 
-      UPDATE tracks SET artist_id = target_id WHERE artist_id = source_id;
-      UPDATE albums SET artist_id = target_id WHERE artist_id = source_id;
+UPDATE tracks t SET artist_id = m.target_id
+FROM case_artist_merge m WHERE t.artist_id = m.source_id AND m.source_id <> m.target_id;
+UPDATE albums a SET artist_id = m.target_id
+FROM case_artist_merge m WHERE a.artist_id = m.source_id AND m.source_id <> m.target_id;
 
-      UPDATE album_credits SET artist_id = target_id WHERE artist_id = source_id
-        AND NOT EXISTS (SELECT 1 FROM album_credits WHERE album_id = album_credits.album_id AND role = album_credits.role AND artist_id = target_id);
-      DELETE FROM album_credits WHERE artist_id = source_id;
+INSERT INTO album_credits (album_id, artist_id, role, credited_as)
+SELECT c.album_id, m.target_id, c.role, c.credited_as
+FROM album_credits c JOIN case_artist_merge m ON c.artist_id = m.source_id
+WHERE m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
 
-      UPDATE track_credits SET artist_id = target_id WHERE artist_id = source_id
-        AND NOT EXISTS (SELECT 1 FROM track_credits WHERE track_id = track_credits.track_id AND role = track_credits.role AND artist_id = target_id);
-      DELETE FROM track_credits WHERE artist_id = source_id;
+INSERT INTO track_credits (track_id, artist_id, role, credited_as)
+SELECT c.track_id, m.target_id, c.role, c.credited_as
+FROM track_credits c JOIN case_artist_merge m ON c.artist_id = m.source_id
+WHERE m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
 
-      UPDATE user_starred_artists SET artist_id = target_id WHERE artist_id = source_id
-        AND NOT EXISTS (SELECT 1 FROM user_starred_artists WHERE user_id = user_starred_artists.user_id AND artist_id = target_id);
-      DELETE FROM user_starred_artists WHERE artist_id = source_id;
+INSERT INTO user_starred_artists (user_id, artist_id, created_at)
+SELECT s.user_id, m.target_id, s.created_at
+FROM user_starred_artists s JOIN case_artist_merge m ON s.artist_id = m.source_id
+WHERE m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
 
-      UPDATE user_ratings SET entity_id = target_id WHERE entity_type = 'artist' AND entity_id = source_id
-        AND NOT EXISTS (SELECT 1 FROM user_ratings WHERE user_id = user_ratings.user_id AND entity_type = 'artist' AND entity_id = target_id);
-      DELETE FROM user_ratings WHERE entity_type = 'artist' AND entity_id = source_id;
+INSERT INTO user_ratings (user_id, entity_type, entity_id, rating, created_at)
+SELECT r.user_id, r.entity_type, m.target_id, r.rating, r.created_at
+FROM user_ratings r JOIN case_artist_merge m ON r.entity_id = m.source_id
+WHERE r.entity_type = 'artist' AND m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
+DELETE FROM user_ratings r USING case_artist_merge m
+WHERE r.entity_type = 'artist' AND r.entity_id = m.source_id AND m.source_id <> m.target_id;
+DELETE FROM artists a USING case_artist_merge m
+WHERE a.id = m.source_id AND m.source_id <> m.target_id;
 
-      DELETE FROM artists WHERE id = source_id;
-    END LOOP;
-  END LOOP;
+CREATE TEMP TABLE case_album_merge ON COMMIT DROP AS
+SELECT id AS source_id,
+       FIRST_VALUE(id) OVER (
+         PARTITION BY LOWER(title), artist_id
+         ORDER BY (SELECT COUNT(*) FROM tracks t WHERE t.album_id = albums.id AND t.missing_since IS NULL) DESC, id
+       ) AS target_id
+FROM albums;
 
-  -- 2. Merge duplicate albums by LOWER(title) and artist_id
-  FOR dup IN
-    SELECT LOWER(title) as l_title, artist_id, array_agg(id ORDER BY (
-      SELECT COUNT(*) FROM tracks WHERE album_id = albums.id AND missing_since IS NULL
-    ) DESC, id ASC) as ids
-    FROM albums
-    GROUP BY LOWER(title), artist_id
-    HAVING COUNT(*) > 1
-  LOOP
-    target_id := dup.ids[1];
-    FOR i IN 2..array_length(dup.ids, 1) LOOP
-      source_id := dup.ids[i];
+-- Equal titles or filenames are not proof of equal audio. Keep track IDs and
+-- their playlists, history, bookmarks, ratings and lyrics intact.
+UPDATE tracks t SET album_id = m.target_id
+FROM case_album_merge m WHERE t.album_id = m.source_id AND m.source_id <> m.target_id;
 
-      -- For each track in source album, check if corresponding track exists in target album
-      FOR t_src IN SELECT id, file_name, title FROM tracks WHERE album_id = source_id LOOP
-        SELECT id INTO t_tgt FROM tracks WHERE album_id = target_id AND (
-          LOWER(file_name) = LOWER(t_src.file_name) OR (title IS NOT NULL AND LOWER(title) = LOWER(t_src.title))
-        ) LIMIT 1;
+INSERT INTO album_credits (album_id, artist_id, role, credited_as)
+SELECT m.target_id, c.artist_id, c.role, c.credited_as
+FROM album_credits c JOIN case_album_merge m ON c.album_id = m.source_id
+WHERE m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
 
-        IF t_tgt IS NOT NULL THEN
-          -- Transfer user data from t_src to t_tgt
-          UPDATE user_starred_tracks SET track_id = t_tgt WHERE track_id = t_src.id
-            AND NOT EXISTS (SELECT 1 FROM user_starred_tracks WHERE user_id = user_starred_tracks.user_id AND track_id = t_tgt);
-          DELETE FROM user_starred_tracks WHERE track_id = t_src.id;
+INSERT INTO user_starred_albums (user_id, album_id, created_at)
+SELECT s.user_id, m.target_id, s.created_at
+FROM user_starred_albums s JOIN case_album_merge m ON s.album_id = m.source_id
+WHERE m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
 
-          UPDATE play_history SET track_id = t_tgt WHERE track_id = t_src.id;
-          UPDATE playlist_tracks SET track_id = t_tgt WHERE track_id = t_src.id;
+INSERT INTO user_ratings (user_id, entity_type, entity_id, rating, created_at)
+SELECT r.user_id, r.entity_type, m.target_id, r.rating, r.created_at
+FROM user_ratings r JOIN case_album_merge m ON r.entity_id = m.source_id
+WHERE r.entity_type = 'album' AND m.source_id <> m.target_id
+ON CONFLICT DO NOTHING;
+DELETE FROM user_ratings r USING case_album_merge m
+WHERE r.entity_type = 'album' AND r.entity_id = m.source_id AND m.source_id <> m.target_id;
+DELETE FROM albums a USING case_album_merge m
+WHERE a.id = m.source_id AND m.source_id <> m.target_id;
 
-          UPDATE user_ratings SET entity_id = t_tgt WHERE entity_type = 'track' AND entity_id = t_src.id
-            AND NOT EXISTS (SELECT 1 FROM user_ratings WHERE user_id = user_ratings.user_id AND entity_type = 'track' AND entity_id = t_tgt);
-          DELETE FROM user_ratings WHERE entity_type = 'track' AND entity_id = t_src.id;
-
-          DELETE FROM tracks WHERE id = t_src.id;
-        END IF;
-      END LOOP;
-
-      -- Move any remaining tracks to target
-      UPDATE tracks SET album_id = target_id WHERE album_id = source_id;
-
-      -- Reassign album stars and ratings
-      UPDATE user_starred_albums SET album_id = target_id WHERE album_id = source_id
-        AND NOT EXISTS (SELECT 1 FROM user_starred_albums WHERE user_id = user_starred_albums.user_id AND album_id = target_id);
-      DELETE FROM user_starred_albums WHERE album_id = source_id;
-
-      UPDATE user_ratings SET entity_id = target_id WHERE entity_type = 'album' AND entity_id = source_id
-        AND NOT EXISTS (SELECT 1 FROM user_ratings WHERE user_id = user_ratings.user_id AND entity_type = 'album' AND entity_id = target_id);
-      DELETE FROM user_ratings WHERE entity_type = 'album' AND entity_id = source_id;
-
-      DELETE FROM album_credits WHERE album_id = source_id;
-      DELETE FROM albums WHERE id = source_id;
-    END LOOP;
-  END LOOP;
-END $$;
-
+ALTER TABLE albums ADD CONSTRAINT albums_title_artist_id_key UNIQUE (title, artist_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_lower ON artists(LOWER(name));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_artist_lower ON albums(LOWER(title), artist_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_null_artist_lower ON albums(LOWER(title)) WHERE artist_id IS NULL;

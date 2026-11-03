@@ -23,6 +23,7 @@ import {
   IGNORED_ARTICLES_STR,
 } from '../subsonic/formatters.js';
 import { sendAudioFile } from '../streaming.js';
+import { resolveCoverFile } from '../cover.js';
 import { getScanState, startScanInBackground } from './scan.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -225,13 +226,13 @@ const GENRES_SQL = `
   ) al ON al.genre = g.genre
   ORDER BY g.genre ASC`;
 
-function coverFileFromPath(coverPath) {
+async function coverFileFromPath(coverPath) {
   if (!coverPath) return null;
   if (path.isAbsolute(coverPath) && fs.existsSync(coverPath)) {
-    return coverPath;
+    return resolveCoverFile(coverPath, { allowMusic: true });
   }
   const file = path.join(COVERS_DIR, path.basename(coverPath));
-  return fs.existsSync(file) ? file : null;
+  return resolveCoverFile(file);
 }
 
 async function resolveCoverPath(rawId) {
@@ -246,7 +247,10 @@ async function resolveCoverPath(rawId) {
           'SELECT cover_path FROM albums WHERE folder_path = $1 AND cover_path IS NOT NULL LIMIT 1',
           [fullDir]
         );
-        if (alb.rows[0]?.cover_path) return alb.rows[0].cover_path;
+        if (alb.rows[0]?.cover_path) {
+          const cached = await coverFileFromPath(alb.rows[0].cover_path);
+          if (cached) return cached;
+        }
         const prefix = fullDir.endsWith(path.sep) ? fullDir : fullDir + path.sep;
         const tr = await query(
           `SELECT COALESCE(t.cover_path, al.cover_path) AS cover_path
@@ -256,14 +260,17 @@ async function resolveCoverPath(rawId) {
            LIMIT 1`,
           [prefix]
         );
-        if (tr.rows[0]?.cover_path) return tr.rows[0].cover_path;
+        if (tr.rows[0]?.cover_path) {
+          const cached = await coverFileFromPath(tr.rows[0].cover_path);
+          if (cached) return cached;
+        }
         for (const name of [
           'cover.jpg', 'cover.jpeg', 'cover.png', 'Cover.jpg', 'Cover.png',
           'folder.jpg', 'folder.png', 'Folder.jpg', 'Folder.png',
           'front.jpg', 'front.png', 'Front.jpg',
         ]) {
-          const directFile = path.join(fullDir, name);
-          if (fs.existsSync(directFile)) return directFile;
+          const directFile = await resolveCoverFile(path.join(fullDir, name), { allowMusic: true });
+          if (directFile) return directFile;
         }
       }
     }
@@ -1230,7 +1237,7 @@ export default async function subsonicRoutes(fastify) {
   endpoint('getCoverArt', async (req, reply, params) => {
     if (!params.id) return missing(reply, req, 'id');
 
-    const file = coverFileFromPath(await resolveCoverPath(params.id));
+    const file = await coverFileFromPath(await resolveCoverPath(params.id));
     if (!file) return reply.status(404).send('Not found');
 
     const ext = path.extname(file).toLowerCase();
@@ -1241,7 +1248,10 @@ export default async function subsonicRoutes(fastify) {
       'Content-Length': fs.statSync(file).size,
       'Cache-Control': 'public, max-age=86400',
     });
-    fs.createReadStream(file).pipe(reply.raw);
+    const stream = fs.createReadStream(file);
+    reply.raw.on('close', () => stream.destroy());
+    stream.on('error', () => { if (!reply.raw.writableEnded) reply.raw.end(); });
+    stream.pipe(reply.raw);
   });
 
   // ---- Play Queue ----

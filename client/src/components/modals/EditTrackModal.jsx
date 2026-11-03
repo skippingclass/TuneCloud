@@ -60,7 +60,7 @@ export function EditTrackModal({ track, onClose, onSaved }) {
         <div className="flex items-center justify-between pb-4 border-b border-white/[0.08] mb-5">
           <h3 className="text-base font-bold text-white flex items-center gap-2">
             <Edit3 className="w-4 h-4 text-accent" />
-            <span>Edit ID3 Tags</span>
+            <span>Edit Tags</span>
           </h3>
           <button
             onClick={onClose}

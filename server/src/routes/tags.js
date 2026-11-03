@@ -1,20 +1,19 @@
 import path from 'path';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
-import NodeID3 from 'node-id3';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from '../db.js';
 import { requireAuth, requireAdmin } from '../auth.js';
 import { extractLeadingArtist, computeFileHashes } from '../scanner.js';
+import { EDITABLE_TAG_FORMATS, writeAudioTags } from '../tag-writer.js';
 
-const MP3_EXTS = ['.mp3'];
 const TAG_EXTS = ['.mp3', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.wav'];
 
 async function ensureArtist(client, name) {
   if (!name || name.trim() === '') return null;
   name = (extractLeadingArtist(name) || name).trim();
   const { rows } = await client.query(
-    `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+    `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name RETURNING id`,
     [name]
   );
   return rows[0].id;
@@ -23,31 +22,15 @@ async function ensureArtist(client, name) {
 async function ensureAlbum(client, title, artistId, year, genre) {
   if (!title || title.trim() === '') return null;
   title = title.trim();
-  if (artistId == null) {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['album:null:' + title]);
-    const existing = await client.query('SELECT id FROM albums WHERE title = $1 AND artist_id IS NULL ORDER BY id LIMIT 1 FOR UPDATE', [title]);
-    if (existing.rows.length) {
-      await client.query('UPDATE albums SET year = COALESCE($1, year), genre = COALESCE($2, genre) WHERE id = $3', [year || null, genre || null, existing.rows[0].id]);
-      return existing.rows[0].id;
-    }
-  }
+  const conflict = artistId == null ? '(LOWER(title)) WHERE artist_id IS NULL' : '(LOWER(title), artist_id)';
   const { rows } = await client.query(
     `INSERT INTO albums (title, artist_id, year, genre)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (title, artist_id) DO UPDATE SET year = COALESCE(EXCLUDED.year, albums.year), genre = COALESCE(EXCLUDED.genre, albums.genre)
+     ON CONFLICT ${conflict} DO UPDATE SET year = COALESCE(EXCLUDED.year, albums.year), genre = COALESCE(EXCLUDED.genre, albums.genre)
      RETURNING id`,
     [title, artistId, year || null, genre || null]
   );
   return rows[0].id;
-}
-
-async function writeTags(filePath, updates) {
-  const tags = {};
-  for (const key of ['title', 'artist', 'album', 'genre']) if (updates[key] !== undefined) tags[key] = updates[key];
-  for (const key of ['trackNumber', 'year']) if (updates[key] !== undefined) tags[key] = updates[key] == null ? '' : String(updates[key]);
-  const result = NodeID3.update(tags, filePath);
-  if (result instanceof Error) throw result;
-  if (result !== true) throw new Error('Unable to write audio tags');
 }
 
 async function readTags(filePath) {
@@ -95,15 +78,16 @@ export default async function tagRoutes(fastify) {
       const root = await fs.realpath(process.env.MUSIC_DIR);
       const rel = path.relative(root, filePath);
       if (rel.startsWith('..') || path.isAbsolute(rel)) throw Object.assign(new Error('File outside music library'), { statusCode: 403 });
-      if (!MP3_EXTS.includes(path.extname(filePath).toLowerCase())) {
-        throw Object.assign(new Error('Tag editing is only supported for MP3 files'), { statusCode: 400 });
+      const format = path.extname(filePath).slice(1).toLowerCase();
+      if (!EDITABLE_TAG_FORMATS.includes(format)) {
+        throw Object.assign(new Error('Tag editing is supported for MP3, FLAC, Ogg, Opus and M4A files'), { statusCode: 400 });
       }
       const suffix = crypto.randomUUID();
       staged = `${filePath}.${suffix}.tmp`;
       backup = `${filePath}.${suffix}.bak`;
       // Stage writes on the same filesystem; a failed write never touches the original.
       await fs.copyFile(filePath, staged);
-      await writeTags(staged, updates);
+      writeAudioTags(staged, format, updates);
 
       let artistId = rows[0].artist_id;
       if (updates.artist !== undefined) artistId = await ensureArtist(client, updates.artist);

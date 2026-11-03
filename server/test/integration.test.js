@@ -44,7 +44,7 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
     const admin = await user('administrator', true);
     const headers = u => ({ authorization: `Bearer ${auth.signToken(u)}` });
     const file = path.join(process.env.MUSIC_DIR, 'track.mp3');
-    await fs.writeFile(file, Buffer.alloc(128));
+    await fs.writeFile(file, Buffer.from([0xff, 0xfb, 0x90, 0x64, ...new Array(414).fill(0)]));
     const { rows: tracks } = await query("INSERT INTO tracks (file_path,file_name,title) VALUES ($1,'track.mp3','Original'),($2,'second.mp3','Other') RETURNING *", [file, path.join(process.env.MUSIC_DIR, 'second.mp3')]);
     const [track, second] = tracks;
     const call = (method, url, u, payload) => app.inject({ method, url, headers: headers(u), payload });
@@ -162,14 +162,15 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       assert.equal((await call('PUT', `/api/tags/${track.id}`, admin, { title: 'Disabled' })).statusCode, 403);
       process.env.TAG_EDITING_ENABLED = 'true';
       const id3 = (await import('node-id3')).default;
-      const update = id3.update;
+      const { File } = await import('node-taglib-sharp');
+      const createFromPath = File.createFromPath;
       const original = await fs.readFile(file);
       try {
-        id3.update = () => Object.assign(new Error('read-only filesystem'), { code: 'EROFS' });
+        File.createFromPath = () => { throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); };
         assert.equal((await call('PUT', `/api/tags/${track.id}`, admin, { title: 'Must not save' })).statusCode, 403);
         assert.equal((await query('SELECT title FROM tracks WHERE id=$1', [track.id])).rows[0].title, 'Original');
         assert.deepEqual(await fs.readFile(file), original);
-      } finally { id3.update = update; }
+      } finally { File.createFromPath = createFromPath; }
       const edited = await call('PUT', `/api/tags/${track.id}`, admin, { artist: 'New Artist', album: 'New Album', year: 2026 });
       assert.equal(edited.statusCode, 200, edited.body);
       const result = (await query('SELECT t.artist_id, al.artist_id AS album_artist_id FROM tracks t JOIN albums al ON al.id=t.album_id WHERE t.id=$1', [track.id])).rows[0];

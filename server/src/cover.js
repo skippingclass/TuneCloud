@@ -17,13 +17,20 @@ const COVER_NAMES = [
 ];
 const COVER_CONCURRENCY = 4;
 
-async function fileExists(filePath) {
+// Validate the final file, not just its parent: artwork may be a symlink.
+export async function resolveCoverFile(filePath, { allowMusic = false } = {}) {
   try {
-    await fsp.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+    const physical = await fsp.realpath(filePath);
+    if (!(await fsp.stat(physical)).isFile()) return null;
+    const roots = [COVERS_DIR, ...(allowMusic && process.env.MUSIC_DIR ? [process.env.MUSIC_DIR] : [])];
+    for (const dir of roots) {
+      try {
+        const rel = path.relative(await fsp.realpath(dir), physical);
+        if (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) return physical;
+      } catch { /* A missing cache directory must not block music-folder artwork. */ }
+    }
+  } catch { /* Missing, unreadable or dangling artwork: try the next candidate. */ }
+  return null;
 }
 
 export async function initCoversDir() {
@@ -83,8 +90,8 @@ export async function extractCoversForAlbum(albumId) {
   let folderCoverHash = null;
 
   for (const name of COVER_NAMES) {
-    const coverFile = path.join(albumDir, name);
-    if (await fileExists(coverFile)) {
+    const coverFile = await resolveCoverFile(path.join(albumDir, name), { allowMusic: true });
+    if (coverFile) {
       try {
         const buf = await fsp.readFile(coverFile);
         if (buf && buf.length > 0) {

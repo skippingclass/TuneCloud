@@ -45,7 +45,7 @@ export function TrackRow({
   const isAvailable = track.available !== false;
   const canPlay = track.id != null && isAvailable;
   const isAdmin = user?.is_admin;
-  const canEditTags = track.format?.toLowerCase() === 'mp3';
+  const canEditTags = ['mp3', 'flac', 'ogg', 'opus', 'm4a'].includes(track.format?.toLowerCase());
 
   const trackArtist = (track.artist || '').trim();
   const baseArtist = (albumArtist || '').trim();
@@ -339,7 +339,7 @@ export function TrackRow({
                   className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white transition-colors"
                 >
                   <Edit3 className="w-3.5 h-3.5 text-accent" />
-                  <span>Edit ID3 Tags</span>
+                  <span>Edit Tags</span>
                 </button>
               </>
             )}

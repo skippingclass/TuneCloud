@@ -1,18 +1,15 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveCoverFile } from '../cover.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COVERS_DIR = path.resolve(process.env.COVERS_DIR || path.join(__dirname, '../../covers'));
 
-function serveCover(reply, filename) {
+async function serveCover(reply, filename) {
   const safe = path.basename(filename);
-  const filepath = path.join(COVERS_DIR, safe);
-  if (!fs.existsSync(filepath)) {
-    reply.raw.writeHead(404, { 'Content-Type': 'application/json' });
-    reply.raw.end(JSON.stringify({ error: 'Not found' }));
-    return;
-  }
+  const filepath = await resolveCoverFile(path.join(COVERS_DIR, safe));
+  if (!filepath) return reply.status(404).send({ error: 'Not found' });
   const ext = path.extname(safe).toLowerCase();
   const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
   reply.hijack();
@@ -38,7 +35,7 @@ export default async function coverRoutes(fastify) {
     if (!rows[0]?.cover_path) {
       return reply.status(404).send({ error: 'No cover' });
     }
-    serveCover(reply, rows[0].cover_path);
+    return serveCover(reply, rows[0].cover_path);
   });
 
   fastify.get('/api/cover/track/:id', async (req, reply) => {
@@ -50,10 +47,10 @@ export default async function coverRoutes(fastify) {
     if (!rows[0]?.cover_path) {
       return reply.status(404).send({ error: 'No cover' });
     }
-    serveCover(reply, rows[0].cover_path);
+    return serveCover(reply, rows[0].cover_path);
   });
 
   fastify.get('/api/cover/:filename', async (req, reply) => {
-    serveCover(reply, req.params.filename);
+    return serveCover(reply, req.params.filename);
   });
 }
