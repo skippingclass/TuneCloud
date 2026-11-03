@@ -45,7 +45,7 @@ export function formatArtist(row) {
 export function splitArtistNames(str) {
   if (!str) return [];
   return str
-    .split(/\s*(?:,|&|\/|\bfeat\.?|\bft\.?)\s*/i)
+    .split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)
     .map((s) => s.trim())
     .filter(Boolean);
 }

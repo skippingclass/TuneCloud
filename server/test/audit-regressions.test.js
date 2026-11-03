@@ -133,7 +133,10 @@ test('audit regressions: tag APIs, atomic album merge, and safe artwork fallback
       const meta = await parseFile(file);
       assert.equal(meta.common.title,'Edited 曲名');
       const row = (await query('SELECT title,artist_id,album_id,mtime,file_size,content_hash,dev,ino FROM tracks WHERE id=$1',[track])).rows[0];
-      assert.equal(row.title,meta.common.title);assert.equal(row.artist_id,artist);assert.equal(row.album_id,album);
+      assert.equal(row.title,meta.common.title);assert.equal(row.artist_id,artist);
+      const actualAlbum = (await query('SELECT al.title,a.name AS artist FROM albums al LEFT JOIN artists a ON a.id=al.artist_id WHERE al.id=$1',[row.album_id])).rows[0];
+      assert.equal(actualAlbum.title.toLowerCase(),'album');
+      assert.equal(actualAlbum.artist.toLowerCase(),(meta.common.albumartist || meta.common.artist).toLowerCase());
       const stat = await fs.stat(file);
       assert.equal(row.mtime.getTime(),stat.mtime.getTime());assert.equal(Number(row.file_size),stat.size);
       const bytes = await fs.readFile(file);

@@ -778,6 +778,13 @@ export default async function subsonicRoutes(fastify) {
       orderBy = 'ORDER BY al.year DESC NULLS LAST, al.title ASC';
     } else if (normType === 'bygenre') {
       orderBy = 'ORDER BY al.title ASC';
+    } else if (normType === 'frequent' || normType === 'recent') {
+      const uid = Number(req.subsonicUser.id);
+      const metric = normType === 'frequent' ? 'COUNT(*)' : 'MAX(ph.played_at)';
+      whereClauses.push(`EXISTS (SELECT 1 FROM play_history ph JOIN tracks pt ON pt.id = ph.track_id
+        WHERE ph.user_id = ${uid} AND pt.album_id = al.id)`);
+      orderBy = `ORDER BY (SELECT ${metric} FROM play_history ph JOIN tracks pt ON pt.id = ph.track_id
+        WHERE ph.user_id = ${uid} AND pt.album_id = al.id) DESC NULLS LAST, al.id ASC`;
     } else if (normType === 'starred') {
       orderBy = 'ORDER BY sa.created_at DESC';
     } else {

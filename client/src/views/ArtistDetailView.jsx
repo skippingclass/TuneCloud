@@ -57,7 +57,7 @@ export function ArtistDetailView({
 
   useEffect(() => {
     setLoading(true);
-    const primaryName = (artist.name || '').split(/,|&|\bfeat\.?\b|\bft\.?\b/i)[0].trim();
+    const primaryName = (artist.name || '').split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)[0].trim();
     const fetchPromise = artist.id
       ? api.artist(artist.id)
       : api.artistByName(primaryName || artist.name);

@@ -99,8 +99,7 @@ function cleanStr(v) {
 
 export function extractLeadingArtist(name) {
   if (!name) return null;
-  const m = name.match(/^(.+?)\s*(?:feat\.|ft\.|featuring|vs\.?|&|,\s)/i);
-  return m ? m[1].trim() : name.trim();
+  return name.split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)[0].trim();
 }
 
 /**
@@ -302,7 +301,8 @@ async function flushTrackBatch(client, items) {
   const artistIds = albumMetaList.map((a) => a.artistId).filter((id) => id !== null);
 
   const { rows: existingAlbumRows } = await client.query(
-    `SELECT id, title, folder_path, artist_id
+    `SELECT id, title, folder_path, artist_id,
+            ARRAY(SELECT t.file_path FROM tracks t WHERE t.album_id = albums.id AND t.missing_since IS NULL) AS member_paths
      FROM albums
      WHERE LOWER(folder_path) = ANY($1::text[])
         OR (LOWER(title) = ANY($2::text[]) AND artist_id = ANY($3::int[]))`,
@@ -319,10 +319,12 @@ async function flushTrackBatch(client, items) {
     let match = existingAlbumRows.find(
       (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower && r.title.toLowerCase() === titleLower
     );
-    // If not found, match on folder_path alone (folder was renamed or title casing updated)
+    // A title change preserves album identity only when this group contains every live member.
     if (!match) {
       match = existingAlbumRows.find(
-        (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower
+        (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower &&
+          r.member_paths?.length > 0 && r.member_paths.every(file =>
+            albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))
       );
     }
     // If not found, match on title + artist_id (case-insensitive, album was moved to another folder)
@@ -401,6 +403,9 @@ async function flushTrackBatch(client, items) {
       i.dev ?? null, i.ino ?? null, i.birthtimeMs ?? null, i.contentHash ?? null, i.audioHash ?? null,
     ].forEach((v, idx) => cols[idx].push(v));
   }
+
+  await client.query(`DELETE FROM track_lyrics l USING tracks t
+    WHERE l.track_id = t.id AND t.file_path = ANY($1::text[])`, [items.filter(i => !i.parseError).map(i => i.filePath)]);
 
   await client.query(
     `INSERT INTO tracks (
@@ -919,7 +924,7 @@ async function removeOrphans(client) {
  * Recomputes and updates album-level metadata across all tracks belonging to the album
  * in the database, preferring available tracks when present.
  */
-export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
+export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transactionActive = false } = {}) {
   if (!touchedAlbumIds || touchedAlbumIds.size === 0) return;
   const albumIds = [...touchedAlbumIds].filter(Boolean);
   if (albumIds.length === 0) return;
@@ -1019,7 +1024,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
       );
       if (conflictRows.length > 0) {
         const targetAlbumId = conflictRows[0].id;
-        await inTransaction(client, async () => {
+        const merge = async () => {
           await client.query('SELECT id FROM albums WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [[albumId, targetAlbumId]]);
           await client.query('UPDATE tracks SET album_id = $1 WHERE album_id = $2', [targetAlbumId, albumId]);
           await client.query(`INSERT INTO user_starred_albums (user_id, album_id, created_at)
@@ -1035,7 +1040,9 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds) {
           await client.query(`UPDATE albums target SET cover_path = COALESCE(target.cover_path, source.cover_path)
             FROM albums source WHERE target.id = $1 AND source.id = $2`, [targetAlbumId, albumId]);
           await client.query('DELETE FROM albums WHERE id = $1', [albumId]);
-        });
+        };
+        if (transactionActive) await merge();
+        else await inTransaction(client, merge);
         touchedAlbumIds.add(targetAlbumId);
         if (!albumIds.includes(targetAlbumId)) albumIds.push(targetAlbumId);
         continue;

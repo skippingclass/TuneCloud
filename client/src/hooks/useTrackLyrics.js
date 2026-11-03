@@ -1,13 +1,20 @@
-import { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { useEffect, useState, useRef } from 'react';
+import { api, onTrackUpdated } from '../api.js';
 import { parseLrc } from '../utils/lyrics.js';
 
 const cache = new Map();
+onTrackUpdated(id => { cache.delete(id); });
 
 // All player layouts use the same successful-result cache. Failed requests are
 // retried on reopening; aborted or late responses never replace another track.
 export function useTrackLyrics(track, enabled) {
   const [attempt, setAttempt] = useState(0);
+  const request = useRef(null);
+  useEffect(() => onTrackUpdated(id => {
+    if (String(id) !== String(track?.id)) return;
+    request.current?.abort();
+    setAttempt(value => value + 1);
+  }), [track?.id]);
   const [result, setResult] = useState({ trackId: null, loading: true, data: null });
   useEffect(() => {
     if (!enabled || !track) return;
@@ -17,6 +24,7 @@ export function useTrackLyrics(track, enabled) {
       return;
     }
     const controller = new AbortController();
+    request.current = controller;
     setResult({ trackId: id, loading: true, data: null });
     api.lyrics({ id, title: track.title || track.file_name || track.fileName || '', artist: track.artist || '', duration: track.duration || 0 }, { signal: controller.signal })
       .then(response => {

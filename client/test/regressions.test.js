@@ -341,6 +341,10 @@ describe('PlayerContext: scrobble reset on next/repeat, resume paused track, and
   });
 
   it('resets scrobbled flag on automatic next and repeat-one, resumes same paused track with audio.play(), and handles play() rejection and audio errors', async () => {
+    let clock = 0;
+    const originalNow = performance.now;
+    performance.now = () => clock;
+
     const scrobbledIds = [];
     globalThis.fetch = async (url) => {
       if (url.startsWith('/api/scrobble/')) {
@@ -380,6 +384,7 @@ describe('PlayerContext: scrobble reset on next/repeat, resume paused track, and
     // Advance time to 35s -> should scrobble track 10
     await React.act(async () => {
       audioEl.duration = 100;
+      clock += 35000;
       audioEl.currentTime = 35;
       audioEl.dispatchEvent({ type: 'loadedmetadata' });
       audioEl.dispatchEvent({ type: 'timeupdate' });
@@ -411,6 +416,7 @@ describe('PlayerContext: scrobble reset on next/repeat, resume paused track, and
 
     await React.act(async () => {
       audioEl.duration = 100;
+      clock += 35000;
       audioEl.currentTime = 35;
       audioEl.dispatchEvent({ type: 'timeupdate' });
     });
@@ -431,6 +437,7 @@ describe('PlayerContext: scrobble reset on next/repeat, resume paused track, and
     assert.equal(playerApi.currentTime, 0);
 
     await React.act(async () => {
+      clock += 35000;
       audioEl.currentTime = 35;
       audioEl.dispatchEvent({ type: 'timeupdate' });
     });
@@ -459,6 +466,7 @@ describe('PlayerContext: scrobble reset on next/repeat, resume paused track, and
     assert.equal(playerApi.isPlaying, false);
 
     await view.unmount();
+    performance.now = originalNow;
   });
 });
 

@@ -70,7 +70,7 @@ export function cleanTrackArtist(artist) {
 export function extractPrimaryArtist(artist) {
   const cleaned = cleanTrackArtist(artist);
   if (!cleaned) return '';
-  const parts = cleaned.split(/[;,/]|(?:\s+and\s+)|\s*&\s*|\s+(?:feat|ft)\.?\s+/i);
+  const parts = cleaned.split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i);
   return tidy(parts[0] || cleaned);
 }
 
@@ -188,7 +188,16 @@ export async function readEmbeddedLyrics(trackPath) {
     // 1. common.lyrics
     if (metadata.common?.lyrics) {
       if (Array.isArray(metadata.common.lyrics)) {
-        text = metadata.common.lyrics.join('\n');
+        const entries = metadata.common.lyrics;
+        const timed = entries.find(entry => entry && Array.isArray(entry.syncText) && entry.syncText.length && entry.timeStampFormat === 2);
+        if (timed) {
+          text = timed.syncText.map(line => {
+            const ms = Math.max(0, line.timestamp);
+            return `[${String(Math.floor(ms / 60000)).padStart(2, '0')}:${(ms % 60000 / 1000).toFixed(3).padStart(6, '0')}]${line.text}`;
+          }).join('\n');
+        } else {
+          text = entries.map(entry => typeof entry === 'string' ? entry : entry?.text || '').filter(Boolean).join('\n');
+        }
       } else if (typeof metadata.common.lyrics === 'string') {
         text = metadata.common.lyrics;
       }

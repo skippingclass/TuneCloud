@@ -1,6 +1,6 @@
 import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
 import { shuffled as shuffleTracks } from '../utils/playback.js';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Play,
   Pause,
@@ -89,19 +89,23 @@ export function PlaylistDetailView({
   const [editingModal, setEditingModal] = useState(false);
   const { currentTrack, isPlaying, playTrack, togglePlay } = usePlayer();
 
+  const loadVersion = useRef(0);
   const loadPlaylist = async () => {
+    const version = ++loadVersion.current;
+    setLoading(true);
     try {
       const res = await api.playlist(playlist.id);
-      setData(res);
+      if (version === loadVersion.current) setData(res);
     } catch (err) {
-      toast(`Failed to load playlist: ${err.message}`, 'error');
+      if (version === loadVersion.current) { setData(null); toast(`Failed to load playlist: ${err.message}`, 'error'); }
     } finally {
-      setLoading(false);
+      if (version === loadVersion.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     loadPlaylist();
+    return () => { loadVersion.current++; };
   }, [playlist.id]);
 
   const tracks = data?.tracks || [];
@@ -362,7 +366,7 @@ export function PlaylistDetailView({
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
                 {tracks.map((track, index) => {
-                  const isCurrent = currentTrack?.id === track.id;
+                  const isCurrent = currentTrack?.id === track.id && currentTrack?.playlist_track_id === track.playlist_track_id;
                   return (
                     <TrackRow
                         {...selection.rowProps(track)}
@@ -370,6 +374,7 @@ export function PlaylistDetailView({
                       track={track}
                       index={index}
                       displayIndex={index + 1}
+                      isCurrentTrack={isCurrent}
                       isPlaying={isCurrent && isPlaying}
                       onPlay={() => playTrack(track, tracks)}
                       user={user}

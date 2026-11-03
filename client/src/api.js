@@ -3,6 +3,11 @@ const BASE = '/api';
 export const AUTH_EXPIRED_EVENT = 'tunecloud:auth-expired';
 
 const authExpiredListeners = new Set();
+const trackUpdatedListeners = new Set();
+export function onTrackUpdated(listener) {
+  trackUpdatedListeners.add(listener);
+  return () => trackUpdatedListeners.delete(listener);
+}
 
 export class ApiError extends Error {
   constructor(message, status, data = null) {
@@ -157,7 +162,11 @@ export const api = {
     fetchJson('/scan', { method: 'POST', body: JSON.stringify({ full, reextractCovers }) }),
   scanStatus: (opts) => fetchJson('/scan/status', opts),
   tags: (id, opts) => fetchJson(`/tags/${id}`, opts),
-  updateTags: (id, data) => fetchJson(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  updateTags: async (id, data) => {
+    const result = await fetchJson(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+    trackUpdatedListeners.forEach(listener => listener(id));
+    return result;
+  },
   spotifyArtist: (name, opts) => fetchJson(`/spotify/artist?name=${encodeURIComponent(name)}`, opts),
   login: (username, password) =>
     fetchJson('/auth/login', {
@@ -202,7 +211,7 @@ export const api = {
   toggleFavoriteArtist: (id) => fetchJson(`/favorites/artist/${id}`, { method: 'POST' }),
   genres: (opts) => fetchJson('/genres', opts),
   history: (params = {}, opts) => fetchJson(`/history?${new URLSearchParams(params)}`, opts),
-  scrobble: (id) => fetchJson(`/scrobble/${id}`, { method: 'POST' }),
+  scrobble: (id, eventId) => fetchJson(`/scrobble/${id}`, { method: 'POST', body: JSON.stringify({ eventId }) }),
   lyrics: (params, opts) => fetchJson(`/lyrics?${new URLSearchParams(params)}`, opts),
   playlists: (opts) => fetchJson('/playlists', opts),
   playlist: (id, opts) => fetchJson(`/playlists/${id}`, opts),

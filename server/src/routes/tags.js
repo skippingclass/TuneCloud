@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from '../db.js';
 import { requireAuth, requireAdmin } from '../auth.js';
-import { extractLeadingArtist, computeFileHashes } from '../scanner.js';
+import { extractLeadingArtist, computeFileHashes, refreshAlbumsMetadata } from '../scanner.js';
 import { EDITABLE_TAG_FORMATS, writeAudioTags } from '../tag-writer.js';
 
 const TAG_EXTS = ['.mp3', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.wav'];
@@ -89,6 +89,7 @@ export default async function tagRoutes(fastify) {
       await fs.copyFile(filePath, staged);
       writeAudioTags(staged, format, updates);
 
+      const metadata = await parseFile(staged, { skipCovers: true });
       let artistId = rows[0].artist_id;
       if (updates.artist !== undefined) artistId = await ensureArtist(client, updates.artist);
       const fields = [], params = [];
@@ -101,8 +102,11 @@ export default async function tagRoutes(fastify) {
         add('artist_id', artistId);
         add('track_artist_credit', updates.artist.trim() || null);
       }
+      add('album_artist_credit', metadata.common.albumartist || null);
       if (updates.album !== undefined) {
-        const albumId = await ensureAlbum(client, updates.album, artistId, updates.year, updates.genre);
+        const albumArtistId = metadata.common.albumartist
+          ? await ensureArtist(client, metadata.common.albumartist) : artistId;
+        const albumId = await ensureAlbum(client, updates.album, albumArtistId, updates.year, updates.genre);
         add('album_id', albumId);
       }
       const { mtime, size } = await fs.stat(staged);
@@ -132,6 +136,9 @@ export default async function tagRoutes(fastify) {
           req.params.id,
         ]
       );
+      const { rows: updated } = await client.query('SELECT album_id FROM tracks WHERE id = $1', [req.params.id]);
+      await refreshAlbumsMetadata(client, new Set([rows[0].album_id, updated[0]?.album_id]), { transactionActive: true });
+      await client.query('DELETE FROM track_lyrics WHERE track_id = $1', [req.params.id]);
       await client.query('COMMIT');
       committed = true;
       return { success: true };

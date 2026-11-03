@@ -314,6 +314,7 @@ function MainLayout({ user, onLogout }) {
             )}
             {route.view === 'album' && activeAlbum && (
               <AlbumDetailView
+                key={scanVersion}
                 album={activeAlbum}
                 onBack={handleBack}
                 user={user}
@@ -331,6 +332,7 @@ function MainLayout({ user, onLogout }) {
             )}
             {route.view === 'artist' && activeArtist && (
               <ArtistDetailView
+                key={scanVersion}
                 artist={activeArtist}
                 onBack={handleBack}
                 user={user}
@@ -359,6 +361,7 @@ function MainLayout({ user, onLogout }) {
             )}
             {route.view === 'playlist' && activePlaylist && (
               <PlaylistDetailView
+                key={scanVersion}
                 playlist={activePlaylist}
                 onBack={handleBack}
                 user={user}
@@ -369,11 +372,12 @@ function MainLayout({ user, onLogout }) {
               />
             )}
             {route.view === 'history' && (
-              <HistoryView user={user} onGoToAlbum={handleAlbumClick} onGoToArtist={handleArtistClick}
+              <HistoryView key={scanVersion} user={user} onGoToAlbum={handleAlbumClick} onGoToArtist={handleArtistClick}
                 onEditTags={setEditingTrack} onAddToPlaylist={setAddToPlaylistTrack} />
             )}
             {route.view === 'favorites' && (
               <FavoritesView
+                key={scanVersion}
                 user={user}
                 onAlbumClick={handleAlbumClick}
                 onGoToArtist={handleArtistClick}

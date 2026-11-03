@@ -347,7 +347,7 @@ export default async function trackRoutes(fastify) {
               (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
               (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
-       WHERE a.name ILIKE $1
+       WHERE LOWER(a.name) = LOWER($1)
        LIMIT 1`,
       [trimmed]
     );
@@ -365,10 +365,10 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE ((a.name ILIKE $1) OR (t.track_artist_credit ILIKE $2))
+       WHERE (LOWER(a.name) = LOWER($1) OR EXISTS (SELECT 1 FROM regexp_split_to_table(t.track_artist_credit, '[,;]|[[:space:]]+(feat[.]?|ft[.]?|featuring|vs[.]?)[[:space:]]+', 'i') AS credit WHERE LOWER(BTRIM(credit)) = LOWER($2)))
          AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-      [trimmed, `%${trimmed}%`]
+      [trimmed, trimmed]
     );
 
     if (!artist && tracksRes.rows.length === 0) {
@@ -377,7 +377,7 @@ export default async function trackRoutes(fastify) {
 
     if (!artist) {
       const ins = await query(
-        `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id, name`,
+        `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name RETURNING id, name`,
         [trimmed]
       );
       artist = {
@@ -441,10 +441,10 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE (t.artist_id = $1 OR t.track_artist_credit ILIKE $2)
+       WHERE (t.artist_id = $1 OR EXISTS (SELECT 1 FROM regexp_split_to_table(t.track_artist_credit, '[,;]|[[:space:]]+(feat[.]?|ft[.]?|featuring|vs[.]?)[[:space:]]+', 'i') AS credit WHERE LOWER(BTRIM(credit)) = LOWER($2)))
          AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
-      [artistId, `%${artist.name}%`]
+      [artistId, artist.name]
     );
 
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
@@ -835,24 +835,20 @@ export default async function trackRoutes(fastify) {
       return reply.status(400).send({ error: 'Invalid track ID' });
     }
     const userId = req.user?.id || null;
+    const eventId = req.body?.eventId ?? null;
+    if (eventId !== null && (typeof eventId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(eventId))) {
+      return reply.status(400).send({ error: 'Invalid playback event ID' });
+    }
 
     try {
       await transaction(async (client) => {
-        const updateRes = await client.query(
-          'UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1 RETURNING id',
-          [trackId]
-        );
-        if (updateRes.rowCount === 0) {
-          const err = new Error('Track not found');
-          err.statusCode = 404;
-          throw err;
-        }
-        if (userId) {
-          await client.query(
-            'INSERT INTO play_history (user_id, track_id, played_at) VALUES ($1, $2, NOW())',
-            [userId, trackId]
-          );
-        }
+        const { rows } = await client.query('SELECT id FROM tracks WHERE id = $1 FOR KEY SHARE', [trackId]);
+        if (!rows.length) throw Object.assign(new Error('Track not found'), { statusCode: 404 });
+        const inserted = await client.query(
+          `INSERT INTO play_history (user_id, track_id, played_at, event_id) VALUES ($1, $2, NOW(), $3)
+           ON CONFLICT (user_id, event_id) DO NOTHING RETURNING id`, [userId, trackId, eventId]);
+        if (inserted.rowCount) await client.query(
+          'UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1', [trackId]);
       });
       return { success: true };
     } catch (err) {
@@ -874,27 +870,17 @@ export default async function trackRoutes(fastify) {
     let trackArtist = typeof artist === 'string' ? artist.slice(0, 200) : null;
     let trackDuration = duration ? parseFloat(duration) : null;
     let trackAlbum = null;
+    let trackLyricsKey = null;
 
     // 1. If trackId provided, check DB cache
     let cachedPlain = null;
     if (trackId) {
-      try {
-        const cached = await query(
-          'SELECT synced, type, lyrics, source FROM track_lyrics WHERE track_id = $1',
-          [trackId]
-        );
-        if (cached.rows[0]) {
-          if (cached.rows[0].synced) {
-            return cached.rows[0];
-          }
-          cachedPlain = cached.rows[0];
-        }
-      } catch {}
-
       // Get track metadata from DB
       const { rows } = await query(
         `SELECT t.file_path, t.title, t.file_name, t.duration,
-                a.name as artist, al.title as album
+                COALESCE(t.track_artist_credit, a.name) as artist, al.title as album,
+                md5(jsonb_build_array(t.file_path,t.title,t.file_name,t.duration,
+                  COALESCE(t.track_artist_credit,a.name),al.title,t.content_hash)::text) AS lyrics_key
          FROM tracks t
          LEFT JOIN artists a ON t.artist_id = a.id
          LEFT JOIN albums al ON t.album_id = al.id
@@ -911,6 +897,12 @@ export default async function trackRoutes(fastify) {
       trackArtist = rows[0].artist || null;
       trackDuration = rows[0].duration || null;
       trackAlbum = rows[0].album || null;
+      trackLyricsKey = rows[0].lyrics_key;
+      const cached = await query(
+        'SELECT synced, type, lyrics, source FROM track_lyrics WHERE track_id = $1 AND metadata_key = $2',
+        [trackId, trackLyricsKey]);
+      if (cached.rows[0]?.synced) return cached.rows[0];
+      cachedPlain = cached.rows[0] || null;
     }
 
     const cleanTitle = cleanTrackTitle(trackTitle);
@@ -921,7 +913,7 @@ export default async function trackRoutes(fastify) {
       localResult = readLocalLyrics(trackPath, cleanTitle);
       if (localResult && localResult.synced) {
         if (trackId) {
-          await saveLyricsToDb(trackId, localResult);
+          await saveLyricsToDb(trackId, localResult, trackLyricsKey);
         }
         return localResult;
       }
@@ -933,7 +925,7 @@ export default async function trackRoutes(fastify) {
       embeddedResult = await readEmbeddedLyrics(trackPath);
       if (embeddedResult && embeddedResult.synced) {
         if (trackId) {
-          await saveLyricsToDb(trackId, embeddedResult);
+          await saveLyricsToDb(trackId, embeddedResult, trackLyricsKey);
         }
         return embeddedResult;
       }
@@ -945,7 +937,7 @@ export default async function trackRoutes(fastify) {
         title: trackTitle, artist: trackArtist, album: trackAlbum, duration: trackDuration,
       });
       if (redResult) {
-        if (trackId) await saveLyricsToDb(trackId, redResult);
+        if (trackId) await saveLyricsToDb(trackId, redResult, trackLyricsKey);
         return redResult;
       }
     }
@@ -962,7 +954,7 @@ export default async function trackRoutes(fastify) {
 
       if (lrclibResult && lrclibResult.synced) {
         if (trackId) {
-          await saveLyricsToDb(trackId, lrclibResult);
+          await saveLyricsToDb(trackId, lrclibResult, trackLyricsKey);
         }
         return lrclibResult;
       }
@@ -972,7 +964,7 @@ export default async function trackRoutes(fastify) {
     const bestPlain = embeddedResult || localResult || lrclibResult || cachedPlain;
     if (bestPlain) {
       if (trackId) {
-        await saveLyricsToDb(trackId, bestPlain);
+        await saveLyricsToDb(trackId, bestPlain, trackLyricsKey);
       }
       return bestPlain;
     }
@@ -980,18 +972,19 @@ export default async function trackRoutes(fastify) {
     return reply.status(404).send({ error: 'Lyrics not found' });
   });
 
-  async function saveLyricsToDb(trackId, result) {
+  async function saveLyricsToDb(trackId, result, metadataKey) {
     try {
       await query(
-        `INSERT INTO track_lyrics (track_id, synced, type, lyrics, source, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+        `INSERT INTO track_lyrics (track_id, synced, type, lyrics, source, metadata_key, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
          ON CONFLICT (track_id) DO UPDATE SET
            synced = EXCLUDED.synced,
            type = EXCLUDED.type,
            lyrics = EXCLUDED.lyrics,
            source = EXCLUDED.source,
+           metadata_key = EXCLUDED.metadata_key,
            updated_at = NOW()`,
-        [trackId, !!result.synced, result.type || 'plain', result.lyrics, result.source || 'lrclib']
+        [trackId, !!result.synced, result.type || 'plain', result.lyrics, result.source || 'lrclib', metadataKey]
       );
     } catch {}
   }

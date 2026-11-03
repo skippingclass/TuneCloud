@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { api } from '../api.js';
-import { shuffleOrder, readPlaybackSession } from '../utils/playback.js';
+import { api, onTrackUpdated } from '../api.js';
+import { shuffleOrder, readPlaybackSession, isPlayableTrack, playbackEventId } from '../utils/playback.js';
 import { toast } from '../components/layout/Toast.jsx';
 
 const VOL_KEY = 'tunecloud-volume';
@@ -40,7 +40,17 @@ export function PlayerProvider({ children, userId = 'local' }) {
   const [muted, setMuted] = useState(false);
   const [playbackKey, setPlaybackKey] = useState(0);
   const scrobbledRef = useRef(saved?.scrobbled || false);
+  const listeningRef = useRef(null);
+  if (!listeningRef.current) listeningRef.current = { seconds: saved?.listenedSeconds || 0, eventId: saved?.eventId || playbackEventId(), pending: false, retryAfter: 0, sample: null };
+  const resetListening = useCallback(() => {
+    scrobbledRef.current = false;
+    listeningRef.current = { seconds: 0, eventId: playbackEventId(), pending: false, retryAfter: 0, sample: null };
+  }, []);
   const playRequestIdRef = useRef(0);
+
+  useEffect(() => onTrackUpdated(id => {
+    api.track(id).then(updated => setQueue(previous => previous.map(track => String(track.id) === String(id) ? { ...track, ...updated } : track))).catch(() => {});
+  }), []);
 
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
 
@@ -174,7 +184,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     if (!Number.isInteger(idx) || idx < 0 || idx >= queue.length || queue[idx].available === false) return;
     restoringRef.current = false;
     pendingSeekRef.current = null;
-    scrobbledRef.current = false;
+    resetListening();
     setCurrentTime(0);
     setQueueIndex(idx);
     setPlaybackKey((k) => k + 1);
@@ -185,7 +195,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     if (idx >= 0) {
       restoringRef.current = false;
       pendingSeekRef.current = null;
-      scrobbledRef.current = false;
+      resetListening();
       setCurrentTime(0);
       setQueueIndex(idx);
       setPlaybackKey((k) => k + 1);
@@ -197,7 +207,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     if (idx >= 0) {
       restoringRef.current = false;
       pendingSeekRef.current = null;
-      scrobbledRef.current = false;
+      resetListening();
       setCurrentTime(0);
       setQueueIndex(idx);
       setPlaybackKey((k) => k + 1);
@@ -206,6 +216,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
 
   const seek = useCallback((time) => {
     const el = audioRef.current;
+    listeningRef.current.sample = null;
     const safeTime = Number.isFinite(time) ? Math.max(0, time) : 0;
     if (el?.readyState === 0) {
       pendingSeekRef.current = safeTime;
@@ -244,7 +255,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     setIsNowPlayingOpen(false);
     setIsLyricsOpen(false);
     playRequestIdRef.current += 1;
-    scrobbledRef.current = false;
+    resetListening();
     setQueue([]);
     setQueueIndex(-1);
     setIsPlaying(false);
@@ -313,18 +324,18 @@ export function PlayerProvider({ children, userId = 'local' }) {
   const playTrack = useCallback(
     (track, trackList = null) => {
       if (!track) return;
-      if (track.available === false) {
+      if (!isPlayableTrack(track)) {
         toast('This track is unavailable (file missing on disk)', 'warning');
         return;
       }
-      const matchesEntry = (t) => t.id === track.id && (track.history_id == null || t.history_id === track.history_id);
+      const matchesEntry = (t) => t.id === track.id && (track.history_id == null || t.history_id === track.history_id) && (track.playlist_track_id == null || t.playlist_track_id === track.playlist_track_id);
       const rawList = trackList || (queue.some(matchesEntry) ? queue : [track]);
-      const list = rawList.filter((t) => t.available !== false);
+      const list = rawList.filter(isPlayableTrack);
       if (list.length === 0) return;
       const idx = list.findIndex(matchesEntry);
       const targetIdx = idx >= 0 ? idx : 0;
       const activeTrack = list[targetIdx];
-      const isSameTrack = currentTrack?.id != null && currentTrack.id === activeTrack.id;
+      const isSameTrack = currentTrack?.id != null && currentTrack.id === activeTrack.id && matchesEntry(currentTrack);
 
       restoringRef.current = false;
       pendingSeekRef.current = null;
@@ -340,7 +351,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
         return;
       }
 
-      scrobbledRef.current = false;
+      resetListening();
       setCurrentTime(0);
       setDuration(Number.isFinite(activeTrack.duration) && activeTrack.duration > 0 ? activeTrack.duration : 0);
       setPlaybackKey((k) => k + 1);
@@ -362,7 +373,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
 
   const addToQueue = useCallback(
     (track, nextUp = false) => {
-      if (!track || track.available === false) return;
+      if (!isPlayableTrack(track)) return;
       const insertAt = nextUp && queueIndex >= 0 ? queueIndex + 1 : queue.length;
       setQueue((prev) => [...prev.slice(0, insertAt), track, ...prev.slice(insertAt)]);
       setOrder((prev) => {
@@ -371,7 +382,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
         return [...mapped.slice(0, position), insertAt, ...mapped.slice(position)];
       });
       if (queueIndex === -1) {
-        scrobbledRef.current = false;
+        resetListening();
         setCurrentTime(0);
         setDuration(Number.isFinite(track?.duration) && track.duration > 0 ? track.duration : 0);
         setQueueIndex(0);
@@ -382,7 +393,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
   );
 
   const addManyToQueue = useCallback((tracks) => {
-    const available = tracks.filter((track) => track?.id != null && track.available !== false);
+    const available = tracks.filter(isPlayableTrack);
     if (!available.length) return;
     setQueue((prev) => [...prev, ...available]);
     setOrder((prev) => [...prev, ...available.map((_, i) => queue.length + i)]);
@@ -402,7 +413,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     if (index === queueIndex) {
       restoringRef.current = false;
       pendingSeekRef.current = null;
-      scrobbledRef.current = false;
+      resetListening();
       setCurrentTime(0);
       const nextIndex = pickNext();
       const previousIndex = pickPrev();
@@ -449,7 +460,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
 
   // Keep writes bounded during playback, and flush the exact position on pause/exit.
   const sessionRef = useRef(null);
-  sessionRef.current = { queue, queueIndex, currentTime, repeat, shuffle, order, scrobbled: scrobbledRef.current };
+  sessionRef.current = { queue, queueIndex, currentTime, repeat, shuffle, order, scrobbled: scrobbledRef.current, listenedSeconds: listeningRef.current.seconds, eventId: listeningRef.current.eventId };
   const persist = useCallback(() => {
     try {
       const state = sessionRef.current;
@@ -478,7 +489,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
   // Start playback and reset per-play state when active track or playbackKey changes
   useEffect(() => {
     if (!currentTrack) {
-      scrobbledRef.current = false;
+      resetListening();
       setCurrentTime(0);
       setDuration(0);
       setIsPlaying(false);
@@ -489,7 +500,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
       setDuration(currentTrack.duration || 0);
       return;
     }
-    scrobbledRef.current = false;
+    resetListening();
     setCurrentTime(0);
     setDuration(
       Number.isFinite(currentTrack.duration) && currentTrack.duration > 0
@@ -546,12 +557,27 @@ export function PlayerProvider({ children, userId = 'local' }) {
         setDuration(effDur);
       }
       syncMediaSessionPosition();
-      // Scrobble after 50% or 30s
-      if (!scrobbledRef.current && currentTrack?.id && effDur > 0) {
-        if (cur >= Math.min(effDur * 0.5, 30)) {
+      // Count only media progress backed by elapsed playback time, excluding seeks.
+      const listening = listeningRef.current;
+      const now = performance.now();
+      if (!el.paused && !el.seeking && listening.sample) {
+        const delta = cur - listening.sample.position;
+        const elapsed = (now - listening.sample.wall) / 1000 * (el.playbackRate || 1);
+        if (delta > 0) listening.seconds += Math.min(delta, Math.max(0, elapsed));
+      }
+      listening.sample = { position: cur, wall: now };
+      if (!scrobbledRef.current && !listening.pending && currentTrack?.id && effDur > 0 &&
+          listening.seconds >= Math.min(effDur * 0.5, 30) && Date.now() >= listening.retryAfter) {
+        listening.pending = true;
+        api.scrobble(currentTrack.id, listening.eventId).then(() => {
+          if (listeningRef.current !== listening) return;
           scrobbledRef.current = true;
-          api.scrobble(currentTrack.id).catch(() => {});
-        }
+          listening.pending = false;
+          persist();
+        }).catch(() => {
+          listening.pending = false;
+          listening.retryAfter = Date.now() + 5000;
+        });
       }
     };
 
@@ -567,7 +593,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     };
 
     const onEnd = () => {
-      scrobbledRef.current = false;
+      resetListening();
       if (sleepUntil === 'track') {
         setSleepUntil(null);
         setIsPlaying(false);
@@ -594,8 +620,10 @@ export function PlayerProvider({ children, userId = 'local' }) {
       }
     };
 
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onPlay = () => { listeningRef.current.sample = { position: el.currentTime || 0, wall: performance.now() }; setIsPlaying(true); };
+    const onPause = () => { onTime(); listeningRef.current.sample = null; setIsPlaying(false); };
+    const onSeeking = () => { listeningRef.current.sample = null; };
+    const onSeeked = () => { listeningRef.current.sample = { position: el.currentTime || 0, wall: performance.now() }; };
     const onError = () => {
       playRequestIdRef.current += 1;
       setIsPlaying(false);
@@ -603,6 +631,8 @@ export function PlayerProvider({ children, userId = 'local' }) {
       toast(`Playback error: unable to play "${title}"`, 'error');
     };
 
+    el.addEventListener('seeking', onSeeking);
+    el.addEventListener('seeked', onSeeked);
     el.addEventListener('timeupdate', onTime);
     el.addEventListener('loadedmetadata', onMeta);
     el.addEventListener('durationchange', onMeta);
@@ -611,8 +641,11 @@ export function PlayerProvider({ children, userId = 'local' }) {
     el.addEventListener('pause', onPause);
     el.addEventListener('error', onError);
     if (el.readyState >= 1) onMeta();
+    if (!el.paused) onSeeked();
 
     return () => {
+      el.removeEventListener('seeking', onSeeking);
+      el.removeEventListener('seeked', onSeeked);
       el.removeEventListener('timeupdate', onTime);
       el.removeEventListener('loadedmetadata', onMeta);
       el.removeEventListener('durationchange', onMeta);

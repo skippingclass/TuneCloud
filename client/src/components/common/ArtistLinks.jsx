@@ -1,7 +1,7 @@
 export function parseArtistTokens(artistStr) {
   if (!artistStr || typeof artistStr !== 'string') return [];
-  // Matches delimiters while capturing them: comma, ampersand, feat, ft, featuring, vs, slash
-  const regex = /(\s*(?:,|&|\/|\bfeat\.?|\bft\.?|\bfeaturing\b|\bvs\.?)\s*)/gi;
+  // Matches delimiters while capturing them: explicit participant separators; ampersands and slashes may be part of a band name
+  const regex = /(\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+)/gi;
   const parts = artistStr.split(regex);
   return parts;
 }

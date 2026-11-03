@@ -80,7 +80,21 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TI
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.body) return response; // Also supports lightweight test transports.
+    const limit = MAX_IMAGE_SIZE;
+    if (Number(response.headers.get('content-length')) > limit) {
+      controller.abort();
+      throw new Error('Response too large');
+    }
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body) {
+      size += chunk.length;
+      if (size > limit) { controller.abort(); throw new Error('Response too large'); }
+      chunks.push(Buffer.from(chunk));
+    }
+    return new Response(Buffer.concat(chunks), { status: response.status, statusText: response.statusText, headers: response.headers });
   } finally {
     clearTimeout(timer);
   }
@@ -88,7 +102,7 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TI
 
 function getPrimaryArtistName(name) {
   if (!name) return '';
-  const parts = name.split(/[,&/]|(?:\s+feat\.?|\s+ft\.?|\s+featuring)\s+/i);
+  const parts = name.split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i);
   return (parts[0] || name).trim();
 }
 
