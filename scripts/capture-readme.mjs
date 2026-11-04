@@ -4,17 +4,25 @@
  * Setup: npm install --no-save --package-lock=false playwright-core
  * Provide TUNECLOUD_USERNAME and TUNECLOUD_PASSWORD through your environment.
  * Optional: TUNECLOUD_URL, CHROMIUM_PATH, PLAYWRIGHT_MODULE_PATH, SCREENSHOT_DIR,
- * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Barry Dylan), CAPTURE_ALBUM_QUERY (default: Sqwore),
+ * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Время на веселье), CAPTURE_LYRICS_ARTIST,
+ * CAPTURE_ALBUM_QUERY (default: Sqwore),
  * CAPTURE_DETAIL_QUERY (default: Draining Love Story), CAPTURE_SKIP_ALBUMS=1, CAPTURE_ONLY_ALBUMS=1.
+ * CAPTURE_DEMOS=1 also refreshes GIF/MP4/WebM demos (requires ffmpeg).
+ * CAPTURE_ONLY_DEMOS=1 refreshes only those demos, leaving screenshots unchanged.
+ * CAPTURE_CLEAR_LYRICS=1 omits the capture-only blur for user-supplied lyrics.
  * Run: node scripts/capture-readme.mjs
  *
  * No credentials, tokens, browser profiles, or storage-state files are persisted.
+ * Desktop captures are 1920x1080 with no cover hover; mobile captures are 390x844.
  * Screenshots hide the account identity. Surrounding lyric text is blurred;
  * only a short active line is retained in the lyrics capture.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 if (process.argv.includes("--help")) {
   console.log(
@@ -97,13 +105,19 @@ try {
       ]);
     });
     await page.locator('.fixed.top-5.right-5').waitFor({ state: 'hidden', timeout: 6000 });
-    const viewport = page.viewportSize();
-    await page.mouse.move(viewport.width - 10, viewport.height - 10);
+    await page.evaluate(() => document.activeElement?.blur?.());
+    await page.mouse.move(0, 0);
     await page.waitForTimeout(350);
   }
-  async function shot(name, extraStyle = "", hoverCover = false) {
+  async function shot(name, extraStyle = "") {
+    if (process.env.CAPTURE_ONLY_DEMOS === "1") return;
     await settle();
-    if (hoverCover) { await page.locator(".full-player-cover").hover(); await page.waitForTimeout(350); }
+    const mobile = /^(07_|10_)/.test(name);
+    const expected = mobile ? { width: 390, height: 844 } : { width: 1920, height: 1080 };
+    const actual = page.viewportSize();
+    if (actual.width !== expected.width || actual.height !== expected.height) throw new Error(`Unexpected capture dimensions for ${name}`);
+    const overlay = page.locator('.full-player-cover-controls');
+    if (await overlay.count() && await overlay.evaluate(el => Number(getComputedStyle(el).opacity)) > 0.01) throw new Error('Artwork hover controls must be hidden in gallery captures');
     await page.screenshot({
       path: path.join(output, name),
       fullPage: false,
@@ -116,6 +130,33 @@ try {
       waitUntil: "domcontentloaded",
     });
     await page.locator(ready).first().waitFor();
+  }
+
+  async function demo(name, steps, extraStyle = "") {
+    if (process.env.CAPTURE_DEMOS !== "1" && process.env.CAPTURE_ONLY_DEMOS !== "1") return;
+    await settle();
+    const frames = await fs.mkdtemp(path.join(os.tmpdir(), "tunecloud-demo-"));
+    const style = await page.addStyleTag({ content: identityStyle + extraStyle });
+    const run = promisify(execFile);
+    let frame = 0;
+    try {
+      for (const { action, seconds } of steps) {
+        if (action) await action();
+        for (let index = 0; index < seconds * 10; index++) {
+          const started = Date.now();
+          await page.screenshot({ path: path.join(frames, `${String(frame++).padStart(4, "0")}.png`) });
+          await page.waitForTimeout(Math.max(0, 100 - (Date.now() - started)));
+        }
+      }
+      const input = ["-y", "-framerate", "10", "-i", path.join(frames, "%04d.png")];
+      await run("ffmpeg", [...input, "-vf", "split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=3", "-loop", "0", path.join(output, `${name}.gif`)]);
+      await run("ffmpeg", [...input, "-c:v", "libx264", "-crf", "22", "-preset", "fast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", path.join(output, `${name}.mp4`)]);
+      await run("ffmpeg", [...input, "-c:v", "libvpx-vp9", "-crf", "35", "-b:v", "0", "-cpu-used", "6", path.join(output, `${name}.webm`)]);
+      console.log(`Captured ${name} (1920x1080 GIF, MP4, WebM)`);
+    } finally {
+      await style.evaluate(element => element.remove());
+      await fs.rm(frames, { recursive: true, force: true });
+    }
   }
 
   async function captureAlbums() {
@@ -138,32 +179,34 @@ try {
     await captureAlbums();
   } else {
     // Find a real vocal track for the player, album, and lyric views.
-    const query = process.env.CAPTURE_LYRICS_QUERY || "Barry Dylan";
+    const query = process.env.CAPTURE_LYRICS_QUERY || "Время на веселье";
     const trackResult = await api(
       `/api/tracks?q=${encodeURIComponent(query)}&limit=10`,
     );
-    const track = trackResult.tracks?.find(
-      (track) => track.available !== false,
-    );
+    const candidates = trackResult.tracks?.filter(track => track.available !== false &&
+      (!process.env.CAPTURE_LYRICS_ARTIST || track.artist?.toLowerCase().includes(process.env.CAPTURE_LYRICS_ARTIST.toLowerCase())));
+    const track = candidates?.find(track => track.title.toLowerCase() === query.toLowerCase()) || candidates?.[0];
     if (!track?.album_id)
       throw new Error(
         "No available lyric capture track found; set CAPTURE_LYRICS_QUERY",
       );
+    console.log(`Capture track: ${track.artist} — ${track.title}`);
 
-    // Keep the home screen's real selection, switching only if its artwork is missing.
-    await settle();
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const ready = await page
-        .locator(".spotlight-art img")
-        .evaluateAll((images) =>
-          images.some((image) => image.complete && image.naturalWidth > 0),
-        );
-      if (ready) break;
-      await page
-        .getByRole("button", { name: "Switch spotlight album" })
-        .click();
+    async function prepareHome() {
+      const preferred = process.env.CAPTURE_DETAIL_QUERY || 'Draining Love Story';
+      const candidates = await api('/api/albums?limit=100');
+      const maximum = Math.min(candidates.albums?.length || 12, 100);
+      for (let attempt = 0; attempt < maximum; attempt++) {
+        const title = await page.locator('.spotlight-copy h1').textContent();
+        if (title.trim().toLowerCase() === preferred.toLowerCase()) break;
+        await page.getByRole('button', { name: 'Switch spotlight album', exact: true }).click();
+      }
       await settle();
+      await page.locator('.spotlight-art img').evaluate(image => {
+        if (!image.complete || !image.naturalWidth) throw new Error('Spotlight artwork failed to load');
+      });
     }
+    await prepareHome();
     await shot("01_home_hub.png");
 
     const detailQuery =
@@ -186,7 +229,8 @@ try {
       .locator("main table tbody tr")
       .filter({ has: page.getByText(track.title, { exact: true }) })
       .first();
-    await row.dblclick();
+    await row.hover();
+    await row.getByRole('button', { name: `Play ${track.title}`, exact: true }).click();
     await page.locator(".playback-bar").waitFor();
     await page.locator("audio").evaluate((audio) => audio.pause());
     // Fill the local playback queue with real tracks using the application's selection controls.
@@ -204,13 +248,13 @@ try {
     await page
       .getByRole("heading", { name: "On repeat", exact: true })
       .waitFor();
+    await prepareHome();
     await shot("02_floating_player.png");
 
     await page.getByRole('button', { name: 'Now playing', exact: true }).click();
     await page.locator('.now-playing-panel').waitFor();
     await page.locator('.np-lyrics-card .lyrics-content[aria-busy="false"]').waitFor({ timeout: 90000 });
-    await page.setViewportSize({ width: 1920, height: 1280 });
-    await shot('08_now_playing.png', '.np-lyrics-card .lyrics-line p, .np-lyrics-card .lyrics-plain { filter: blur(12px) !important; }');
+    await shot('08_now_playing.png', process.env.CAPTURE_CLEAR_LYRICS === '1' ? '' : '.np-lyrics-card .lyrics-line p, .np-lyrics-card .lyrics-plain { filter: blur(12px) !important; }');
     await page.getByRole('button', { name: 'Close now playing', exact: true }).click();
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.getByRole('button', { name: 'Queue', exact: true }).click();
@@ -218,7 +262,15 @@ try {
     await shot('09_queue.png');
     await page.getByRole('button', { name: 'Close queue', exact: true }).click();
 
-    if (process.env.CAPTURE_SKIP_ALBUMS !== "1") await captureAlbums();
+    await demo('home_demo', [
+      { seconds: 2 },
+      { action: () => page.getByRole('button', { name: 'Queue', exact: true }).click(), seconds: 3 },
+      { action: () => page.locator('main').evaluate(el => el.scrollTo({ top: 340, behavior: 'smooth' })), seconds: 2 },
+      { action: () => page.getByRole('button', { name: 'Close queue', exact: true }).click(), seconds: 2 },
+      { action: () => page.locator('main').evaluate(el => el.scrollTo({ top: 0, behavior: 'smooth' })), seconds: 2 },
+    ]);
+
+    if (process.env.CAPTURE_SKIP_ALBUMS !== "1" && process.env.CAPTURE_ONLY_DEMOS !== "1") await captureAlbums();
 
     await page.getByRole('button', { name: 'Lyrics', exact: true }).click();
     await page
@@ -245,9 +297,13 @@ try {
     await page.locator('[aria-current="true"]').waitFor();
     await shot(
       "06_karaoke_lyrics.png",
-      ' .full-player-lyrics .lyrics-line:not([aria-current="true"]) p { filter: blur(12px) !important; }',
-      true,
+      process.env.CAPTURE_CLEAR_LYRICS === '1' ? '' : ' .full-player-lyrics .lyrics-line:not([aria-current="true"]) p { filter: blur(12px) !important; }',
     );
+    await demo('lyrics_demo', [
+      { seconds: 2 },
+      { action: () => page.locator('audio').evaluate(audio => audio.play()), seconds: 6 },
+      { action: () => page.locator('audio').evaluate(audio => audio.pause()), seconds: 2 },
+    ], process.env.CAPTURE_CLEAR_LYRICS === '1' ? '' : ` .full-player-lyrics .lyrics-line:not(:nth-child(${index + 1})) p { filter: blur(12px) !important; }`);
     await page.getByRole('button', { name: 'Close player view', exact: true }).click();
 
     await page
@@ -257,6 +313,7 @@ try {
     await page
       .getByRole("heading", { name: "On repeat", exact: true })
       .waitFor();
+    await prepareHome();
     await page.setViewportSize({ width: 390, height: 844 });
     await shot("07_mobile.png");
     await page.getByRole('button', { name: `Expand player: ${track.title}`, exact: true }).click();

@@ -18,7 +18,7 @@ A self-hosted music server with a React web player, a Subsonic-compatible API, a
 
 ## Screenshots
 
-The Mix interface with the music library from the [production instance](https://tune.realgeek.ru/). Select an image to open it at full resolution.
+The Mix interface with the music library from the [production instance](https://tune.realgeek.ru/). Desktop screenshots are captured at 1920 × 1080; mobile screenshots at 390 × 844. Select an image to open it at full resolution.
 
 <table>
   <tr>
@@ -43,8 +43,8 @@ The Mix interface with the music library from the [production instance](https://
   </tr>
   <tr>
     <td width="50%">
-      <a href="pictures/08_now_playing.png"><img src="pictures/08_now_playing.png" alt="Desktop now-playing panel with artwork and the next track" width="100%" /></a>
-      <p><strong>Now playing</strong><br />A desktop side panel with artwork, lyrics access, and the next track.</p>
+      <a href="pictures/08_now_playing.png"><img src="pictures/08_now_playing.png" alt="Desktop now-playing panel with artwork and expandable lyrics" width="100%" /></a>
+      <p><strong>Now playing</strong><br />Artwork and track details, expandable lyrics, and quick access to the queue.</p>
     </td>
     <td width="50%">
       <a href="pictures/09_queue.png"><img src="pictures/09_queue.png" alt="Playback queue with the current track and upcoming songs" width="100%" /></a>
@@ -56,12 +56,29 @@ The Mix interface with the music library from the [production instance](https://
 <details>
 <summary>Lyrics and mobile views</summary>
 
-<p><strong>Line-synchronized lyrics</strong> — artwork colors, glass controls inside the cover, and the lyrics source in the corner. Surrounding lyric text is blurred in the capture.</p>
+<p><strong>Line-synchronized lyrics</strong> — a wider lyrics column, artwork colors, and the source in the corner. Playback controls appear over the cover on hover.</p>
 <a href="pictures/06_karaoke_lyrics.png"><img src="pictures/06_karaoke_lyrics.png" alt="Lyrics screen with a highlighted line, cover artwork, and playback controls" width="100%" /></a>
 
 <p><strong>Mobile home and player</strong> — compact album spotlight and a full player with large artwork.</p>
 <a href="pictures/07_mobile.png"><img src="pictures/07_mobile.png" alt="Mobile home with a compact album spotlight and mini player" width="320" /></a>
 <a href="pictures/10_mobile_now_playing.png"><img src="pictures/10_mobile_now_playing.png" alt="Mobile now-playing screen with large artwork and playback controls" width="320" /></a>
+
+</details>
+
+<details>
+<summary>Interface demos · 1920 × 1080</summary>
+
+**Home and playback queue** — opening the queue wraps album cards into fewer columns while preserving their size.
+
+![Home and queue demo](pictures/home_demo.gif)
+
+[MP4](pictures/home_demo.mp4) · [WebM](pictures/home_demo.webm)
+
+**Synchronized lyrics** — automatic line highlighting alongside the artwork and its background colors.
+
+![Synchronized lyrics demo](pictures/lyrics_demo.gif)
+
+[MP4](pictures/lyrics_demo.mp4) · [WebM](pictures/lyrics_demo.webm)
 
 </details>
 
@@ -182,6 +199,9 @@ Database integration tests require `TEST_DATABASE_URL` pointing to a separate te
 ### Refreshing screenshots
 
 The capture script uses headless Chromium against a running instance and defaults to the Midnight theme. It captures the home, player, album library, album detail, lyrics, desktop side panels, and mobile layouts. Credentials are read from `TUNECLOUD_USERNAME` and `TUNECLOUD_PASSWORD`; they are never written to the script, screenshots, or browser state files. See [scripts/capture-readme.mjs](scripts/capture-readme.mjs) for setup and capture options.
+
+Set `CAPTURE_DEMOS=1` to also refresh the 1080p GIF, MP4, and WebM demos. This option requires `ffmpeg`.
+Use `CAPTURE_ONLY_DEMOS=1` to update the animations without changing the screenshots. The default demo track is «Время на веселье»; use `CAPTURE_LYRICS_QUERY` and `CAPTURE_LYRICS_ARTIST` to select a different track.
 
 ## Credits and license
 
