@@ -4,7 +4,7 @@
  * Setup: npm install --no-save --package-lock=false playwright-core
  * Provide TUNECLOUD_USERNAME and TUNECLOUD_PASSWORD through your environment.
  * Optional: TUNECLOUD_URL, CHROMIUM_PATH, PLAYWRIGHT_MODULE_PATH, SCREENSHOT_DIR,
- * CAPTURE_LYRICS_QUERY (default: Barry Dylan), CAPTURE_ALBUM_QUERY (default: Sqwore),
+ * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Barry Dylan), CAPTURE_ALBUM_QUERY (default: Sqwore),
  * CAPTURE_DETAIL_QUERY (default: Draining Love Story), CAPTURE_SKIP_ALBUMS=1, CAPTURE_ONLY_ALBUMS=1.
  * Run: node scripts/capture-readme.mjs
  *
@@ -49,10 +49,10 @@ try {
     reducedMotion: "reduce",
   });
   page.setDefaultTimeout(30000);
-  await page.addInitScript(() => {
-    localStorage.setItem("tunecloud-theme", "peach");
+  await page.addInitScript((theme) => {
+    localStorage.setItem("tunecloud-theme", theme);
     localStorage.setItem("tunecloud_albums_density", "standard");
-  });
+  }, process.env.TUNECLOUD_THEME || "oled");
   await page.goto(base.href, { waitUntil: "domcontentloaded" });
   await page
     .getByPlaceholder("Enter your username")
@@ -75,6 +75,10 @@ try {
       return response.json();
     }, route);
   }
+  const account = await api('/api/auth/me');
+  if (account.user?.username !== process.env.TUNECLOUD_USERNAME) throw new Error('Capture account verification failed');
+  console.log('Authenticated account verified');
+
   async function settle() {
     await page.evaluate(async () => {
       await document.fonts.ready;
@@ -92,11 +96,14 @@ try {
         new Promise((resolve) => setTimeout(resolve, 12000)),
       ]);
     });
-    await page.mouse.move(1910, 1070);
+    await page.locator('.fixed.top-5.right-5').waitFor({ state: 'hidden', timeout: 6000 });
+    const viewport = page.viewportSize();
+    await page.mouse.move(viewport.width - 10, viewport.height - 10);
     await page.waitForTimeout(350);
   }
-  async function shot(name, extraStyle = "") {
+  async function shot(name, extraStyle = "", hoverCover = false) {
     await settle();
+    if (hoverCover) { await page.locator(".full-player-cover").hover(); await page.waitForTimeout(350); }
     await page.screenshot({
       path: path.join(output, name),
       fullPage: false,
@@ -180,8 +187,14 @@ try {
       .filter({ has: page.getByText(track.title, { exact: true }) })
       .first();
     await row.dblclick();
-    await page.locator(".tune-player").waitFor();
+    await page.locator(".playback-bar").waitFor();
     await page.locator("audio").evaluate((audio) => audio.pause());
+    // Fill the local playback queue with real tracks using the application's selection controls.
+    await go(`/album/${detailAlbum?.id || track.album_id}`, 'main table tbody tr');
+    await page.getByRole('button', { name: 'Select tracks', exact: true }).click();
+    const selections = page.locator('main table tbody input[type="checkbox"]');
+    for (let index = 0; index < Math.min(await selections.count(), 6); index++) await selections.nth(index).check();
+    await page.locator('main').getByRole('button', { name: 'Queue', exact: true }).click();
 
     // Navigate inside the app so that the player and its queue are retained.
     await page
@@ -193,15 +206,27 @@ try {
       .waitFor();
     await shot("02_floating_player.png");
 
+    await page.getByRole('button', { name: 'Now playing', exact: true }).click();
+    await page.locator('.now-playing-panel').waitFor();
+    await page.locator('.np-lyrics-card .lyrics-content[aria-busy="false"]').waitFor({ timeout: 90000 });
+    await page.setViewportSize({ width: 1920, height: 1280 });
+    await shot('08_now_playing.png', '.np-lyrics-card .lyrics-line p, .np-lyrics-card .lyrics-plain { filter: blur(12px) !important; }');
+    await page.getByRole('button', { name: 'Close now playing', exact: true }).click();
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.getByRole('button', { name: 'Queue', exact: true }).click();
+    await page.locator('.queue-panel').waitFor();
+    await shot('09_queue.png');
+    await page.getByRole('button', { name: 'Close queue', exact: true }).click();
+
     if (process.env.CAPTURE_SKIP_ALBUMS !== "1") await captureAlbums();
 
-    await page.locator('.tune-player button[title="Lyrics"]').click();
+    await page.getByRole('button', { name: 'Lyrics', exact: true }).click();
     await page
-      .locator('[role="button"][tabindex="0"]')
+      .locator('.full-player-lyrics .lyrics-line')
       .first()
       .waitFor({ timeout: 90000 });
     const shortLine = page
-      .locator('[role="button"][tabindex="0"]')
+      .locator('.full-player-lyrics .lyrics-line')
       .filter({ has: page.locator("p") });
     const index = await shortLine.evaluateAll((lines) =>
       lines.findIndex((line) => {
@@ -220,9 +245,10 @@ try {
     await page.locator('[aria-current="true"]').waitFor();
     await shot(
       "06_karaoke_lyrics.png",
-      ' [role="button"][tabindex="0"]:not([aria-current="true"]) p { filter: blur(12px) !important; }',
+      ' .full-player-lyrics .lyrics-line:not([aria-current="true"]) p { filter: blur(12px) !important; }',
+      true,
     );
-    await page.getByTitle("Close (Esc)", { exact: true }).click();
+    await page.getByRole('button', { name: 'Close player view', exact: true }).click();
 
     await page
       .locator(".tune-sidebar button")
@@ -233,6 +259,9 @@ try {
       .waitFor();
     await page.setViewportSize({ width: 390, height: 844 });
     await shot("07_mobile.png");
+    await page.getByRole('button', { name: `Expand player: ${track.title}`, exact: true }).click();
+    await page.locator('.np-mobile').waitFor();
+    await shot('10_mobile_now_playing.png');
     console.log("Screenshots refreshed from the live application");
   }
 } finally {

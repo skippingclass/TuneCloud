@@ -9,7 +9,7 @@ A self-hosted music server with a React web player, a Subsonic-compatible API, a
 ## Features
 
 - **Your music, on your server.** Scan local folders, browse albums and artists, search the collection, and manage playlists and favorites.
-- **A web player built for listening.** A floating player, mobile now-playing screen, editable playback queue, sleep timer, cover viewer, and responsive layouts. Playback position and queue are restored on this browser, paused, separately for each account. The Mix design combines peach accents and glass surfaces with consistent spacing.
+- **A web player built for listening.** A floating player, mobile now-playing screen, editable playback queue, sleep timer, cover viewer, and responsive layouts. Playback position and queue are restored on this browser, paused, separately for each account. Midnight is the default theme, with additional color themes and subtle glass surfaces.
 - **Line-synchronized lyrics.** Highlighting, automatic scrolling, and click-to-seek from local files, embedded tags, [lrc.red](https://lrc.red), and [LRCLIB](https://lrclib.net). Word timestamps are reduced to line timing.
 - **Subsonic clients.** Native audio streaming with HTTP range requests, search, playlists, favorites, ratings, scrobbling, and saved queues. Streaming serves the original audio; server-side transcoding is not implemented.
 - **Incremental library scans.** Re-read changed files or run a full metadata scan. Missing files retain their IDs and playlist, favorite, and history references.
@@ -41,16 +41,27 @@ The Mix interface with the music library from the [production instance](https://
       <p><strong>Compact layout</strong><br />A denser grid for browsing larger libraries.</p>
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <a href="pictures/08_now_playing.png"><img src="pictures/08_now_playing.png" alt="Desktop now-playing panel with artwork and the next track" width="100%" /></a>
+      <p><strong>Now playing</strong><br />A desktop side panel with artwork, lyrics access, and the next track.</p>
+    </td>
+    <td width="50%">
+      <a href="pictures/09_queue.png"><img src="pictures/09_queue.png" alt="Playback queue with the current track and upcoming songs" width="100%" /></a>
+      <p><strong>Playback queue</strong><br />Upcoming songs, reordering, and saving the queue as a playlist.</p>
+    </td>
+  </tr>
 </table>
 
 <details>
 <summary>Lyrics and mobile views</summary>
 
-<p><strong>Line-synchronized lyrics</strong> — surrounding text is blurred in this capture to keep the focus on the active line.</p>
+<p><strong>Line-synchronized lyrics</strong> — artwork colors, glass controls inside the cover, and the lyrics source in the corner. Surrounding lyric text is blurred in the capture.</p>
 <a href="pictures/06_karaoke_lyrics.png"><img src="pictures/06_karaoke_lyrics.png" alt="Lyrics screen with a highlighted line, cover artwork, and playback controls" width="100%" /></a>
 
-<p><strong>Mobile player</strong></p>
-<a href="pictures/07_mobile.png"><img src="pictures/07_mobile.png" alt="TuneCloud on a phone-sized screen with accessible player controls" width="320" /></a>
+<p><strong>Mobile home and player</strong> — compact album spotlight and a full player with large artwork.</p>
+<a href="pictures/07_mobile.png"><img src="pictures/07_mobile.png" alt="Mobile home with a compact album spotlight and mini player" width="320" /></a>
+<a href="pictures/10_mobile_now_playing.png"><img src="pictures/10_mobile_now_playing.png" alt="Mobile now-playing screen with large artwork and playback controls" width="320" /></a>
 
 </details>
 
@@ -170,7 +181,7 @@ Database integration tests require `TEST_DATABASE_URL` pointing to a separate te
 
 ### Refreshing screenshots
 
-The capture script uses headless Chromium against a running instance. Credentials are read from `TUNECLOUD_USERNAME` and `TUNECLOUD_PASSWORD`; they are never written to the script, screenshots, or browser state files. See [scripts/capture-readme.mjs](scripts/capture-readme.mjs) for setup and capture options.
+The capture script uses headless Chromium against a running instance and defaults to the Midnight theme. It captures the home, player, album library, album detail, lyrics, desktop side panels, and mobile layouts. Credentials are read from `TUNECLOUD_USERNAME` and `TUNECLOUD_PASSWORD`; they are never written to the script, screenshots, or browser state files. See [scripts/capture-readme.mjs](scripts/capture-readme.mjs) for setup and capture options.
 
 ## Credits and license
 
