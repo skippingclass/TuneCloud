@@ -14,17 +14,17 @@ export function PlaybackArtwork() {
     : <Disc size={72} aria-hidden="true" />}</div>;
 }
 
-export function PlaybackIdentity({ onGoToArtist, onGoToAlbum, onNavigate }) {
+export function PlaybackIdentity({ onGoToArtist, onGoToAlbum, onNavigate, showFavorite = true }) {
   const { currentTrack: track } = usePlayer();
   const { isTrackStarred, toggleFavoriteTrack } = useFavorites();
   if (!track) return null;
   const starred = isTrackStarred(track.id);
   return <div className="np-identity">
     <div className="np-title-row"><h2>{track.title || track.file_name || track.fileName}</h2>
-      <button className={`player-icon np-favorite ${starred ? 'is-active' : ''}`} onClick={() => toggleFavoriteTrack(track.id)}
+      {showFavorite && <button className={`player-icon np-favorite ${starred ? 'is-active' : ''}`} onClick={() => toggleFavoriteTrack(track.id)}
         aria-label={starred ? 'Unlike track' : 'Like track'} aria-pressed={starred} title={starred ? 'Unlike' : 'Like'}>
         <Heart size={22} fill={starred ? 'currentColor' : 'none'} />
-      </button>
+      </button>}
     </div>
     <div className="np-artist"><ArtistLinks artist={track.artist} primaryArtistId={track.artist_id}
       onGoToArtist={onGoToArtist} onBeforeNavigate={onNavigate} /></div>

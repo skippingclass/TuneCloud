@@ -335,6 +335,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
             <h1>
               <button
                 className="text-left"
+                title={spotlightAlbum.title}
                 onClick={() => onAlbumClick?.(spotlightAlbum)}
               >
                 {spotlightAlbum.title}
@@ -358,10 +359,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
                 </>
               )}
               {spotlightAlbum.track_count > 0 && (
-                <>
-                  <span>·</span>
-                  <span>{spotlightAlbum.track_count} tracks</span>
-                </>
+                <span className="spotlight-track-count">· {spotlightAlbum.track_count} {spotlightAlbum.track_count === 1 ? 'track' : 'tracks'}</span>
               )}
               {spotlightAlbum.duration > 0 && (
                 <>
@@ -387,9 +385,10 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
               </button>
               <button
                 className="spotlight-link"
+                aria-label="View album"
                 onClick={() => onAlbumClick?.(spotlightAlbum)}
               >
-                View album
+                <span>View album</span>
                 <ArrowRight size={16} strokeWidth={1.5} />
               </button>
             </div>

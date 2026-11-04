@@ -4,9 +4,10 @@ import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useTrackLyrics } from '../../hooks/useTrackLyrics.js';
 import { activeLineIndex } from '../../utils/lyrics.js';
 
-export function LyricsContent({ enabled = true, compact = false }) {
+export function LyricsContent({ enabled = true, compact = false, result = null, showSource = true }) {
   const { currentTrack, currentTime, seek } = usePlayer();
-  const { loading, data, retry } = useTrackLyrics(currentTrack, enabled);
+  const ownResult = useTrackLyrics(currentTrack, enabled && !result);
+  const { loading, data, retry } = result || ownResult;
   const active = data?.synced ? activeLineIndex(data.lines, currentTime) : -1;
   const activeLine = useRef(null);
   const scroll = useRef(null);
@@ -34,11 +35,14 @@ export function LyricsContent({ enabled = true, compact = false }) {
             <p>{line.text || '♪'}</p>
           </div>) : <p className="lyrics-plain">{data.text}</p>}
         </div>
-        <div className="lyrics-source">
-          {data.source === 'lrc.red'
-            ? <a href="https://lrc.red" target="_blank" rel="noopener noreferrer">Lyrics via lrc.red</a>
-            : <span>{data.synced ? 'Synced lyrics' : 'Lyrics'} · {data.source}</span>}
-        </div>
+        {showSource && <div className="lyrics-source"><LyricsSource data={data} /></div>}
       </>}
   </div>;
+}
+
+export function LyricsSource({ data, loading = false }) {
+  if (loading || !data || data.notFound) return null;
+  return data.source === 'lrc.red'
+    ? <a href="https://lrc.red" target="_blank" rel="noopener noreferrer">Lyrics via lrc.red</a>
+    : <span>{data.synced ? 'synced via' : 'lyrics via'} {data.source || 'local'}</span>;
 }
