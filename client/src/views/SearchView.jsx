@@ -148,7 +148,7 @@ export function SearchView({
                 <Disc className="w-4 h-4 text-accent" />
                 <span>Albums ({results.albums.length})</span>
               </h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+              <div className="album-grid">
                 {results.albums.map((album) => (
                   <AlbumCard
                     key={album.id}

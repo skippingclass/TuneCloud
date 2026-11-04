@@ -1,5 +1,5 @@
 import { shuffled as shuffleTracks } from '../utils/playback.js';
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useLayoutEffect, useRef } from "react";
 import {
   Disc,
   Play,
@@ -33,6 +33,33 @@ function getSeededIndex(length, salt = "") {
     hash |= 0;
   }
   return Math.abs(hash) % length;
+}
+
+function AlbumShelf({ albums, minimum = 6, onAlbumClick, onArtistClick, onPlay }) {
+  const ref = useRef(null);
+  const [columns, setColumns] = useState(6);
+  useLayoutEffect(() => {
+    const shelf = ref.current;
+    const measure = () => {
+      const tracks = getComputedStyle(shelf).gridTemplateColumns.split(/\s+/);
+      setColumns(Math.max(1, tracks.filter(track => parseFloat(track) > 0).length));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(shelf);
+    return () => observer.disconnect();
+  }, []);
+  // Home shelves show complete rows; the full collection remains in the library.
+  const target = Math.ceil(minimum / columns) * columns;
+  const available = Math.min(albums.length, target);
+  const count = available >= columns ? Math.floor(available / columns) * columns : available;
+  return (
+    <div ref={ref} className="album-shelf">
+      {albums.slice(0, count).map(album => (
+        <AlbumCard key={album.id} album={album} onClick={onAlbumClick} onArtistClick={onArtistClick} onPlay={onPlay} />
+      ))}
+    </div>
+  );
 }
 
 export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
@@ -192,13 +219,9 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
   // 3. Jump back in (Strictly by last_played_at DESC, fallback to remaining)
   const jumpBackIn = useMemo(() => {
     const played = albums.filter((a) => a.last_played_at != null);
-    if (played.length >= 4) {
-      return [...played]
-        .sort((a, b) => new Date(b.last_played_at) - new Date(a.last_played_at))
-        .slice(0, 6);
-    }
+    played.sort((a, b) => new Date(b.last_played_at) - new Date(a.last_played_at));
     const remaining = albums.filter((a) => !played.includes(a));
-    return [...played, ...remaining].slice(0, 6);
+    return [...played, ...remaining];
   }, [albums]);
 
   // 4. Rediscover (Forgotten Gems)
@@ -211,8 +234,9 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
     if (pool.length === 0) return [];
     const base = getSeededIndex(pool.length, `rediscover-${rediscoverOffset}`);
     const results = [];
-    for (let i = 0; i < Math.min(6, pool.length); i++) {
-      results.push(pool[(base + i * 3) % pool.length]);
+    // Visit every candidate once, including when the pool size is divisible by three.
+    for (let i = 0; i < pool.length; i++) {
+      results.push(pool[(base + i) % pool.length]);
     }
     return results;
   }, [rediscoverPool, albums, rediscoverOffset]);
@@ -229,8 +253,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
           return new Date(b.created_at) - new Date(a.created_at);
         }
         return (b.id || 0) - (a.id || 0);
-      })
-      .slice(0, 12);
+      });
   }, [albums]);
 
   if (loading)
@@ -240,18 +263,8 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
       </div>
     );
 
-  const albumRow = (list) => (
-    <div className="album-shelf">
-      {list.map((album, index) => (
-        <AlbumCard
-          key={`${album.id}-${index}`}
-          album={album}
-          onClick={onAlbumClick}
-          onArtistClick={onArtistClick}
-          onPlay={handlePlayAlbum}
-        />
-      ))}
-    </div>
+  const albumRow = (list, minimum = 6) => (
+    <AlbumShelf albums={list} minimum={minimum} onAlbumClick={onAlbumClick} onArtistClick={onArtistClick} onPlay={handlePlayAlbum} />
   );
 
   return (
@@ -446,7 +459,7 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
               <ArrowRight size={14} />
             </button>
           </div>
-          {albumRow(recentlyAdded)}
+          {albumRow(recentlyAdded, 12)}
         </section>
       )}
       {genres.length > 0 && (

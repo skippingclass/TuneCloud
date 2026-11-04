@@ -535,7 +535,7 @@ export function ArtistDetailView({
                 <p className="text-sm">No releases in this category</p>
               </div>
             ) : viewMode === 'grid' ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-5">
+              <div className="album-grid album-grid--discography">
                 {filteredReleases.map((alb) => (
                   <AlbumCard
                     key={alb.id}
