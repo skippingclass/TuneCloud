@@ -49,7 +49,8 @@ async function saveCoverBuffer(buffer, format, prefix) {
     }
   }
 
-  return `/api/cover/${filename}`;
+  const version = crypto.createHash('sha256').update(buffer).digest('hex');
+  return `/api/cover/${filename}?v=${version}`;
 }
 
 async function deleteCoverFile(prefix) {
@@ -65,6 +66,59 @@ export async function deleteTrackCover(trackId) {
 async function setAlbumCover(albumId, url) {
   await query('UPDATE albums SET cover_path = $1 WHERE id = $2', [url, albumId]);
   return url;
+}
+
+// Prefer the shared album directory for multi-disc releases, then each disc.
+function coverDirectories(tracks) {
+  const dirs = tracks.map(t => path.dirname(t.file_path));
+  return [...new Set([
+    ...dirs.map(dir => /^(cd|disc|disk)\s*\d+$/i.test(path.basename(dir)) ? path.dirname(dir) : dir),
+    ...dirs,
+  ])];
+}
+
+async function readFolderCover(tracks) {
+  for (const dir of coverDirectories(tracks)) {
+    for (const name of COVER_NAMES) {
+      const file = await resolveCoverFile(path.join(dir, name), { allowMusic: true });
+      if (!file) continue;
+      const buffer = await fsp.readFile(file);
+      if (!buffer.length) continue;
+      return {
+        buffer,
+        format: name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg',
+        hash: crypto.createHash('md5').update(buffer).digest('hex'),
+      };
+    }
+  }
+  return null;
+}
+
+function folderStatePath(albumId) {
+  return path.join(COVERS_DIR, `album_${albumId}.folder.json`);
+}
+
+// Compare sidecar artwork independently of audio mtimes. Older caches are refreshed once.
+export async function findAlbumsWithChangedFolderCovers() {
+  const { rows } = await query(
+    'SELECT album_id, file_path FROM tracks WHERE album_id IS NOT NULL AND missing_since IS NULL ORDER BY track_number ASC, file_path ASC'
+  );
+  const albums = new Map();
+  for (const track of rows) {
+    if (!albums.has(track.album_id)) albums.set(track.album_id, []);
+    albums.get(track.album_id).push(track);
+  }
+  const changed = [];
+  for (const [id, tracks] of albums) {
+    try {
+      const folder = await readFolderCover(tracks);
+      const state = JSON.parse(await fsp.readFile(folderStatePath(id), 'utf8'));
+      if (state.hash !== (folder?.hash ?? null)) changed.push(id);
+    } catch {
+      changed.push(id);
+    }
+  }
+  return changed;
 }
 
 /**
@@ -83,26 +137,11 @@ export async function extractCoversForAlbum(albumId) {
   );
   if (tracks.length === 0) return null;
 
-  // 1. Check folder-level well-known cover images first
-  const albumDir = path.dirname(tracks[0].file_path);
-  let folderCoverBuffer = null;
-  let folderCoverFormat = null;
-  let folderCoverHash = null;
-
-  for (const name of COVER_NAMES) {
-    const coverFile = await resolveCoverFile(path.join(albumDir, name), { allowMusic: true });
-    if (coverFile) {
-      try {
-        const buf = await fsp.readFile(coverFile);
-        if (buf && buf.length > 0) {
-          folderCoverBuffer = buf;
-          folderCoverFormat = name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-          folderCoverHash = crypto.createHash('md5').update(buf).digest('hex');
-          break;
-        }
-      } catch {}
-    }
-  }
+  // 1. Check shared album and disc directories for sidecar artwork.
+  const folderCover = await readFolderCover(tracks);
+  const folderCoverBuffer = folderCover?.buffer;
+  const folderCoverFormat = folderCover?.format;
+  const folderCoverHash = folderCover?.hash;
 
   // 2. Scan tracks for embedded artwork
   const readableTracks = new Set();
@@ -154,6 +193,10 @@ export async function extractCoversForAlbum(albumId) {
   if (albumCoverBuffer) {
     const albumCoverUrl = await saveCoverBuffer(albumCoverBuffer, albumCoverFormat, `album_${albumId}`);
     await setAlbumCover(albumId, albumCoverUrl);
+  } else if (readableTracks.size === tracks.length) {
+    // Only clear artwork when every live member was read successfully.
+    await setAlbumCover(albumId, null);
+    await deleteCoverFile(`album_${albumId}`);
   }
 
   // 4. Classify track-level covers:
@@ -175,6 +218,9 @@ export async function extractCoversForAlbum(albumId) {
     }
   }
 
+  if (readableTracks.size === tracks.length) {
+    await fsp.writeFile(folderStatePath(albumId), JSON.stringify({ hash: folderCoverHash ?? null }));
+  }
   return Boolean(albumCoverBuffer);
 }
 
@@ -285,6 +331,6 @@ export async function extractAllMissingCovers(optionsOrIds = null) {
 }
 
 export function coverUrl(filename) {
-  const filepath = path.join(COVERS_DIR, path.basename(filename));
+  const filepath = path.join(COVERS_DIR, path.basename(filename.split('?')[0]));
   return fs.existsSync(filepath) ? filepath : null;
 }

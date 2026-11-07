@@ -4,7 +4,7 @@ import { computeFileHashes } from './file-fingerprints.js';
 import { glob } from 'glob';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from './db.js';
-import { extractAllMissingCovers, deleteTrackCover } from './cover.js';
+import { extractAllMissingCovers, deleteTrackCover, findAlbumsWithChangedFolderCovers } from './cover.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
 const BATCH_SIZE = 300;
@@ -1468,6 +1468,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     coversExtracted = covers.extracted;
     coversTotal = covers.total;
   } else {
+    for (const id of await findAlbumsWithChangedFolderCovers()) touchedAlbumIds.add(id);
     // 1. Force re-extract for touched albums so retagged/moved tracks update the cover
     if (touchedAlbumIds.size > 0) {
       const touchedCovers = await extractAllMissingCovers({

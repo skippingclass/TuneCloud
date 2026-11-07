@@ -231,7 +231,7 @@ async function coverFileFromPath(coverPath) {
   if (path.isAbsolute(coverPath) && fs.existsSync(coverPath)) {
     return resolveCoverFile(coverPath, { allowMusic: true });
   }
-  const file = path.join(COVERS_DIR, path.basename(coverPath));
+  const file = path.join(COVERS_DIR, path.basename(coverPath.split('?')[0]));
   return resolveCoverFile(file);
 }
 
@@ -1253,7 +1253,7 @@ export default async function subsonicRoutes(fastify) {
     reply.raw.writeHead(200, {
       'Content-Type': mime,
       'Content-Length': fs.statSync(file).size,
-      'Cache-Control': 'public, max-age=86400',
+      'Cache-Control': 'no-cache',
     });
     const stream = fs.createReadStream(file);
     reply.raw.on('close', () => stream.destroy());
