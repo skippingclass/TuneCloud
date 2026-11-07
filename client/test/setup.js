@@ -299,6 +299,13 @@ export function createTestDOM() {
   defineGlobal('window', win);
   defineGlobal('document', doc);
   defineGlobal('localStorage', localStorage);
+  const sessionMap = new Map();
+  defineGlobal('sessionStorage', {
+    getItem: key => sessionMap.has(key) ? sessionMap.get(key) : null,
+    setItem: (key, value) => sessionMap.set(key, String(value)),
+    removeItem: key => sessionMap.delete(key),
+    clear: () => sessionMap.clear(),
+  });
   defineGlobal('HTMLIFrameElement', class {});
   defineGlobal('Element', DOMNode);
   defineGlobal('HTMLElement', DOMNode);
