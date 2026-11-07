@@ -418,12 +418,12 @@ export function ArtistDetailView({
               </div>
 
               <div className="glass-panel rounded-2xl overflow-hidden border border-white/[0.06]">
-                {selection.toolbar}
+                {selection.toolbarFor(displayedTopTracks)}
               <table className="w-full text-left border-collapse">
                   <tbody className="divide-y divide-white/[0.03]">
                     {displayedTopTracks.map((track, idx) => (
                       <TrackRow
-                        {...selection.rowProps(track)}
+                        {...selection.rowProps(track, displayedTopTracks)}
                         key={track.id}
                         track={track}
                         index={idx}
@@ -613,7 +613,7 @@ export function ArtistDetailView({
                         <tbody className="divide-y divide-white/[0.03]">
                           {group.tracks.map((track, idx) => (
                             <TrackRow
-                        {...selection.rowProps(track)}
+                        {...selection.rowProps(track, group.tracks)}
                               key={track.id}
                               track={track}
                               index={idx}

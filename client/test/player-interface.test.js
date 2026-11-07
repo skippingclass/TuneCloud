@@ -192,3 +192,55 @@ test('reordering shuffled entries preserves the source album order when shuffle 
     assert.deepEqual(view.player().queueOrder, [0, 1, 2, 3]);
   } finally { await view.unmount(); }
 });
+
+test('queue right-click targets an occurrence, keeps playback running and links to each credited artist', async () => {
+  const navigated = [];
+  const library = [
+    { ...tracks[0], playlist_track_id: 11, artist: 'Lead feat. Guest', artist_id: 10 },
+    { ...tracks[1], artist: 'Lead feat. Guest', artist_id: 10 },
+    { ...tracks[0], playlist_track_id: 12, artist: 'Lead feat. Guest', artist_id: 10 },
+  ];
+  const view = await harness(<QueueDrawer onGoToArtist={artist => navigated.push(artist)} />);
+  try {
+    await React.act(async () => { view.player().playTrack(library[0], library); view.player().setIsQueueOpen(true); });
+    const row = view.container.findAll(el => el.className?.split(' ').includes('queue-track'))[1];
+    const playCalls = view.player().audioRef.current.playCalls;
+    await React.act(async () => getReactProps(row).onContextMenu({ currentTarget: row, clientX: 900, clientY: 300, preventDefault() {}, stopPropagation() {} }));
+    const menu = named(view.container, 'Queue actions for Interface Song 1');
+    assert.ok(menu);
+    assert.equal(view.player().queueIndex, 0);
+    assert.equal(view.player().audioRef.current.playCalls, playCalls);
+    await click(menu.find(el => el.tagName === 'BUTTON' && el.textContent === 'Play now'));
+    assert.equal(view.player().queueIndex, 2, 'plays the selected occurrence of a repeated song');
+    const guest = view.container.find(el => el.tagName === 'A' && el.getAttribute('href') === '/artist/Guest');
+    const callsBeforeNavigation = view.player().audioRef.current.playCalls;
+    await click(guest);
+    assert.deepEqual(navigated.at(-1), { id: undefined, name: 'Guest' });
+    assert.equal(view.player().audioRef.current.playCalls, callsBeforeNavigation);
+    assert.ok(view.container.find(el => el.tagName === 'A' && el.getAttribute('href') === '/artist/10'));
+    const current = view.container.find(el => el.className === 'queue-current');
+    await React.act(async () => getReactProps(current).onContextMenu({ currentTarget: current, clientX: 900, clientY: 300, preventDefault() {}, stopPropagation() {} }));
+    assert.ok(named(view.container, 'Queue actions for Interface Song 1'), 'the current track has a context menu too');
+  } finally { await view.unmount(); }
+});
+
+test('double-clicking a queue row plays that entry, ignores nested controls, and rejects unavailable entries', async () => {
+  const library = [...tracks, { id: 99, title: 'Offline', available: true }];
+  const view = await harness(<QueueDrawer />);
+  const doubleClick = async row => React.act(async () => getReactProps(row).onDoubleClick({ target: row }));
+  try {
+    await React.act(async () => { view.player().playTrack(library[0], library); view.player().setIsQueueOpen(true); });
+    library.at(-1).available = false; // The file becomes unavailable after enqueueing.
+    const row = view.container.find(el => el.className?.split(' ').includes('queue-track') && el.textContent.includes('Interface Song 3'));
+    await doubleClick(row);
+    assert.equal(view.player().queueIndex, 2);
+    assert.equal(view.player().currentTrack.id, 3);
+    const offline = view.container.find(el => el.className?.split(' ').includes('queue-track') && el.textContent.includes('Offline'));
+    await doubleClick(offline);
+    assert.equal(view.player().queueIndex, 2);
+    const current = view.container.find(el => el.className === 'queue-current');
+    const calls = view.player().audioRef.current.playCalls;
+    await React.act(async () => getReactProps(current).onDoubleClick({ target: { closest: () => true } }));
+    assert.equal(view.player().audioRef.current.playCalls, calls, 'double-clicking artist/menu/play controls does not also restart the row');
+  } finally { await view.unmount(); }
+});

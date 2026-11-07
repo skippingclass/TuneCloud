@@ -3,7 +3,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import {
-  DOMNode,
   createTestDOM,
   render,
   changeInput,
@@ -12,13 +11,6 @@ import {
 import { setAuthToken } from "../src/api.js";
 import { PlayerProvider } from "../src/context/PlayerContext.jsx";
 import { AlbumsView } from "../src/views/AlbumsView.jsx";
-
-// React's native select implementation reads the DOM options collection.
-Object.defineProperty(DOMNode.prototype, "options", {
-  get() {
-    return this.findAll((node) => node.tagName === "OPTION");
-  },
-});
 
 test("Albums renders genre objects from the API and sends the selected name as its filter", async () => {
   createTestDOM();

@@ -29,8 +29,13 @@ export function useTrackLyrics(track, enabled) {
     api.lyrics({ id, title: track.title || track.file_name || track.fileName || '', artist: track.artist || '', duration: track.duration || 0 }, { signal: controller.signal })
       .then(response => {
         if (controller.signal.aborted) return;
-        const lines = response.synced ? parseLrc(response.lyrics, track.duration) : [];
-        const data = { synced: lines.length > 0, lines, text: lines.length ? null : response.lyrics, source: response.source || 'lrclib' };
+        const text = typeof response.lyrics === 'string' ? response.lyrics : '';
+        const lines = response.synced ? parseLrc(text, track.duration) : [];
+        if (!(lines.length ? lines.some(line => line.text.trim()) : text.trim())) {
+          setResult({ trackId: id, loading: false, data: { notFound: true } });
+          return;
+        }
+        const data = { synced: lines.length > 0, lines, text: lines.length ? null : text, source: response.source || 'lrclib' };
         if (cache.size >= 200) cache.delete(cache.keys().next().value);
         cache.set(id, data);
         setResult({ trackId: id, loading: false, data });

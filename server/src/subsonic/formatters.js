@@ -113,7 +113,7 @@ export function formatSong(row) {
     albumArtist: albumArtistName || undefined,
     displayAlbumArtist: albumArtistName || undefined,
     albumArtists,
-    track: row.track_number || 1,
+    track: Number.isInteger(row.track_number) && row.track_number > 0 ? row.track_number : undefined,
     year: row.year || row.album_year || undefined,
     genre: row.genre || row.album_genre || undefined,
     coverArt,

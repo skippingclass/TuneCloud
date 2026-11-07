@@ -232,9 +232,9 @@ export function Header({
       <div ref={searchContainerRef} className="flex-1 max-w-md relative">
         <div className="relative flex items-center">
           {loading ? (
-            <Loader2 className="w-4 h-4 text-accent absolute left-3.5 animate-spin pointer-events-none" />
+            <Loader2 className="w-4 h-4 text-accent absolute z-10 left-3.5 animate-spin pointer-events-none" />
           ) : (
-            <Search className="w-4 h-4 text-surface-500 absolute left-3.5 pointer-events-none" />
+            <Search className="global-search-icon w-4 h-4 absolute left-3.5 pointer-events-none" />
           )}
           <input
             ref={inputRef}

@@ -204,6 +204,25 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       } finally { await fs.rm(outside, { recursive: true, force: true }); }
     });
 
+    await t.test('track sorting orders the entire result before pagination and keeps unknown values last', async () => {
+      await query(`INSERT INTO tracks (file_path, file_name, title, year, format, duration)
+        VALUES ('/sort/a.mp3','a.mp3','SortFixture A',2001,'flac',90),
+               ('/sort/b.mp3','b.mp3','SortFixture B',2024,'mp3',180),
+               ('/sort/c.mp3','c.mp3','SortFixture C',NULL,'wav',NULL),
+               ('/sort/d.mp3','d.mp3','SortFixture D',2024,'flac',240)`);
+      const titles = async params => {
+        const result = await call('GET', '/api/tracks?q=SortFixture&' + params, owner);
+        assert.equal(result.statusCode, 200, result.body);
+        return result.json().tracks.map(track => track.title.replace('SortFixture ', ''));
+      };
+      assert.deepEqual(await titles('sort=year&order=desc'), ['B','D','A','C']);
+      assert.deepEqual(await titles('sort=year&order=asc'), ['A','B','D','C']);
+      assert.deepEqual(await titles('sort=format&order=asc&limit=2'), ['A','D']);
+      assert.deepEqual(await titles('sort=format&order=asc&limit=2&offset=2'), ['B','C']);
+      assert.deepEqual(await titles('sort=format&order=desc'), ['C','B','A','D']);
+      assert.deepEqual(await titles('sort=duration&order=desc'), ['D','B','A','C']);
+    });
+
     await t.test('server pagination searches all matching tracks with stable ordering', async () => {
       await query("INSERT INTO tracks (file_path,file_name,title) SELECT '/test/'||n, n||'.mp3', 'Paged' FROM generate_series(1,10005) n");
       const page = await call('GET', '/api/tracks?limit=200&offset=10000&q=Paged', owner);

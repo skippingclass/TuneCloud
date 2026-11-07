@@ -4,11 +4,13 @@
  * Setup: npm install --no-save --package-lock=false playwright-core
  * Provide TUNECLOUD_USERNAME and TUNECLOUD_PASSWORD through your environment.
  * Optional: TUNECLOUD_URL, CHROMIUM_PATH, PLAYWRIGHT_MODULE_PATH, SCREENSHOT_DIR,
- * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Время на веселье), CAPTURE_LYRICS_ARTIST,
+ * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Выдох), CAPTURE_LYRICS_ARTIST,
  * CAPTURE_ALBUM_QUERY (default: Sqwore),
  * CAPTURE_DETAIL_QUERY (default: Draining Love Story), CAPTURE_SKIP_ALBUMS=1, CAPTURE_ONLY_ALBUMS=1.
  * CAPTURE_DEMOS=1 also refreshes GIF/MP4/WebM demos (requires ffmpeg).
  * CAPTURE_ONLY_DEMOS=1 refreshes only those demos, leaving screenshots unchanged.
+ * CAPTURE_ONLY_LYRICS=1 refreshes only the lyrics GIF/MP4/WebM with natural animation.
+ * CAPTURE_LYRICS_START selects the demo starting position in seconds (default: 16).
  * CAPTURE_CLEAR_LYRICS=1 omits the capture-only blur for user-supplied lyrics.
  * Run: node scripts/capture-readme.mjs
  *
@@ -54,7 +56,7 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1920, height: 1080 },
     deviceScaleFactor: 1,
-    reducedMotion: "reduce",
+    reducedMotion: process.env.CAPTURE_ONLY_LYRICS === "1" ? "no-preference" : "reduce",
   });
   page.setDefaultTimeout(30000);
   await page.addInitScript((theme) => {
@@ -133,21 +135,30 @@ try {
   }
 
   async function demo(name, steps, extraStyle = "") {
-    if (process.env.CAPTURE_DEMOS !== "1" && process.env.CAPTURE_ONLY_DEMOS !== "1") return;
+    if (process.env.CAPTURE_DEMOS !== "1" && process.env.CAPTURE_ONLY_DEMOS !== "1" && process.env.CAPTURE_ONLY_LYRICS !== "1") return;
     await settle();
     const frames = await fs.mkdtemp(path.join(os.tmpdir(), "tunecloud-demo-"));
     const style = await page.addStyleTag({ content: identityStyle + extraStyle });
     const run = promisify(execFile);
     let frame = 0;
+    const activeLines = new Set();
     try {
       for (const { action, seconds } of steps) {
         if (action) await action();
         for (let index = 0; index < seconds * 10; index++) {
           const started = Date.now();
+          if (name === 'lyrics_demo' && index % 10 === 0) {
+            const active = await page.locator('.full-player-lyrics .lyrics-line[aria-current="true"]').textContent();
+            if (active) activeLines.add(active);
+          }
           await page.screenshot({ path: path.join(frames, `${String(frame++).padStart(4, "0")}.png`) });
           await page.waitForTimeout(Math.max(0, 100 - (Date.now() - started)));
         }
       }
+      if (name === 'lyrics_demo' && process.env.CAPTURE_ONLY_LYRICS === '1' && activeLines.size < 2) {
+        throw new Error('The lyrics demo must show at least two active lines; playback did not advance');
+      }
+      if (name === 'lyrics_demo') console.log(`Captured ${activeLines.size} distinct active lyric lines`);
       const input = ["-y", "-framerate", "10", "-i", path.join(frames, "%04d.png")];
       await run("ffmpeg", [...input, "-vf", "split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=3", "-loop", "0", path.join(output, `${name}.gif`)]);
       await run("ffmpeg", [...input, "-c:v", "libx264", "-crf", "22", "-preset", "fast", "-pix_fmt", "yuv420p", "-movflags", "+faststart", path.join(output, `${name}.mp4`)]);
@@ -175,11 +186,8 @@ try {
     await shot("04_compact_grid.png");
   }
 
-  if (process.env.CAPTURE_ONLY_ALBUMS === "1") {
-    await captureAlbums();
-  } else {
-    // Find a real vocal track for the player, album, and lyric views.
-    const query = process.env.CAPTURE_LYRICS_QUERY || "Время на веселье";
+  async function findLyricTrack() {
+    const query = process.env.CAPTURE_LYRICS_QUERY || "Выдох";
     const trackResult = await api(
       `/api/tracks?q=${encodeURIComponent(query)}&limit=10`,
     );
@@ -191,6 +199,40 @@ try {
         "No available lyric capture track found; set CAPTURE_LYRICS_QUERY",
       );
     console.log(`Capture track: ${track.artist} — ${track.title}`);
+
+    return track;
+  }
+
+  if (process.env.CAPTURE_ONLY_LYRICS === "1") {
+    const track = await findLyricTrack();
+    await go(`/album/${track.album_id}`, 'main table tbody tr');
+    const row = page.locator('main table tbody tr').filter({ has: page.getByText(track.title, { exact: true }) }).first();
+    await row.hover();
+    await row.getByRole('button', { name: `Play ${track.title}`, exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('audio')?.readyState >= 1, null, { timeout: 60000 });
+    await page.locator('audio').evaluate(audio => audio.pause());
+    await page.getByRole('button', { name: 'Lyrics', exact: true }).click();
+    await page.locator('.full-player-lyrics .lyrics-line').first().waitFor({ timeout: 90000 });
+    const requestedStart = Number(process.env.CAPTURE_LYRICS_START ?? 16);
+    if (!Number.isFinite(requestedStart) || requestedStart < 0) throw new Error('CAPTURE_LYRICS_START must be a nonnegative number');
+    const timeline = page.locator('.full-player').getByRole('slider', { name: 'Playback position', exact: true });
+    await timeline.evaluate((input, position) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, String(Math.min(position, Number(input.max))));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, requestedStart);
+    await settle();
+    const clear = process.env.CAPTURE_CLEAR_LYRICS === '1';
+    await demo('lyrics_demo', [
+      { seconds: 1 },
+      { action: () => page.locator('audio').evaluate(audio => audio.play()), seconds: 10 },
+      { action: () => page.locator('audio').evaluate(audio => audio.pause()), seconds: 1 },
+    ], clear ? '' : '.full-player-lyrics .lyrics-line:not([aria-current="true"]) p { filter: blur(12px) !important; }');
+  } else if (process.env.CAPTURE_ONLY_ALBUMS === "1") {
+    await captureAlbums();
+  } else {
+    const track = await findLyricTrack();
 
     async function prepareHome() {
       const preferred = process.env.CAPTURE_DETAIL_QUERY || 'Draining Love Story';

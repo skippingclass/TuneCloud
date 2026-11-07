@@ -10,12 +10,25 @@ import {
   Loader2,
   ChevronLeft,
   ChevronRight,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 
 export const DEFAULT_TRACKS_PAGE_SIZE = 100;
+const TRACK_SORTS = [
+  { value: 'title', label: 'Title', order: 'asc' },
+  { value: 'artist', label: 'Artist', order: 'asc' },
+  { value: 'album', label: 'Album', order: 'asc' },
+  { value: 'created_at', label: 'Date added', order: 'desc' },
+  { value: 'year', label: 'Release year', order: 'desc' },
+  { value: 'duration', label: 'Duration', order: 'asc' },
+  { value: 'play_count', label: 'Play count', order: 'desc' },
+  { value: 'last_played_at', label: 'Last played', order: 'desc' },
+  { value: 'format', label: 'Format', order: 'asc' },
+];
 
 export function TracksView({
   user,
@@ -34,6 +47,10 @@ export function TracksView({
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState('');
   const bulkAbortRef = useRef(null);
+  const [storedSort, setSort] = useLibraryState('TracksView.jsx:sort', 'title');
+  const [storedOrder, setOrder] = useLibraryState('TracksView.jsx:order', 'asc');
+  const sort = TRACK_SORTS.some(option => option.value === storedSort) ? storedSort : 'title';
+  const order = storedOrder === 'desc' ? 'desc' : 'asc';
   const [filter, setFilter] = useLibraryState('TracksView.jsx:filter', '');
   const [debouncedQuery, setDebouncedQuery] = useState(filter.trim());
 
@@ -70,8 +87,8 @@ export function TracksView({
     const params = {
       limit: safePageSize,
       offset,
-      sort: 'title',
-      order: 'asc',
+      sort,
+      order,
     };
     if (debouncedQuery) {
       params.q = debouncedQuery;
@@ -110,9 +127,9 @@ export function TracksView({
         abortRef.current = null;
       }
     };
-  }, [page, debouncedQuery, safePageSize, filter]);
+  }, [page, debouncedQuery, safePageSize, filter, sort, order]);
 
-  useEffect(() => () => { bulkAbortRef.current?.abort(); }, [filter]);
+  useEffect(() => () => { bulkAbortRef.current?.abort(); }, [filter, sort, order]);
 
   const handleFilterChange = (e) => {
     const val = e.target.value;
@@ -127,6 +144,21 @@ export function TracksView({
       setDebouncedQuery('');
     }
   };
+
+  const changeSort = (value, direction) => {
+    bulkAbortRef.current?.abort();
+    requestIdRef.current += 1;
+    abortRef.current?.abort();
+    setLoading(true);
+    setSort(value);
+    setOrder(direction || TRACK_SORTS.find(option => option.value === value)?.order || 'asc');
+    setPage(1);
+  };
+  const sortColumn = value => changeSort(value, sort === value && order === 'asc' ? 'desc' : 'asc');
+  const columnLabel = (value, label) => <button className="track-sort-column" onClick={() => sortColumn(value)}>
+    {label}{sort === value && (order === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+  </button>;
+  const sortAria = value => sort === value ? (order === 'asc' ? 'ascending' : 'descending') : 'none';
 
   const fetchAllMatchingTracks = async (signal) => {
     const activeQuery = filter.trim();
@@ -150,8 +182,8 @@ export function TracksView({
       const params = {
         limit: safePageSize,
         offset: allTracks.length,
-        sort: 'title',
-        order: 'asc',
+        sort,
+        order,
       };
       if (activeQuery) {
         params.q = activeQuery;
@@ -224,7 +256,7 @@ export function TracksView({
     <div className="space-y-6 animate-fade-in">
       {error && <p role="alert" className="text-sm text-rose-300">{error}</p>}
       {/* Header controls */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+      <div className="tracks-library-controls">
         <div className="relative flex-1 max-w-md">
           <Search className="w-4 h-4 text-surface-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
@@ -236,10 +268,20 @@ export function TracksView({
           />
         </div>
 
-        <div className="flex items-center gap-3 self-end sm:self-auto">
+        <div className="tracks-sort-controls">
+          <label className="tracks-sort-label" htmlFor="tracks-sort">Sort by</label>
+          <select id="tracks-sort" aria-label="Sort tracks" value={sort} onChange={event => changeSort(event.target.value)} className="tracks-sort-select">
+            {TRACK_SORTS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <button className="tracks-sort-direction" onClick={() => changeSort(sort, order === 'asc' ? 'desc' : 'asc')}
+            aria-label={order === 'asc' ? 'Sort descending' : 'Sort ascending'} title={order === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}>
+            {order === 'asc' ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
+          </button>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={handlePlayAll}
-            disabled={(total === 0 && boundedTracks.length === 0) || actionLoading}
+            disabled={(total === 0 && boundedTracks.length === 0) || actionLoading || loading}
             className="btn-primary py-2 px-4 text-xs shadow-glow"
           >
             <Play className="w-3.5 h-3.5 fill-surface-950" />
@@ -247,7 +289,7 @@ export function TracksView({
           </button>
           <button
             onClick={handleShufflePlay}
-            disabled={(total === 0 && boundedTracks.length === 0) || actionLoading}
+            disabled={(total === 0 && boundedTracks.length === 0) || actionLoading || loading}
             className="btn-glass py-2 px-3 text-xs"
           >
             <Shuffle className="w-3.5 h-3.5 text-accent" />
@@ -280,11 +322,11 @@ export function TracksView({
                   <tr className="border-b border-white/[0.06] text-surface-500 text-[11px] font-semibold uppercase tracking-wider">
                     <th className="px-3 sm:px-4 py-3 text-center w-12">#</th>
                     <th className="w-8 px-1 py-3 text-center"></th>
-                    <th className="px-3 sm:px-4 py-3">Title</th>
-                    <th className="px-3 sm:px-4 py-3 hidden sm:table-cell">Artist</th>
-                    <th className="px-3 sm:px-4 py-3 hidden md:table-cell">Album</th>
-                    <th className="px-3 sm:px-4 py-3 text-right hidden sm:table-cell">Duration</th>
-                    <th className="px-2 py-3 text-center hidden lg:table-cell">Format</th>
+                    <th aria-sort={sortAria('title')} className="px-3 sm:px-4 py-3">{columnLabel('title', 'Title')}</th>
+                    <th aria-sort={sortAria('artist')} className="px-3 sm:px-4 py-3 hidden sm:table-cell">{columnLabel('artist', 'Artist')}</th>
+                    <th aria-sort={sortAria('album')} className="px-3 sm:px-4 py-3 hidden md:table-cell">{columnLabel('album', 'Album')}</th>
+                    <th aria-sort={sortAria('duration')} className="px-3 sm:px-4 py-3 text-right hidden sm:table-cell">{columnLabel('duration', 'Duration')}</th>
+                    <th aria-sort={sortAria('format')} className="px-2 py-3 text-center hidden lg:table-cell">{columnLabel('format', 'Format')}</th>
                     <th className="w-9 px-2 py-3"></th>
                   </tr>
                 </thead>

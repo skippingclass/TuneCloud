@@ -87,6 +87,11 @@ export class DOMNode {
     }
   }
 
+  // Native select controls read this collection when React applies their value.
+  get options() {
+    return this.findAll(node => node.tagName === 'OPTION');
+  }
+
   get firstChild() {
     return this.childNodes[0] || null;
   }

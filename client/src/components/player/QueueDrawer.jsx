@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
-import { X, Disc, ListMusic, Volume2, ArrowUp, ArrowDown, ListPlus, GripVertical, MoreHorizontal, ListStart, Play, Pause, Check, ChevronDown } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
+import { X, Disc, ListMusic, Volume2, ArrowUp, ArrowDown, ListPlus, GripVertical, MoreHorizontal, ListStart, Play, Pause, Check, ChevronDown, User } from 'lucide-react';
+import { parseArtistTokens } from '../common/ArtistLinks.jsx';
 import { api } from '../../api.js';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { useDialog, hasOpenDialog } from '../../hooks/useDialog.js';
@@ -37,7 +38,7 @@ export function QueueDrawer({ onGoToAlbum, onGoToArtist }) {
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
   }, []);
-  useEffect(() => { setMenu(null); }, [queue, isQueueOpen]);
+  useEffect(() => { setMenu(null); }, [queue, queueIndex, isQueueOpen]);
   useEffect(() => {
     if (!isQueueOpen) return;
     const key = event => {
@@ -58,6 +59,14 @@ export function QueueDrawer({ onGoToAlbum, onGoToArtist }) {
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, [menu]);
+  useLayoutEffect(() => {
+    if (menu === null || !menuNode.current) return;
+    const rect = menuNode.current.getBoundingClientRect();
+    setMenuPosition(position => ({
+      top: Math.max(12, Math.min(position.top, window.innerHeight - rect.height - 12)),
+      right: Math.max(12, Math.min(position.right, window.innerWidth - rect.width - 12)),
+    }));
+  }, [menu]);
   useEffect(() => { setVisibleCount(60); }, [isQueueOpen]);
   useEffect(() => {
     if (!isQueueOpen || visibleCount >= upcoming.length || !more.current || typeof IntersectionObserver === 'undefined') return;
@@ -71,6 +80,71 @@ export function QueueDrawer({ onGoToAlbum, onGoToArtist }) {
   const current = queue[queueIndex];
   const closeMenu = () => { setMenu(null); menuTrigger.current?.focus(); };
   const move = (from, to) => { moveInQueue(from, to); closeMenu(); };
+  const navigateToArtist = artist => {
+    onGoToArtist?.(artist);
+    setMenu(null);
+    if (mobile) setIsQueueOpen(false);
+  };
+  const artistLinks = (track, className = '') => <span className={className}>
+    {track.artist ? parseArtistTokens(track.artist).map((part, index) => {
+      if (index % 2) return part;
+      const name = part.trim();
+      if (!name) return null;
+      const artist = { id: index === 0 ? track.artist_id : undefined, name };
+      return <a key={index} className="queue-artist-link" href={`/artist/${encodeURIComponent(artist.id || name)}`}
+        title={`Go to artist: ${name}`} onDoubleClick={event => event.stopPropagation()}
+        onClick={event => {
+          event.stopPropagation();
+          if (!onGoToArtist || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button > 0) return;
+          event.preventDefault();
+          navigateToArtist(artist);
+        }}>{part}</a>;
+    }) : 'Unknown artist'}
+  </span>;
+  const openMenu = (index, event, context = false) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = context ? event.currentTarget.querySelector?.('.queue-more') || event.currentTarget : event.currentTarget;
+    menuTrigger.current = trigger;
+    const rect = trigger.getBoundingClientRect();
+    const pointer = context && (event.clientX || event.clientY);
+    setMenuPosition({
+      top: Math.max(12, pointer ? event.clientY : rect.bottom + 6),
+      right: Math.max(12, window.innerWidth - (pointer ? event.clientX + 220 : rect.right)),
+    });
+    setMenu(!context && menu === index ? null : index);
+  };
+  const doubleClick = (index, event) => {
+    if (event.target?.closest?.('button, a, .queue-actions')) return;
+    if (queue[index]?.available !== false) { setMenu(null); setQueueIndex(index); }
+  };
+  const actions = (index, position, history) => {
+    const track = queue[index];
+    return <div ref={menuNode} className="queue-actions" style={menuPosition} role="group" aria-label={`Queue actions for ${track.title || track.file_name}`}
+      onDoubleClick={event => event.stopPropagation()}
+      onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(); }
+        else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+          event.preventDefault(); event.stopPropagation();
+          const items = [...menuNode.current.querySelectorAll('button:not(:disabled)')];
+          const current = items.indexOf(document.activeElement);
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+            : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          items[next]?.focus();
+        }
+      }}>
+      <button disabled={track.available === false} onClick={() => { setQueueIndex(index); closeMenu(); }}><Play size={15} />Play now</button>
+      {!history && <>
+        <button disabled={position === 0} onClick={() => move(index, upcoming[0])}><ListStart size={15} />Play next</button>
+        <button disabled={position === 0} onClick={() => move(index, upcoming[position - 1])}><ArrowUp size={15} />Move up</button>
+        <button disabled={position === upcoming.length - 1} onClick={() => move(index, upcoming[position + 1])}><ArrowDown size={15} />Move down</button>
+      </>}
+      <button onClick={() => { removeFromQueue(index); closeMenu(); }}><X size={15} />Remove from queue</button>
+      {track.artist && <button onClick={() => navigateToArtist({ id: track.artist_id, name: track.artist })}><User size={15} />View artist</button>}
+      {track.album_id && <button onClick={() => { onGoToAlbum?.({ id: track.album_id, title: track.album }); closeMenu(); if (mobile) setIsQueueOpen(false); }}><Disc size={15} />View album</button>}
+    </div>;
+  };
   const row = (index, position, history = false) => {
     const track = queue[index];
     if (!track) return null;
@@ -78,40 +152,30 @@ export function QueueDrawer({ onGoToAlbum, onGoToArtist }) {
     const disabled = track.available === false;
     const activeMenu = menu === index;
     return <div key={`${track.id}-${index}`} className={`queue-track ${dragIndex === index ? 'is-dragging' : ''} ${dropIndex === index ? `is-drop-target ${upcoming.indexOf(dragIndex) < position ? 'is-drop-after' : ''}` : ''} ${history ? 'is-history' : ''} ${disabled ? 'is-unavailable' : ''}`}
+      onContextMenu={event => openMenu(index, event, true)} onDoubleClick={event => doubleClick(index, event)}
       draggable={!history} onDragStart={event => { setDragIndex(index); event.dataTransfer?.setData('text/plain', String(index)); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; }}
       onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
       onDragOver={event => { if (!history && dragIndex !== null && dragIndex !== index) { event.preventDefault(); setDropIndex(index); } else if (dragIndex === index) setDropIndex(null); }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget)) setDropIndex(null); }} onDrop={event => { event.preventDefault(); if (!history && dragIndex !== null) moveInQueue(dragIndex, index); setDragIndex(null); setDropIndex(null); }}
+      tabIndex={0}
       onKeyDown={event => {
+        if (event.key === 'Enter' && event.target === event.currentTarget && !disabled) { event.preventDefault(); setMenu(null); setQueueIndex(index); return; }
         if (!event.altKey || history) return;
         const target = event.key === 'ArrowUp' ? upcoming[position - 1] : event.key === 'ArrowDown' ? upcoming[position + 1] : undefined;
         if (target !== undefined) { event.preventDefault(); moveInQueue(index, target); }
       }}>
-      <span className="queue-grip" title="Drag to reorder"><GripVertical size={14} /></span>
+      <span className="queue-grip" title="Drag to reorder · Alt + ↑ / ↓"><GripVertical size={14} /></span>
       <button className="queue-art" onClick={() => setQueueIndex(index)} disabled={disabled} aria-label={`Play ${title}`}>
         {track.cover_path ? <img src={api.coverUrl(track.cover_path)} alt="" draggable="false" /> : <Disc size={19} />}
         <span><Play size={16} fill="currentColor" /></span>
       </button>
-      <div className="queue-copy"><button className="queue-title" onClick={() => setQueueIndex(index)} disabled={disabled} title={title}>{title}</button>
-        <p>{track.artist || 'Unknown artist'}{disabled && <span> · Unavailable</span>}</p>
+      <div className="queue-copy"><span className="queue-title" title={title}>{title}</span>
+        <p>{artistLinks(track)}{disabled && <span> · Unavailable</span>}</p>
       </div>
       <span className="queue-duration">{duration(track.duration)}</span>
       <button className={`player-icon queue-more ${activeMenu ? 'is-open' : ''}`} aria-label={`Actions for ${title}`} aria-expanded={activeMenu}
-        onClick={event => {
-          menuTrigger.current = event.currentTarget;
-          const rect = event.currentTarget.getBoundingClientRect();
-          setMenuPosition({ top: Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - 240)), right: Math.max(12, window.innerWidth - rect.right) });
-          setMenu(activeMenu ? null : index);
-        }}><MoreHorizontal size={18} /></button>
-      {activeMenu && <div ref={menuNode} className="queue-actions" style={menuPosition} role="group" aria-label={`Queue actions for ${title}`} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeMenu(); } }}>
-        {!history && <>
-          <button disabled={position === 0} onClick={() => move(index, upcoming[0])}><ListStart size={15} />Play next</button>
-          <button disabled={position === 0} onClick={() => move(index, upcoming[position - 1])}><ArrowUp size={15} />Move up</button>
-          <button disabled={position === upcoming.length - 1} onClick={() => move(index, upcoming[position + 1])}><ArrowDown size={15} />Move down</button>
-        </>}
-        <button onClick={() => { removeFromQueue(index); closeMenu(); }}><X size={15} />Remove from queue</button>
-        {track.album_id && <button onClick={() => { onGoToAlbum?.({ id: track.album_id, title: track.album }); closeMenu(); if (mobile) setIsQueueOpen(false); }}><Disc size={15} />View album</button>}
-      </div>}
+        onClick={event => openMenu(index, event)}><MoreHorizontal size={18} /></button>
+      {activeMenu && actions(index, position, history)}
     </div>;
   };
   return <>
@@ -123,19 +187,21 @@ export function QueueDrawer({ onGoToAlbum, onGoToArtist }) {
           <button className="player-icon" onClick={() => setIsQueueOpen(false)} aria-label="Close queue"><X size={19} /></button></div>
       </header>
       <div ref={scroll} className="queue-panel-scroll" onScroll={() => menu !== null && setMenu(null)}>
-        {current && <section className="queue-now"><h3>Now playing</h3><div className="queue-current">
+        {current && <section className="queue-now"><h3>Now playing</h3><div className="queue-current" onContextMenu={event => openMenu(queueIndex, event, true)} onDoubleClick={event => doubleClick(queueIndex, event)}>
           <button className="queue-current-art" onClick={togglePlay} aria-label={isPlaying ? 'Pause current track' : 'Resume current track'}>
             {current.cover_path ? <img src={api.coverUrl(current.cover_path)} alt="" /> : <Disc size={25} />}
             <span>{isPlaying ? <Pause size={19} fill="currentColor" /> : <Play size={19} fill="currentColor" />}</span>
           </button>
-          <div className="queue-copy"><strong>{current.title || current.file_name}</strong><button className="queue-current-artist" onClick={() => onGoToArtist?.({ id: current.artist_id, name: current.artist })} disabled={!current.artist}>{current.artist || 'Unknown artist'}</button></div>
+          <div className="queue-copy"><strong>{current.title || current.file_name}</strong>{artistLinks(current, 'queue-current-artist')}</div>
           {isPlaying && <Volume2 size={17} className="queue-playing-icon" />}
+          <button className={`player-icon queue-more ${menu === queueIndex ? 'is-open' : ''}`} aria-label={`Actions for ${current.title || current.file_name}`} aria-expanded={menu === queueIndex}
+            onClick={event => openMenu(queueIndex, event)}><MoreHorizontal size={18} /></button>
+          {menu === queueIndex && actions(queueIndex, -1, true)}
         </div></section>}
         <section className="queue-next"><div className="queue-section-heading"><h3>Next up <span>{shuffle ? '· Shuffled' : ''}</span></h3>
           <button onClick={clearUpcoming} disabled={!upcoming.length} aria-label="Clear upcoming tracks">Clear</button></div>
-          <p className="queue-reorder-hint" id="queue-reorder-help">Drag to reorder. <span>Alt + ↑ / ↓ also works.</span></p>
           {!upcoming.length ? <div className="queue-empty"><ListMusic size={30} /><h4>All caught up</h4><p>Add songs with “Play next” or “Add to queue”.</p></div>
-            : <div className="queue-list" aria-describedby="queue-reorder-help">{upcoming.slice(0, visibleCount).map((index, position) => row(index, position))}</div>}
+            : <div className="queue-list">{upcoming.slice(0, visibleCount).map((index, position) => row(index, position))}</div>}
           {visibleCount < upcoming.length && <button ref={more} className="queue-load-more" onClick={() => setVisibleCount(count => count + 60)}>Show more · {upcoming.length - visibleCount} remaining</button>}
         </section>
         {!!previous.length && <section className="queue-history"><button className="queue-history-toggle" aria-expanded={showPrevious} onClick={() => setShowPrevious(value => !value)}><Check size={14} />Previously played <span>{previous.length}</span><ChevronDown size={15} /></button>

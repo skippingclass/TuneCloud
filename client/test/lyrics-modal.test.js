@@ -5,6 +5,7 @@ import React from 'react';
 import { DOMNode, createTestDOM, render, click, flushAsync } from './setup.js';
 import { PlayerProvider, usePlayer } from '../src/context/PlayerContext.jsx';
 import { FavoritesProvider } from '../src/context/FavoritesContext.jsx';
+import { NowPlaying } from '../src/components/player/NowPlaying.jsx';
 import { LyricsModal } from '../src/components/player/LyricsModal.jsx';
 import { setAuthToken } from '../src/api.js';
 
@@ -15,7 +16,7 @@ async function harness() {
   setAuthToken('test-user');
   let player;
   function Probe() { player = usePlayer(); return null; }
-  const view = await render(<FavoritesProvider><PlayerProvider><Probe /><LyricsModal /></PlayerProvider></FavoritesProvider>);
+  const view = await render(<FavoritesProvider><PlayerProvider><Probe /><LyricsModal /><NowPlaying /></PlayerProvider></FavoritesProvider>);
   return { ...view, player: () => player };
 }
 const track = id => ({ id, title: `Test ${id}`, artist: 'Artist', duration: 10 });
@@ -91,5 +92,26 @@ test('lyrics modal retries failed lookups on reopening and preserves plain text 
     assert.equal(attempts, 2);
     assert.ok(view.container.textContent.includes('Plain first line\nPlain second line'));
     assert.equal(view.container.find(el => el.getAttribute('aria-current') === 'true'), null);
+  } finally { await view.unmount(); }
+});
+
+test('empty successful lyric responses show the compact empty state and retry performs a new request', async () => {
+  let requests = 0;
+  globalThis.fetch = async url => url.startsWith('/api/lyrics')
+    ? (++requests === 1 ? response('   ', 'local', false) : response('Recovered lyrics', 'local', false)) : response('');
+  const view = await harness();
+  try {
+    await React.act(async () => { view.player().playTrack(track(6401)); view.player().setIsNowPlayingOpen(true); });
+    await flushAsync();
+    const content = () => view.container.find(el => el.className?.split(' ').includes('lyrics-content'));
+    assert.ok(content().className.includes('is-compact'));
+    assert.ok(content().className.includes('is-empty'));
+    const retry = view.container.find(el => el.tagName === 'BUTTON' && el.textContent === 'Try again');
+    assert.ok(retry);
+    await click(retry);
+    await flushAsync();
+    assert.equal(requests, 2);
+    assert.equal(content().className.includes('is-empty'), false);
+    assert.ok(content().textContent.includes('Recovered lyrics'));
   } finally { await view.unmount(); }
 });

@@ -8,6 +8,7 @@ export function LyricsContent({ enabled = true, compact = false, result = null, 
   const { currentTrack, currentTime, seek } = usePlayer();
   const ownResult = useTrackLyrics(currentTrack, enabled && !result);
   const { loading, data, retry } = result || ownResult;
+  const empty = !data || data.notFound || !(data.synced ? data.lines?.some(line => line.text?.trim()) : data.text?.trim());
   const active = data?.synced ? activeLineIndex(data.lines, currentTime) : -1;
   const activeLine = useRef(null);
   const scroll = useRef(null);
@@ -19,11 +20,12 @@ export function LyricsContent({ enabled = true, compact = false, result = null, 
     // hiding its artwork every time the active line changes.
     const top = container.scrollTop + line.getBoundingClientRect().top - container.getBoundingClientRect().top
       - container.clientHeight / 2 + line.clientHeight / 2;
-    container.scrollTo?.({ top: Math.max(0, top), behavior: 'smooth' });
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    container.scrollTo?.({ top: Math.max(0, top), behavior: reducedMotion ? 'instant' : 'smooth' });
   }, [active, currentTrack?.id, compact, enabled]);
-  return <div className={`lyrics-content ${compact ? 'is-compact' : ''}`} aria-busy={loading}>
+  return <div className={`lyrics-content ${compact ? 'is-compact' : ''} ${loading ? 'is-loading' : empty ? 'is-empty' : ''}`} aria-busy={loading}>
     {loading ? <div className="lyrics-message" role="status"><Loader2 size={22} className="animate-spin" /><span>Loading lyrics...</span></div>
-      : !data || data.notFound ? <div className="lyrics-message"><Mic2 size={26} /><p>No lyrics found for this track.</p><button onClick={retry}><RefreshCw size={13} />Try again</button></div>
+      : empty ? <div className="lyrics-message"><Mic2 size={26} /><p>No lyrics found for this track.</p><button onClick={retry}><RefreshCw size={13} />Try again</button></div>
       : <>
         <div className="lyrics-scroll" ref={scroll}>
           {data.synced ? data.lines.map((line, index) => <div key={index} role="button" tabIndex={0}

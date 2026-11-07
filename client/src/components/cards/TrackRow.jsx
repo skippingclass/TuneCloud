@@ -33,6 +33,10 @@ export function TrackRow({
   selectionMode = false,
   selected = false,
   onSelect,
+  onRowSelect,
+  onSelectionKeyDown,
+  onContextSelect,
+  selectionActions,
 }) {
   const [hover, setHover] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -66,16 +70,57 @@ export function TrackRow({
       }
     };
     const escape = (e) => { if (e.key === 'Escape') { setMenuOpen(false); btnRef.current?.focus(); } };
+    menuRef.current?.querySelector?.('button:not(:disabled)')?.focus();
     document.addEventListener('mousedown', handler);
     window.addEventListener('keydown', escape);
     return () => { document.removeEventListener('mousedown', handler); window.removeEventListener('keydown', escape); };
   }, [menuOpen]);
 
+  const positionMenu = (x, y) => {
+    setMenuPos({
+      top: Math.max(8, Math.min(y, window.innerHeight - 400)),
+      right: Math.max(8, window.innerWidth - Math.max(228, Math.min(x, window.innerWidth - 8))),
+    });
+  };
   const openMenu = (e) => {
     e.stopPropagation();
+    onContextSelect?.();
     const rect = btnRef.current.getBoundingClientRect();
-    setMenuPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
+    positionMenu(rect.right, rect.bottom + 6);
     setMenuOpen(!menuOpen);
+  };
+  const openContextMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onContextSelect?.();
+    const rect = btnRef.current.getBoundingClientRect();
+    positionMenu(e.clientX != null ? e.clientX + 220 : rect.right, e.clientY ?? rect.bottom + 6);
+    setMenuOpen(true);
+  };
+  const runSelectionAction = action => event => {
+    event.stopPropagation();
+    setMenuOpen(false);
+    action();
+  };
+  const multipleSelected = selected && selectionActions?.count > 1;
+
+
+  const menuKeyDown = event => {
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setMenuOpen(false);
+      btnRef.current?.focus();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(menuRef.current?.querySelectorAll('button:not(:disabled)') || []);
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next].focus();
   };
 
   const handleFavorite = (e) => {
@@ -93,17 +138,26 @@ export function TrackRow({
         isPlaying
           ? 'bg-accent/10 text-accent font-medium shadow-[inset_0_0_20px_var(--theme-glow)]'
           : 'text-surface-200'
-      }`}
+      } ${selected ? 'is-selected' : ''}`}
+      aria-selected={onRowSelect ? selected : undefined}
+      tabIndex={onRowSelect ? 0 : undefined}
+      onClick={event => {
+        if (event.target?.closest?.('button, input, a, [role="button"]')) return;
+        onRowSelect?.(event);
+      }}
+      onKeyDown={onSelectionKeyDown}
+      onContextMenu={openContextMenu}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onDoubleClick={() => {
+      onDoubleClick={event => {
+        if (selectionMode || event.ctrlKey || event.metaKey || event.shiftKey || event.target?.closest?.('button, input, a, [role="button"]')) return;
         if (canPlay) onPlay?.(track);
         else toast('This track is unavailable: file was not found on disk', 'warning');
       }}
     >
       {/* Track number / Play button */}
       <td className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm w-12 text-center relative">
-        {selectionMode ? <input type="checkbox" checked={selected} onChange={() => onSelect?.(track.id)} aria-label={`Select ${track.title || track.file_name}`} className="w-4 h-4 accent-accent" /> : <>
+        {selectionMode ? <input type="checkbox" checked={selected} onClick={event => { event.stopPropagation(); onSelect?.(track.id, event); }} onChange={() => {}} aria-label={`Select ${track.title || track.file_name}`} className="track-selection-checkbox" /> : <>
         <span
           className={`track-number inline-flex items-center justify-center w-5 h-5 font-medium ${
             isPlaying ? 'text-accent' : 'text-surface-500'
@@ -251,9 +305,21 @@ export function TrackRow({
         createPortal(
           <div
             ref={menuRef}
-            className="fixed glass-panel rounded-2xl py-1.5 min-w-[190px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
+            role="menu"
+            aria-label={multipleSelected ? `Actions for ${selectionActions.count} selected tracks` : `Actions for ${track.title || track.file_name}`}
+            onKeyDown={menuKeyDown}
+            onClick={event => event.stopPropagation()}
+            onDoubleClick={event => event.stopPropagation()}
+            className="track-context-menu fixed glass-panel rounded-2xl py-1.5 min-w-[220px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
             style={{ top: menuPos.top, right: menuPos.right }}
           >
+            {multipleSelected ? <>
+              <div className="track-context-heading">{selectionActions.count} selected tracks</div>
+              <button disabled={!selectionActions.canPlay} onClick={runSelectionAction(selectionActions.play)} className="track-context-action"><Play size={15} /> Play selected</button>
+              <button disabled={!selectionActions.canPlay} onClick={runSelectionAction(selectionActions.queue)} className="track-context-action"><ListPlus size={15} /> Add to Queue</button>
+              {selectionActions.playlist && <button onClick={runSelectionAction(selectionActions.playlist)} className="track-context-action"><FolderPlus size={15} /> Add to Playlist</button>}
+              <button disabled={selectionActions.busy} onClick={runSelectionAction(selectionActions.favorite)} className="track-context-action"><Heart size={15} /> Add to favorites</button>
+            </> : <>
             {canPlay && <button onClick={(e) => { e.stopPropagation(); setMenuOpen(false); playNext(track); }} className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white"><ListStart className="w-3.5 h-3.5 text-accent" /><span>Play Next</span></button>}
             {canPlay && (
               <button
@@ -345,8 +411,9 @@ export function TrackRow({
                 </button>
               </>
             )}
+            </>}
           </div>,
-          document.body
+          document.fullscreenElement || document.body
         )}
     </tr>
   );
