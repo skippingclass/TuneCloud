@@ -6,6 +6,7 @@ import {
   createTestDOM,
   render,
   changeInput,
+  click,
   flushAsync,
 } from "./setup.js";
 import { setAuthToken } from "../src/api.js";
@@ -41,19 +42,12 @@ test("Albums renders genre objects from the API and sends the selected name as i
   );
   try {
     await flushAsync();
-    const select = view.container.find(
-      (el) => el.tagName === "SELECT" && el.textContent.includes("All Genres"),
-    );
-    const options = select.findAll((el) => el.tagName === "OPTION");
-    assert.deepEqual(
-      options.map((el) => el.textContent),
-      ["All Genres", "Electronic", "Rock", "Legacy genre"],
-    );
-    assert.deepEqual(
-      options.map((el) => el.getAttribute("value")),
-      ["all", "Electronic", "Rock", "Legacy genre"],
-    );
-    await changeInput(select, "Electronic");
+    const select = view.container.find(el => el.getAttribute('role') === 'combobox' && el.getAttribute('aria-label') === 'Filter by genre');
+    await click(select);
+    const options = document.body.findAll(el => el.getAttribute('role') === 'option');
+    assert.deepEqual(options.map(el => el.textContent), ['All Genres', 'Electronic', 'Rock', 'Legacy genre']);
+    assert.equal(document.body.find(el => el.tagName === 'SELECT'), null);
+    await click(options.find(el => el.textContent === 'Electronic'));
     await flushAsync();
     assert.ok(
       requests.some(

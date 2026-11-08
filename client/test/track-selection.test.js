@@ -56,9 +56,7 @@ test('track selection supports plain, Ctrl/Command and anchored Shift ranges wit
     assert.deepEqual(selected(view), [0]);
     await event(rows(view)[0], 'onDoubleClick');
     assert.equal(view.player().currentTrack.id, 1);
-    await click(view.container.find(el => el.getAttribute('aria-label') === 'Select tracks'));
-    const checkbox = rows(view)[0].find(el => el.type === 'checkbox');
-    await click(checkbox);
+    await event(rows(view)[0], 'onClick', { ctrlKey: true });
     assert.deepEqual(selected(view), []);
     await event(rows(view)[2], 'onKeyDown', { key: ' ', shiftKey: true });
     assert.deepEqual(selected(view), [0, 1, 2]);
@@ -128,7 +126,8 @@ test('Tracks sorting resets pagination, persists, and uses the same ordering for
     view = await render(content);
     await click(view.container.find(el => el.getAttribute('aria-label') === 'Next page'));
     assert.equal(requests.at(-1).offset, 2);
-    await changeInput(view.container.find(el => el.tagName === 'SELECT'), 'duration');
+    await click(view.container.find(el => el.getAttribute('role') === 'combobox' && el.getAttribute('aria-label') === 'Sort tracks'));
+    await click(document.body.find(el => el.getAttribute('role') === 'option' && el.textContent === 'Duration'));
     assert.equal(requests.at(-1).offset, 0);
     assert.equal(requests.at(-1).sort, 'duration');
     assert.equal(requests.at(-1).order, 'asc');
@@ -148,31 +147,29 @@ test('Tracks sorting resets pagination, persists, and uses the same ordering for
   } finally { await view?.unmount(); api.tracks = original; }
 });
 
-test('Select and Deselect share one stable toggle and a single row does not open bulk controls', async () => {
+test('bulk toolbar is absent initially and for plain clicks; modifiers reveal actions and Deselect hides them', async () => {
   const view = await harness();
   try {
-    const toggle = view.container.find(el => el.getAttribute('aria-label') === 'Select tracks');
-    await click(toggle);
-    assert.equal(view.container.find(el => el.getAttribute('aria-label') === 'Deselect tracks'), toggle);
-    assert.equal(rows(view).filter(row => row.find(el => el.type === 'checkbox')).length, tracks.length);
-    await click(rows(view)[0]);
-    assert.deepEqual(selected(view), [0]);
-    assert.equal(view.container.textContent.includes('1 selected'), false);
-    await click(toggle);
-    assert.deepEqual(selected(view), []);
-    assert.equal(view.container.find(el => el.getAttribute('aria-label') === 'Select tracks'), toggle);
-    assert.equal(rows(view).some(row => row.find(el => el.type === 'checkbox')), false);
-    await click(rows(view)[0]);
-    assert.equal(view.container.find(el => el.getAttribute('aria-label') === 'Select tracks'), toggle, 'a plain single click does not enable selection mode');
-    assert.equal(view.container.textContent.includes('Shift for a range'), false);
-    assert.equal(view.container.find(el => el.getAttribute('aria-label') === 'Add selection to queue'), null);
+    const bar = () => view.container.find(el => el.className.includes('track-selection-bar'));
+    assert.equal(bar(), null);
+    assert.equal(view.container.find(el => el.getAttribute('aria-label') === 'Select tracks'), null);
+    await click(rows(view)[0]); assert.equal(bar(), null);
     await event(rows(view)[1], 'onClick', { ctrlKey: true });
-    assert.ok(view.container.textContent.includes('2 tracks'));
+    assert.ok(bar()); assert.ok(bar().textContent.includes('2 tracks'));
     assert.ok(view.container.find(el => el.getAttribute('aria-label') === 'Add selection to queue'));
+    assert.equal(rows(view).some(row => row.find(el => el.className === 'track-selection-checkbox')), false);
+    await click(view.container.find(el => el.getAttribute('aria-label') === 'Deselect tracks'));
+    assert.equal(bar(), null); assert.deepEqual(selected(view), []);
+    await event(rows(view)[2], 'onClick', { metaKey: true });
+    assert.ok(bar(), 'a modifier selection of one track shows the actions too');
     await click(view.container.find(el => el.getAttribute('aria-label') === 'Select page'));
     assert.equal(selected(view).length, tracks.length);
     await click(view.container.find(el => el.getAttribute('aria-label') === 'Deselect page'));
-    assert.deepEqual(selected(view), []);
-    assert.equal(view.container.find(el => el.getAttribute('aria-label') === 'Select tracks'), toggle);
+    assert.equal(bar(), null); assert.deepEqual(selected(view), []);
+    await click(rows(view)[0]);
+    await event(rows(view)[2], 'onClick', { shiftKey: true }); assert.ok(bar());
+    await click(rows(view)[4]); assert.equal(bar(), null);
+    await event(rows(view)[0], 'onKeyDown', { key: 'a', ctrlKey: true }); assert.ok(bar());
+    await event(rows(view)[0], 'onKeyDown', { key: 'Escape' }); assert.equal(bar(), null);
   } finally { await view.unmount(); }
 });

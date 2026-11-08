@@ -1,3 +1,4 @@
+import { useConfirmation } from '../hooks/useConfirmation.jsx';
 import { useState, useEffect, useMemo } from 'react';
 import {
   ListMusic,
@@ -70,6 +71,7 @@ function PlaylistCover({ playlist }) {
 export function PlaylistsView({ onPlaylistClick, user }) {
   const [playlists, setPlaylists] = useState([]);
   const [loading, setLoading] = useState(true);
+  const { confirm, confirmation } = useConfirmation();
   const [filter, setFilter] = useState('');
   const [activeTab, setActiveTab] = useState('all'); // 'all' | 'my' | 'public'
   const [modalOpen, setModalOpen] = useState(false);
@@ -111,7 +113,7 @@ export function PlaylistsView({ onPlaylistClick, user }) {
   const handleDeletePlaylist = async (e, playlist) => {
     e.stopPropagation();
     setMenuOpenId(null);
-    if (!window.confirm(`Delete playlist "${playlist.name}"?`)) return;
+    if (!(await confirm({ title: 'Delete playlist?', description: `“${playlist.name}” will be removed from your library. Your music files will stay in place.` }))) return;
 
     try {
       await api.deletePlaylist(playlist.id);
@@ -338,6 +340,7 @@ export function PlaylistsView({ onPlaylistClick, user }) {
           }}
         />
       )}
+      {confirmation}
     </div>
   );
 }

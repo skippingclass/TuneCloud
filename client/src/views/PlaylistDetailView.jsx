@@ -1,3 +1,4 @@
+import { useConfirmation } from '../hooks/useConfirmation.jsx';
 import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
 import { shuffled as shuffleTracks } from '../utils/playback.js';
 import { useState, useEffect, useRef } from 'react';
@@ -86,6 +87,7 @@ export function PlaylistDetailView({
 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const { confirm, confirmation } = useConfirmation();
   const [editingModal, setEditingModal] = useState(false);
   const { currentTrack, isPlaying, playTrack, togglePlay } = usePlayer();
 
@@ -178,7 +180,7 @@ export function PlaylistDetailView({
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(`Are you sure you want to delete "${data.name}"?`)) return;
+    if (!(await confirm({ title: 'Delete playlist?', description: `“${data.name}” will be removed from your library. Your music files will stay in place.` }))) return;
     try {
       await api.deletePlaylist(data.id);
       toast('Playlist deleted', 'success');
@@ -432,6 +434,7 @@ export function PlaylistDetailView({
           }}
         />
       )}
+      {confirmation}
     </div>
   );
 }

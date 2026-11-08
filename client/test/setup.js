@@ -312,6 +312,7 @@ export function createTestDOM() {
   defineGlobal('Node', DOMNode);
   defineGlobal('innerWidth', 1280);
   defineGlobal('innerHeight', 800);
+  win.innerWidth = 1280; win.innerHeight = 800;
   defineGlobal('location', { origin: 'http://localhost:5173', href: 'http://localhost:5173/' });
   defineGlobal('navigator', {
     userAgent: 'node',

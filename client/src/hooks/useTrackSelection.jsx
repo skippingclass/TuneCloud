@@ -8,7 +8,7 @@ import { toast } from '../components/layout/Toast.jsx';
 const selectionKey = track => track.playlist_track_id != null ? `playlist:${track.playlist_track_id}` : track.id;
 
 export function useTrackSelection(tracks, onAddToPlaylist) {
-  const [checkboxMode, setCheckboxMode] = useState(false);
+  const [bulkMode, setBulkMode] = useState(false);
   const [ids, setIds] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const anchor = useRef(null);
@@ -18,16 +18,18 @@ export function useTrackSelection(tracks, onAddToPlaylist) {
   const scope = tracks.map(selectionKey).join(',');
   useEffect(() => {
     setIds(new Set());
+    setBulkMode(false);
     anchor.current = null;
   }, [scope]);
 
   const close = () => {
-    setCheckboxMode(false);
+    setBulkMode(false);
     setIds(new Set());
     anchor.current = null;
   };
   const select = (id, event = {}, orderedTracks = tracks, toggle = false) => {
     const additive = event.ctrlKey || event.metaKey;
+    setBulkMode(Boolean(additive || event.shiftKey));
     const end = orderedTracks.findIndex(t => selectionKey(t) === id);
     const start = orderedTracks.findIndex(t => selectionKey(t) === anchor.current);
     if (event.shiftKey && start >= 0 && end >= 0) {
@@ -51,6 +53,7 @@ export function useTrackSelection(tracks, onAddToPlaylist) {
       close();
     } else if ((event.ctrlKey || event.metaKey) && event.key?.toLowerCase() === 'a') {
       event.preventDefault();
+      setBulkMode(true);
       setIds(new Set(orderedTracks.map(selectionKey)));
     } else if (track && event.target === event.currentTarget && event.key === ' ') {
       event.preventDefault();
@@ -94,20 +97,18 @@ export function useTrackSelection(tracks, onAddToPlaylist) {
     favorite: addFavorites,
   };
   const toolbarFor = (visibleTracks = tracks) => {
-    if (!visibleTracks.length) return null;
-    const active = checkboxMode || selected.length > 1;
-    const bulk = checkboxMode || selected.length > 1;
+    if (!visibleTracks.length || !bulkMode || !selected.length) return null;
     const allSelected = visibleTracks.every(track => ids.has(selectionKey(track)));
-    return <div className={`track-selection-bar ${bulk ? 'has-selection' : ''}`}
+    return <div className={`track-selection-bar has-selection`}
       onKeyDown={event => keyDown(event, null, visibleTracks)}>
-      <button className="track-selection-toggle" title="Ctrl / ⌘ click to add tracks; Shift click to select a range" aria-pressed={active} aria-label={active ? 'Deselect tracks' : 'Select tracks'}
-        onClick={() => active ? close() : setCheckboxMode(true)}>
-        <CheckSquare size={15} /> {active ? 'Deselect' : 'Select'}
+      <button className="track-selection-toggle" title="Ctrl / ⌘ click to add tracks; Shift click to select a range" aria-pressed={true} aria-label="Deselect tracks"
+        onClick={close}>
+        <CheckSquare size={15} /> Deselect
       </button>
       <span className="track-selection-summary" role="status">
-        {selected.length > 1 ? `${selected.length} tracks` : ''}
+        {`${selected.length} ${selected.length === 1 ? 'track' : 'tracks'}`}
       </span>
-      {bulk && <div className="track-selection-tools">
+      <div className="track-selection-tools">
         <button className="track-selection-action" aria-label={allSelected ? 'Deselect page' : 'Select page'}
           onClick={() => { setIds(allSelected ? new Set() : new Set(visibleTracks.map(selectionKey))); anchor.current = selectionKey(visibleTracks[0]); }}>
           <CheckSquare size={15} /><span>{allSelected ? 'None' : 'All'}</span>
@@ -115,20 +116,21 @@ export function useTrackSelection(tracks, onAddToPlaylist) {
         <button disabled={!actions.canPlay} onClick={queue} className="track-selection-action" aria-label="Add selection to queue"><ListPlus size={15} /><span>Queue</span></button>
         {actions.playlist && <button disabled={!selected.length} onClick={actions.playlist} className="track-selection-action" aria-label="Add selection to playlist"><FolderPlus size={15} /><span>Playlist</span></button>}
         <button disabled={!selected.length || busy} onClick={addFavorites} className="track-selection-action" aria-label="Like selection"><Heart size={15} /><span>{busy ? 'Adding…' : 'Like'}</span></button>
-      </div>}
+      </div>
     </div>;
   };
   return {
     toolbar: toolbarFor(),
     toolbarFor,
     rowProps: (track, orderedTracks = tracks) => ({
-      selectionMode: checkboxMode,
+      selectionMode: false,
       selected: ids.has(selectionKey(track)),
       onSelect: (id, event) => select(selectionKey(track), event, orderedTracks, true),
-      onRowSelect: event => select(selectionKey(track), event, orderedTracks, checkboxMode),
+      onRowSelect: event => select(selectionKey(track), event, orderedTracks),
       onSelectionKeyDown: event => keyDown(event, track, orderedTracks),
       onContextSelect: () => {
         if (!ids.has(selectionKey(track))) {
+          setBulkMode(false);
           anchor.current = selectionKey(track);
           setIds(new Set([selectionKey(track)]));
         }

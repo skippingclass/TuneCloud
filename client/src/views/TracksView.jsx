@@ -1,3 +1,4 @@
+import { Select } from '../components/common/Select.jsx';
 import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
 import { useLibraryState } from '../hooks/useLibraryState.js';
 import { shuffled as shuffleTracks } from '../utils/playback.js';
@@ -270,9 +271,7 @@ export function TracksView({
 
         <div className="tracks-sort-controls">
           <label className="tracks-sort-label" htmlFor="tracks-sort">Sort by</label>
-          <select id="tracks-sort" aria-label="Sort tracks" value={sort} onChange={event => changeSort(event.target.value)} className="tracks-sort-select">
-            {TRACK_SORTS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
+          <Select id="tracks-sort" label="Sort tracks" value={sort} options={TRACK_SORTS} onChange={changeSort} />
           <button className="tracks-sort-direction" onClick={() => changeSort(sort, order === 'asc' ? 'desc' : 'asc')}
             aria-label={order === 'asc' ? 'Sort descending' : 'Sort ascending'} title={order === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}>
             {order === 'asc' ? <ArrowUp size={16} /> : <ArrowDown size={16} />}

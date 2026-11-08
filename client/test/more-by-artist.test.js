@@ -30,7 +30,7 @@ test('More by artist filters requests, excludes current/duplicate releases and s
   try {
     await flushAsync();
     const params = new URL(requests.find(url => url.startsWith('/api/albums?')), 'http://localhost').searchParams;
-    assert.equal(params.get('artist_id'), '5'); assert.equal(params.get('exclude_id'), '10'); assert.equal(params.get('limit'), '10');
+    assert.equal(params.get('artist_id'), '5'); assert.equal(params.get('exclude_id'), '10'); assert.equal(params.get('limit'), '6');
     assert.equal(params.get('sort'), 'year_desc');
     const headings = view.container.findAll(el => el.tagName === 'H3').map(el => el.textContent);
     assert.deepEqual(headings, ['Another release', 'Earlier single']);
@@ -79,5 +79,18 @@ test('albums sharing a title keep independent playback controls', async () => {
     await React.act(async () => player.playTrack({ id: 101, album_id: 1, album: 'Same title', title: 'Song' }, [{ id: 101, album_id: 1, album: 'Same title', title: 'Song' }]));
     const play = view.container.find(el => el.tagName === 'BUTTON' && el.getAttribute('title') === 'Play Album');
     assert.ok(play); await click(play); assert.equal(played, 2);
+  } finally { await view.unmount(); }
+});
+
+
+test('More by artist stays a bounded preview with remaining releases in discography', async () => {
+  createTestDOM(); setAuthToken(null); let destination;
+  globalThis.fetch = async () => response({ albums: Array.from({ length: 15 }, (_, i) => ({ id: i + 2, title: `Release ${i}`, artist: 'Artist', artist_id: 5 })) });
+  const view = await render(wrap(<MoreByArtist artist={{ id: 5, name: 'Artist' }} albumId={1} onGoToArtist={artist => destination = artist} />));
+  try {
+    await flushAsync(); assert.equal(view.container.findAll(el => el.tagName === 'H3').length, 6);
+    assert.ok(!view.container.textContent.includes('Release 6'));
+    await click(view.container.find(el => el.tagName === 'BUTTON' && el.textContent === 'See discography'));
+    assert.deepEqual(destination, { id: 5, name: 'Artist' });
   } finally { await view.unmount(); }
 });

@@ -1,3 +1,4 @@
+import { Select } from '../components/common/Select.jsx';
 import { useLibraryState } from '../hooks/useLibraryState.js';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
@@ -182,61 +183,21 @@ export function AlbumsView({ onAlbumClick, onArtistClick }) {
             {/* Genre selector */}
             <div className="flex items-center gap-1.5 text-xs">
               <Filter className="w-3.5 h-3.5 text-surface-500 hidden sm:inline" />
-              <select
-                value={selectedGenre}
-                onChange={(e) => {
-                  setSelectedGenre(e.target.value);
-                  setPage(1);
-                }}
-                className="glass-input text-xs py-2 px-2.5 rounded-xl border-white/[0.1] bg-surface-900/90"
-              >
-                <option value="all">All Genres</option>
-                {genresList.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
+              <Select label="Filter by genre" value={selectedGenre} options={[{ value: 'all', label: 'All Genres' }, ...genresList.map(g => ({ value: g, label: g }))]}
+                onChange={value => { setSelectedGenre(value); setPage(1); }} />
             </div>
 
             {/* Year selector */}
             <div className="flex items-center gap-1.5 text-xs">
-              <select
-                value={selectedYear}
-                onChange={(e) => {
-                  setSelectedYear(e.target.value);
-                  setPage(1);
-                }}
-                className="glass-input text-xs py-2 px-2.5 rounded-xl border-white/[0.1] bg-surface-900/90"
-              >
-                <option value="all">All Years</option>
-                {recentYears.slice(0, 40).map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
-              </select>
+              <Select label="Filter by year" value={selectedYear} options={[{ value: 'all', label: 'All Years' }, ...recentYears.slice(0, 40).map(y => ({ value: String(y), label: String(y) }))]}
+                onChange={value => { setSelectedYear(value); setPage(1); }} />
             </div>
 
             {/* Sort selector */}
             <div className="flex items-center gap-1.5 text-xs">
               <ArrowUpDown className="w-3.5 h-3.5 text-surface-500 hidden sm:inline" />
-              <select
-                value={sortBy}
-                onChange={(e) => {
-                  setSortBy(e.target.value);
-                  setPage(1);
-                }}
-                className="glass-input text-xs py-2 px-2.5 rounded-xl border-white/[0.1] bg-surface-900/90"
-              >
-                <option value="recent">Recently Added</option>
-                <option value="title_asc">Title (A to Z)</option>
-                <option value="title_desc">Title (Z to A)</option>
-                <option value="year_desc">Year (Newest)</option>
-                <option value="year_asc">Year (Oldest)</option>
-                <option value="duration">Longest Duration</option>
-                <option value="play_count">Most Played</option>
-              </select>
+              <Select label="Sort albums" value={sortBy} options={[{ value: 'recent', label: 'Recently Added' }, { value: 'title_asc', label: 'Title (A to Z)' }, { value: 'title_desc', label: 'Title (Z to A)' }, { value: 'year_desc', label: 'Year (Newest)' }, { value: 'year_asc', label: 'Year (Oldest)' }, { value: 'duration', label: 'Longest Duration' }, { value: 'play_count', label: 'Most Played' }]}
+                onChange={value => { setSortBy(value); setPage(1); }} />
             </div>
 
             {/* Reset button */}

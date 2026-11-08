@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { AlbumCard } from './cards/AlbumCard.jsx';
@@ -10,6 +10,8 @@ export function MoreByArtist({ artist, albumId, onGoToAlbum, onGoToArtist }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const playRequest = useRef(null);
+  const shelf = useRef(null);
+  const [columns, setColumns] = useState(6);
   const { playTrack } = usePlayer();
 
   useEffect(() => {
@@ -17,7 +19,7 @@ export function MoreByArtist({ artist, albumId, onGoToAlbum, onGoToArtist }) {
     setLoading(true);
     setFailed(false);
     setReleases([]);
-    api.albums({ artist_id: artist.id, exclude_id: albumId, limit: 10, sort: 'year_desc' }, { signal: controller.signal })
+    api.albums({ artist_id: artist.id, exclude_id: albumId, limit: 6, sort: 'year_desc' }, { signal: controller.signal })
       .then(response => {
         if (controller.signal.aborted) return;
         const seen = new Set([String(albumId)]);
@@ -26,7 +28,7 @@ export function MoreByArtist({ artist, albumId, onGoToAlbum, onGoToArtist }) {
           if (seen.has(id)) return false;
           seen.add(id);
           return true;
-        }));
+        }).slice(0, 6));
       })
       .catch(() => { if (!controller.signal.aborted) setFailed(true); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -34,6 +36,15 @@ export function MoreByArtist({ artist, albumId, onGoToAlbum, onGoToArtist }) {
   }, [artist.id, albumId, attempt]);
 
   useEffect(() => () => playRequest.current?.abort(), []);
+  useLayoutEffect(() => {
+    if (!shelf.current || typeof getComputedStyle !== 'function') return;
+    const measure = () => setColumns(Number(getComputedStyle(shelf.current).getPropertyValue('--release-columns')) || 6);
+    measure();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(shelf.current);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [loading, failed]);
 
   const playRelease = async release => {
     playRequest.current?.abort();
@@ -69,14 +80,14 @@ export function MoreByArtist({ artist, albumId, onGoToAlbum, onGoToArtist }) {
           <button className="text-surface-100 hover:underline" onClick={() => setAttempt(value => value + 1)}>Retry</button>
         </div>
       ) : (
-        <div className="artist-release-shelf" aria-busy={loading}>
-          {loading ? Array.from({ length: 6 }, (_, index) => (
+        <div ref={shelf} className="artist-release-shelf" aria-busy={loading}>
+          {loading ? Array.from({ length: columns }, (_, index) => (
             <div key={index} aria-hidden="true" className="rounded-xl bg-white/[0.025] p-3 animate-pulse">
               <div className="aspect-square rounded-md bg-white/[0.05]" />
               <div className="h-3 w-3/4 mt-4 rounded bg-white/[0.05]" />
               <div className="h-3 w-1/3 mt-2 rounded bg-white/[0.05]" />
             </div>
-          )) : releases.map(release => (
+          )) : releases.slice(0, columns).map(release => (
             <AlbumCard key={release.id} album={release} onClick={onGoToAlbum} onArtistClick={onGoToArtist} onPlay={playRelease} />
           ))}
         </div>

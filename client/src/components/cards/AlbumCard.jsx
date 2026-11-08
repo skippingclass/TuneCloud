@@ -83,7 +83,7 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick, compact = fal
         {onPlay && (
           <button
             onClick={handlePlayClick}
-            className={`absolute bottom-2.5 right-2.5 rounded-full bg-gradient-to-r from-accent to-accent-hover text-surface-950 flex items-center justify-center shadow-glow transition-all duration-300 hover:scale-110 z-10 ${
+            className={`album-card-play absolute bottom-2.5 right-2.5 rounded-full bg-accent text-surface-950 flex items-center justify-center shadow-glow transition-all duration-300 hover:scale-110 z-10 ${
               compact ? 'w-8 h-8' : 'w-10 h-10'
             } ${
               isCurrentAlbum
