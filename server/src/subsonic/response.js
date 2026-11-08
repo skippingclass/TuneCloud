@@ -84,10 +84,19 @@ export function renderXmlChildren(data) {
 }
 
 function getParam(req, name) {
-  return req.query?.[name] ?? req.body?.[name];
+  return req.body?.[name] ?? req.query?.[name];
+}
+
+function imageUrls(value, req) {
+  if (Array.isArray(value)) return value.map(item => imageUrls(item, req));
+  if (!value || typeof value !== 'object' || value instanceof Date) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
+    /ImageUrl$/.test(key) && typeof item === 'string' && item.startsWith('/api/cover/') && req.headers?.host
+      ? `${process.env.PUBLIC_URL?.replace(/\/$/, '') || `${req.protocol || 'http'}://${req.headers.host}`}${item}` : imageUrls(item, req)]));
 }
 
 export function buildSubsonicResponse(reply, req, data, isError = false, errorCode = 0, errorMessage = '') {
+  data = imageUrls(data, req);
   const format = String(getParam(req, 'f') || 'xml').toLowerCase();
   const status = isError ? 'failed' : 'ok';
 

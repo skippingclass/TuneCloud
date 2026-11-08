@@ -1,5 +1,5 @@
 import { useDialog } from '../../hooks/useDialog.js';
-import { useState, useId } from 'react';
+import { useState, useId, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Save, Edit3 } from 'lucide-react';
 import { api } from '../../api.js';
@@ -15,28 +15,45 @@ export function EditTrackModal({ track, onClose, onSaved }) {
     trackNumber: track.track_number || '',
     genre: track.genre || '',
     year: track.year || '',
+    albumArtist: '', composer: '', discNumber: '', discTotal: '', compilation: false,
   });
+  const baseline = useRef(form);
+  const [capability, setCapability] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  useEffect(() => {
+    let active = true;
+    Promise.all([api.tagCapabilities(), api.tags(track.id)]).then(([cap, tags]) => {
+      if (!active) return;
+      const initial = { title: tags.title || '', artist: tags.artist || '', album: tags.album || '',
+        trackNumber: tags.track || '', year: tags.year || '', genre: (tags.genres || [tags.genre]).filter(Boolean).join('; '),
+        albumArtist: tags.albumArtist || '', composer: tags.composer || '', discNumber: tags.discNumber || '',
+        discTotal: tags.discTotal || '', compilation: Boolean(tags.compilation) };
+      baseline.current = initial; setForm(initial);
+      const format = (track.format || track.file_name?.split('.').pop() || '').toLowerCase();
+      setCapability(cap.enabled && !cap.formats.includes(format) ? { enabled: false, reason: `Editing ${format.toUpperCase()} tags is not supported.` } : cap);
+    }).catch(e => { if (active) setError(e.message); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [track.id]);
+
   const handleSave = async (e) => {
     e.preventDefault();
+    if (loading || !capability?.enabled) return;
     setSaving(true);
     setError('');
     try {
       const payload = {};
-      if (form.title !== (track.title || '')) payload.title = form.title;
-      if (form.artist !== (track.artist || '')) payload.artist = form.artist;
-      if (form.album !== (track.album || '')) payload.album = form.album;
-      if (String(form.trackNumber) !== String(track.track_number || '')) {
-        payload.trackNumber = form.trackNumber ? parseInt(form.trackNumber, 10) : null;
+      for (const field of ['title', 'artist', 'album', 'albumArtist', 'composer', 'compilation']) {
+        if (form[field] !== baseline.current[field]) payload[field] = form[field];
       }
-      if (form.genre !== (track.genre || '')) payload.genre = form.genre;
-      if (String(form.year) !== String(track.year || '')) {
-        payload.year = form.year ? parseInt(form.year, 10) : null;
+      for (const field of ['trackNumber', 'year', 'discNumber', 'discTotal']) {
+        if (String(form[field]) !== String(baseline.current[field])) payload[field] = form[field] === '' ? null : Number(form[field]);
       }
+      if (form.genre !== baseline.current.genre) payload.genres = form.genre.split(';').map(g => g.trim()).filter(Boolean);
       await api.updateTags(track.id, payload);
       toast('Tags updated successfully', 'success');
       onSaved?.();
@@ -54,7 +71,7 @@ export function EditTrackModal({ track, onClose, onSaved }) {
       onClick={onClose}
     >
       <div
-        className="glass-panel w-full max-w-md rounded-3xl p-6 sm:p-7 shadow-glass-lg border border-white/[0.1] relative select-none animate-slide-up"
+        className="glass-panel w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl p-6 sm:p-7 shadow-glass-lg border border-white/[0.1] relative select-none animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between pb-4 border-b border-white/[0.08] mb-5">
@@ -75,6 +92,7 @@ export function EditTrackModal({ track, onClose, onSaved }) {
           {track.file_name}
         </p>
 
+        {capability?.reason && <p role="status" className="text-xs text-amber-300 mb-4">{capability.reason}</p>}
         <form onSubmit={handleSave} className="space-y-4">
           <div>
             <label htmlFor={`${formId}-title`} className="block text-xs font-semibold text-surface-400 mb-1.5">
@@ -136,7 +154,7 @@ export function EditTrackModal({ track, onClose, onSaved }) {
             </div>
             <div>
               <label htmlFor={`${formId}-genre`} className="block text-xs font-semibold text-surface-400 mb-1.5">
-                Genre
+                Genres (; separated)
               </label>
               <input id={`${formId}-genre`}
                 className="glass-input w-full"
@@ -146,6 +164,18 @@ export function EditTrackModal({ track, onClose, onSaved }) {
             </div>
           </div>
 
+          <div className="grid grid-cols-2 gap-3">
+            {['albumArtist', 'composer', 'discNumber', 'discTotal'].map(field => (
+              <label key={field} className="block text-xs text-surface-400">
+                {{ albumArtist: 'Album Artist', composer: 'Composer', discNumber: 'Disc #', discTotal: 'Total Discs' }[field]}
+                <input className="glass-input w-full mt-1" type={field.startsWith('disc') ? 'number' : 'text'} min={field.startsWith('disc') ? '0' : undefined}
+                  value={form[field]} onChange={set(field)} />
+              </label>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-xs text-surface-400">
+            <input type="checkbox" checked={form.compilation} onChange={e => setForm(f => ({ ...f, compilation: e.target.checked }))} /> Compilation
+          </label>
           {error && <p className="text-xs text-rose-400">{error}</p>}
 
           <div className="pt-2 flex items-center justify-end gap-3">
@@ -154,11 +184,11 @@ export function EditTrackModal({ track, onClose, onSaved }) {
             </button>
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || loading || !capability?.enabled}
               className="btn-primary px-5 py-2"
             >
               <Save className="w-4 h-4" />
-              <span>{saving ? 'Saving...' : 'Save Tags'}</span>
+              <span>{loading ? 'Loading...' : saving ? 'Saving...' : 'Save Tags'}</span>
             </button>
           </div>
         </form>

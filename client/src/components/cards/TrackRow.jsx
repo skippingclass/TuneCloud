@@ -51,7 +51,7 @@ export function TrackRow({
   const isAvailable = track.available !== false;
   const canPlay = track.id != null && isAvailable;
   const isAdmin = user?.is_admin;
-  const canEditTags = ['mp3', 'flac', 'ogg', 'opus', 'm4a'].includes(track.format?.toLowerCase());
+  const canEditTags = ['mp3', 'flac', 'ogg', 'opus', 'm4a', 'wav', 'wma', 'aac'].includes(track.format?.toLowerCase());
 
   const trackArtist = (track.artist || '').trim();
   const baseArtist = (albumArtist || '').trim();

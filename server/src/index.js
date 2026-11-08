@@ -83,6 +83,8 @@ export async function buildApp() {
       return (
         req.url === '/metrics' ||
         req.url === '/api/health' ||
+        req.url.startsWith('/rest/') ||
+        req.url.startsWith('/api/cover/') ||
         req.url.startsWith('/api/stream/')
       );
     },

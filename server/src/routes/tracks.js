@@ -57,7 +57,7 @@ export default async function trackRoutes(fastify) {
 
     if (genre) {
       params.push(`%${genre}%`);
-      conditions.push(`t.genre ILIKE $${params.length}`);
+      conditions.push(`(t.genre ILIKE $${params.length} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.metadata->'genres','[]'::jsonb)) g WHERE g ILIKE $${params.length}))`);
     }
 
     if (typeof q === 'string' && q.trim()) {
@@ -74,7 +74,7 @@ export default async function trackRoutes(fastify) {
 
     const { rows } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
-              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata,
               (t.missing_since IS NULL) AS available,
               COALESCE(uph.user_play_count, 0)::int as play_count,
               uph.user_last_played_at as last_played_at,
@@ -367,7 +367,7 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE (LOWER(a.name) = LOWER($1) OR EXISTS (SELECT 1 FROM regexp_split_to_table(t.track_artist_credit, '[,;]|[[:space:]]+(feat[.]?|ft[.]?|featuring|vs[.]?)[[:space:]]+', 'i') AS credit WHERE LOWER(BTRIM(credit)) = LOWER($2)))
+       WHERE (LOWER(a.name) = LOWER($1) OR EXISTS (SELECT 1 FROM track_credits c JOIN artists ca ON ca.id=c.artist_id WHERE c.track_id=t.id AND c.role='artist' AND LOWER(ca.name)=LOWER($2)))
          AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
       [trimmed, trimmed]
@@ -443,7 +443,7 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE (t.artist_id = $1 OR EXISTS (SELECT 1 FROM regexp_split_to_table(t.track_artist_credit, '[,;]|[[:space:]]+(feat[.]?|ft[.]?|featuring|vs[.]?)[[:space:]]+', 'i') AS credit WHERE LOWER(BTRIM(credit)) = LOWER($2)))
+       WHERE (t.artist_id = $1 OR EXISTS (SELECT 1 FROM track_credits c JOIN artists ca ON ca.id=c.artist_id WHERE c.track_id=t.id AND c.role='artist' AND LOWER(ca.name)=LOWER($2)))
          AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
       [artistId, artist.name]
@@ -820,12 +820,11 @@ export default async function trackRoutes(fastify) {
   // ---- Genres ----
   fastify.get('/api/genres', { preHandler: requireAuth }, async () => {
     const { rows } = await query(
-      `SELECT genre as name, COUNT(*)::int as track_count
-       FROM tracks
-       WHERE genre IS NOT NULL AND TRIM(genre) <> '' AND missing_since IS NULL
-       GROUP BY genre
-       ORDER BY track_count DESC, genre ASC
-       LIMIT 50`
+      `SELECT genre AS name, COUNT(*)::int AS track_count FROM tracks t
+       CROSS JOIN LATERAL jsonb_array_elements_text(CASE
+         WHEN jsonb_array_length(COALESCE(t.metadata->'genres','[]'::jsonb))>0 THEN t.metadata->'genres'
+         WHEN NULLIF(TRIM(t.genre),'') IS NOT NULL THEN jsonb_build_array(t.genre) ELSE '[]'::jsonb END) g(genre)
+       WHERE missing_since IS NULL GROUP BY genre ORDER BY track_count DESC, genre ASC LIMIT 50`
     );
     return rows;
   });

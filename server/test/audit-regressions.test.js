@@ -156,12 +156,12 @@ test('audit regressions: tag APIs, atomic album merge, and safe artwork fallback
     });
 
     await t.test('unsupported and corrupt files leave source and database intact', async () => {
-      for (const format of ['wav','flac']) {
+      for (const format of ['xyz','flac']) {
         const file=path.join(process.env.MUSIC_DIR,'bad.'+format),bytes=Buffer.from('invalid test data');
         await fs.writeFile(file,bytes);
         const id=(await query("INSERT INTO tracks(file_path,file_name,title) VALUES($1,$2,'Intact') RETURNING id",[file,path.basename(file)])).rows[0].id;
         const response=await call(id,{title:'No'});
-        assert.equal(response.statusCode,format==='wav'?400:500);
+        assert.equal(response.statusCode,format==='xyz'?400:500);
         assert.deepEqual(await fs.readFile(file),bytes);
         assert.equal((await query('SELECT title FROM tracks WHERE id=$1',[id])).rows[0].title,'Intact');
       }

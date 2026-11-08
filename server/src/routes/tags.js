@@ -6,6 +6,8 @@ import { query, getClient } from '../db.js';
 import { requireAuth, requireAdmin } from '../auth.js';
 import { extractLeadingArtist, computeFileHashes, refreshAlbumsMetadata } from '../scanner.js';
 import { EDITABLE_TAG_FORMATS, writeAudioTags } from '../tag-writer.js';
+import { readMetadata, saveTrackMetadata, albumReleaseKey } from '../metadata.js';
+import { extractAllMissingCovers, extractCoverForTrack } from '../cover.js';
 
 const TAG_EXTS = ['.mp3', '.flac', '.ogg', '.opus', '.m4a', '.aac', '.wma', '.wav'];
 
@@ -19,16 +21,20 @@ async function ensureArtist(client, name) {
   return rows[0].id;
 }
 
-async function ensureAlbum(client, title, artistId, year, genre) {
+async function ensureAlbum(client, title, artistId, year, genre, folder, metadata) {
   if (!title || title.trim() === '') return null;
   title = title.trim();
-  const conflict = artistId == null ? '(LOWER(title)) WHERE artist_id IS NULL' : '(LOWER(title), artist_id)';
+  const releaseKey = albumReleaseKey(folder, metadata);
+  const existing = await client.query(`SELECT id FROM albums WHERE LOWER(title)=LOWER($1) AND artist_id IS NOT DISTINCT FROM $2
+    AND (release_key=$3 OR (release_key='' AND folder_path IS NULL)) ORDER BY id LIMIT 1`, [title, artistId, releaseKey]);
+  if (existing.rows.length) return existing.rows[0].id;
+  const conflict = artistId == null ? '(LOWER(title), release_key) WHERE artist_id IS NULL' : '(LOWER(title), artist_id, release_key)';
   const { rows } = await client.query(
-    `INSERT INTO albums (title, artist_id, year, genre)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO albums (title, artist_id, year, genre, folder_path, release_key)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT ${conflict} DO UPDATE SET year = COALESCE(EXCLUDED.year, albums.year), genre = COALESCE(EXCLUDED.genre, albums.genre)
      RETURNING id`,
-    [title, artistId, year || null, genre || null]
+    [title, artistId, year || null, genre || null, folder, releaseKey]
   );
   return rows[0].id;
 }
@@ -42,11 +48,21 @@ async function readTags(filePath) {
     album: c.album || '',
     track: c.track?.no || '',
     year: c.year || '',
-    genre: c.genre?.[0] || '',
+    genre: c.genre?.join(', ') || '',
+    genres: c.genre || [],
+    albumArtist: c.albumartist || '',
+    composer: c.composer?.join('; ') || '',
+    discNumber: c.disk?.no || '', discTotal: c.disk?.of || '',
+    compilation: Boolean(c.compilation),
   };
 }
 
 export default async function tagRoutes(fastify) {
+  fastify.get('/api/tags/capabilities', { preHandler: requireAuth }, async (req) => ({
+    enabled: process.env.TAG_EDITING_ENABLED === 'true' && Boolean(req.user.is_admin),
+    reason: !req.user.is_admin ? 'Administrator access is required to edit tags.' : process.env.TAG_EDITING_ENABLED !== 'true' ? 'Tag editing is disabled by the library administrator.' : null,
+    formats: EDITABLE_TAG_FORMATS,
+  }));
   fastify.put('/api/tags/:id', { preHandler: requireAdmin }, async (req, reply) => {
     if (process.env.TAG_EDITING_ENABLED !== 'true') {
       return reply.status(403).send({ error: 'Tag editing is disabled for this library' });
@@ -55,13 +71,15 @@ export default async function tagRoutes(fastify) {
     if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
       return reply.status(400).send({ error: 'Tag updates must be an object' });
     }
-    for (const field of ['year', 'trackNumber']) {
+    for (const field of ['year', 'trackNumber', 'discNumber', 'discTotal']) {
       if (updates[field] === '') updates[field] = null;
       else if (typeof updates[field] === 'string' && /^\d{1,4}$/.test(updates[field])) updates[field] = Number(updates[field]);
     }
-    const textFields = ['title', 'artist', 'album', 'genre'];
-    const numericFields = ['year', 'trackNumber'];
-    if (Object.keys(updates).some(k => ![...textFields, ...numericFields].includes(k)) ||
+    const textFields = ['title', 'artist', 'album', 'genre', 'albumArtist', 'composer', 'musicBrainzId', 'albumMusicBrainzId'];
+    const numericFields = ['year', 'trackNumber', 'discNumber', 'discTotal'];
+    if ((updates.genre !== undefined && updates.genres !== undefined) || Object.keys(updates).some(k => ![...textFields, ...numericFields, 'genres', 'compilation'].includes(k)) ||
+        (updates.compilation !== undefined && typeof updates.compilation !== 'boolean') ||
+        (updates.genres !== undefined && (!Array.isArray(updates.genres) || updates.genres.length > 100 || updates.genres.some(g => typeof g !== 'string' || g.length > 1000))) ||
         textFields.some(k => updates[k] !== undefined && (typeof updates[k] !== 'string' || updates[k].length > 1000)) ||
         numericFields.some(k => updates[k] !== undefined && updates[k] !== null &&
           (!Number.isInteger(updates[k]) || updates[k] < 0 || updates[k] > 9999))) {
@@ -80,7 +98,7 @@ export default async function tagRoutes(fastify) {
       if (rel.startsWith('..') || path.isAbsolute(rel)) throw Object.assign(new Error('File outside music library'), { statusCode: 403 });
       const format = path.extname(filePath).slice(1).toLowerCase();
       if (!EDITABLE_TAG_FORMATS.includes(format)) {
-        throw Object.assign(new Error('Tag editing is supported for MP3, FLAC, Ogg, Opus and M4A files'), { statusCode: 400 });
+        throw Object.assign(new Error(`Tag editing is not supported for ${format.toUpperCase()} files`), { statusCode: 400 });
       }
       const suffix = crypto.randomUUID();
       staged = `${filePath}.${suffix}.tmp`;
@@ -90,12 +108,15 @@ export default async function tagRoutes(fastify) {
       writeAudioTags(staged, format, updates);
 
       const metadata = await parseFile(staged, { skipCovers: true });
+      const structured = readMetadata(metadata.common, metadata.format);
       let artistId = rows[0].artist_id;
       if (updates.artist !== undefined) artistId = await ensureArtist(client, updates.artist);
       const fields = [], params = [];
       const add = (name, value) => { params.push(value); fields.push(`${name} = $${params.length}`); };
       if (updates.title !== undefined) add('title', updates.title || path.basename(filePath, path.extname(filePath)));
       if (updates.genre !== undefined) add('genre', updates.genre || null);
+      if (updates.genres !== undefined) add('genre', updates.genres.join(', ') || null);
+      if (updates.discNumber !== undefined) add('disc_number', updates.discNumber || 1);
       if (updates.year !== undefined) add('year', updates.year || null);
       if (updates.trackNumber !== undefined) add('track_number', updates.trackNumber || null);
       if (updates.artist !== undefined) {
@@ -103,10 +124,11 @@ export default async function tagRoutes(fastify) {
         add('track_artist_credit', updates.artist.trim() || null);
       }
       add('album_artist_credit', metadata.common.albumartist || null);
-      if (updates.album !== undefined) {
+      if (updates.album !== undefined || updates.albumArtist !== undefined || updates.albumMusicBrainzId !== undefined) {
         const albumArtistId = metadata.common.albumartist
           ? await ensureArtist(client, metadata.common.albumartist) : artistId;
-        const albumId = await ensureAlbum(client, updates.album, albumArtistId, updates.year, updates.genre);
+        const folder = path.basename(path.dirname(filePath)).match(/^(cd|disc|disk)\s*\d+$/i) ? path.dirname(path.dirname(filePath)) : path.dirname(filePath);
+        const albumId = await ensureAlbum(client, metadata.common.album, albumArtistId, metadata.common.year, metadata.common.genre?.join(', '), folder, structured);
         add('album_id', albumId);
       }
       const { mtime, size } = await fs.stat(staged);
@@ -117,6 +139,7 @@ export default async function tagRoutes(fastify) {
       add('audio_hash', audioHash);
       params.push(req.params.id);
       await client.query(`UPDATE tracks SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${params.length}`, params);
+      await saveTrackMetadata(client, [{ file_path: rows[0].file_path, metadata: structured }]);
       await fs.copyFile(filePath, backup);
       await fs.rename(staged, filePath);
       replaced = true;
@@ -141,6 +164,12 @@ export default async function tagRoutes(fastify) {
       await client.query('DELETE FROM track_lyrics WHERE track_id = $1', [req.params.id]);
       await client.query('COMMIT');
       committed = true;
+      // Refresh art after releasing DB row locks; an artwork failure must never
+      // roll back an already committed tag write or report it as unsaved.
+      try {
+        await extractAllMissingCovers({ albumIds: [...new Set([rows[0].album_id, updated[0]?.album_id].filter(Boolean))], force: true });
+        if (!updated[0]?.album_id) await extractCoverForTrack(req.params.id);
+      } catch (error) { req.log.error({ code: error.code }, 'Artwork refresh failed after tag update'); }
       return { success: true };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});

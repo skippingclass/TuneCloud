@@ -123,7 +123,7 @@ test('library identity, tag consistency, exact artist matching, playback retries
       assert.equal(extractLeadingArtist('Main feat. Guest'), 'Main');
       const low = await makeTrack('low', { artist: 'Low', album: 'Low album', title: 'Low song' });
       const slow = await makeTrack('slow', { artist: 'Slowdive', album: 'Slow album', title: 'Slow song' });
-      const guest = await makeTrack('guest', { artist: 'Other, Low', album: 'Guest album', title: 'Guest song' });
+      const guest = await makeTrack('guest', { artist: 'Other feat. Low', album: 'Guest album', title: 'Guest song' });
       const result = (await call(`/api/artists/${low.artist_id}`)).json();
       assert.deepEqual(result.tracks.map(track => track.id).sort((a,b) => a-b), [low.id, guest.id].sort((a,b) => a-b));
       assert.ok(!result.tracks.some(track => track.id === slow.id));

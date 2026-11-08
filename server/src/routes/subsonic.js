@@ -23,7 +23,8 @@ import {
   IGNORED_ARTICLES_STR,
 } from '../subsonic/formatters.js';
 import { sendAudioFile } from '../streaming.js';
-import { resolveCoverFile } from '../cover.js';
+import { resolveCoverFile, sendCoverFile } from '../cover.js';
+import { readEmbeddedLyrics } from '../lyrics.js';
 import { getScanState, startScanInBackground } from './scan.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -171,7 +172,8 @@ async function loadTrackLyrics(filePath) {
       return { synced: false, lines };
     } catch {}
   }
-  return null;
+  const embedded = await readEmbeddedLyrics(filePath);
+  return embedded ? (embedded.synced ? parseLrc(embedded.lyrics) : { synced: false, lines: embedded.lyrics.split(/\r?\n/).map(value => ({ value })) }) : null;
 }
 
 function missing(reply, req, name) {
@@ -198,33 +200,23 @@ function requireId(reply, req, params, what) {
 const ALBUM_GROUP = `GROUP BY al.id, al.title, al.year, al.genre, al.cover_path, al.created_at, a.id, a.name`;
 
 const GENRES_SQL = `
-  SELECT
-    g.genre AS value,
-    COALESCE(t.song_count, 0)::int AS "songCount",
-    COALESCE(al.album_count, 0)::int AS "albumCount"
-  FROM (
-    SELECT DISTINCT genre FROM (
-      SELECT genre FROM tracks WHERE genre IS NOT NULL AND TRIM(genre) != '' AND missing_since IS NULL
-      UNION
-      SELECT al0.genre FROM albums al0 WHERE al0.genre IS NOT NULL AND TRIM(al0.genre) != '' AND EXISTS (SELECT 1 FROM tracks tr0 WHERE tr0.album_id = al0.id AND tr0.missing_since IS NULL)
-    ) s
-  ) g
-  LEFT JOIN (
-    SELECT genre, COUNT(*)::int AS song_count
-    FROM tracks
-    WHERE genre IS NOT NULL AND TRIM(genre) != '' AND missing_since IS NULL
-    GROUP BY genre
-  ) t ON t.genre = g.genre
-  LEFT JOIN (
-    SELECT genre, COUNT(DISTINCT id)::int AS album_count
-    FROM (
-      SELECT al1.genre, al1.id FROM albums al1 WHERE al1.genre IS NOT NULL AND TRIM(al1.genre) != '' AND EXISTS (SELECT 1 FROM tracks tr1 WHERE tr1.album_id = al1.id AND tr1.missing_since IS NULL)
-      UNION
-      SELECT t.genre, t.album_id AS id FROM tracks t WHERE t.genre IS NOT NULL AND TRIM(t.genre) != '' AND t.album_id IS NOT NULL AND t.missing_since IS NULL
-    ) a_union
-    GROUP BY genre
-  ) al ON al.genre = g.genre
-  ORDER BY g.genre ASC`;
+  WITH song_genres AS (
+    SELECT DISTINCT t.id, t.album_id, g.genre
+    FROM tracks t CROSS JOIN LATERAL jsonb_array_elements_text(
+      CASE WHEN jsonb_array_length(COALESCE(t.metadata->'genres','[]'::jsonb)) > 0 THEN t.metadata->'genres'
+           WHEN NULLIF(TRIM(t.genre),'') IS NOT NULL THEN jsonb_build_array(t.genre) ELSE '[]'::jsonb END
+    ) g(genre) WHERE t.missing_since IS NULL
+  ), album_genres AS (
+    SELECT DISTINCT album_id, genre FROM song_genres WHERE album_id IS NOT NULL
+    UNION
+    SELECT al.id, al.genre FROM albums al WHERE NULLIF(TRIM(al.genre),'') IS NOT NULL
+      AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id=al.id AND t.missing_since IS NULL)
+      AND NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id=al.id AND t.missing_since IS NULL AND jsonb_array_length(COALESCE(t.metadata->'genres','[]'::jsonb)) > 0)
+  )
+  SELECT g.genre AS value,
+    (SELECT COUNT(*)::int FROM song_genres sg WHERE sg.genre=g.genre) AS "songCount",
+    (SELECT COUNT(*)::int FROM album_genres ag WHERE ag.genre=g.genre) AS "albumCount"
+  FROM (SELECT genre FROM song_genres UNION SELECT genre FROM album_genres) g ORDER BY g.genre`;
 
 async function coverFileFromPath(coverPath) {
   if (!coverPath) return null;
@@ -293,7 +285,7 @@ async function resolveCoverPath(rawId) {
       return artistCover;
     }
     const { rows } = await query(
-      'SELECT cover_path FROM albums WHERE artist_id = $1 AND cover_path IS NOT NULL ORDER BY id LIMIT 1',
+      `SELECT cover_path FROM albums al WHERE (artist_id=$1 OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks t ON t.id=c.track_id WHERE c.artist_id=$1 AND t.album_id=al.id AND t.missing_since IS NULL)) AND cover_path IS NOT NULL ORDER BY id LIMIT 1`,
       [artistId]
     );
     return rows[0]?.cover_path || null;
@@ -403,9 +395,7 @@ export default async function subsonicRoutes(fastify) {
       openSubsonicExtensions: [
         { name: 'formPost', versions: [1] },
         { name: 'songLyrics', versions: [1] },
-        { name: 'playQueue', versions: [1] },
         { name: 'topSongsByArtistId', versions: [1] },
-        { name: 'playlistUpload', versions: [1] },
       ],
     })
   );
@@ -527,7 +517,7 @@ export default async function subsonicRoutes(fastify) {
     if (id === null) return;
 
     const artistRes = await query(
-      `SELECT a.id, a.name, sar.created_at AS starred_at, ur.rating AS user_rating
+      `SELECT a.id, a.name, a.musicbrainz_id, sar.created_at AS starred_at, ur.rating AS user_rating
        FROM artists a
        LEFT JOIN user_starred_artists sar ON sar.artist_id = a.id AND sar.user_id = $2
        LEFT JOIN user_ratings ur ON ur.entity_type = 'artist' AND ur.entity_id = a.id AND ur.user_id = $2
@@ -537,7 +527,7 @@ export default async function subsonicRoutes(fastify) {
     const artist = artistRes.rows[0];
     if (!artist) return notFound(reply, req, 'Artist');
 
-    const albumSql = `${albumSelectSql(req.subsonicUser.id)} WHERE al.artist_id = $1 AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL) ${ALBUM_GROUP}, sa.created_at, ur.rating
+    const albumSql = `${albumSelectSql(req.subsonicUser.id)} WHERE (al.artist_id = $1 OR EXISTS (SELECT 1 FROM tracks tr JOIN track_credits c ON c.track_id=tr.id WHERE tr.album_id=al.id AND c.artist_id=$1 AND tr.missing_since IS NULL)) AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL) ${ALBUM_GROUP}, sa.created_at, ur.rating
        ORDER BY al.year DESC NULLS LAST, al.title ASC`;
     const { rows } = await query(albumSql, [id]);
     const albums = rows.map(formatAlbum);
@@ -548,9 +538,10 @@ export default async function subsonicRoutes(fastify) {
         id: String(artist.id),
         name: artist.name,
         albumCount: albums.length,
+        musicBrainzId: artist.musicbrainz_id || undefined,
         starred: artist.starred_at ? new Date(artist.starred_at).toISOString() : undefined,
         userRating: artist.user_rating != null ? Number(artist.user_rating) : undefined,
-        ...(withCover ? { coverArt: `al-${withCover.id}`, artistImageUrl: `/rest/getCoverArt.view?id=ar-${artist.id}` } : {}),
+        ...(withCover ? { coverArt: `al-${withCover.id}`, artistImageUrl: `/api/cover/artist/${artist.id}` } : {}),
         album: albums,
       },
     });
@@ -836,7 +827,7 @@ export default async function subsonicRoutes(fastify) {
 
     const sql = `
       ${songSelectSql(req.subsonicUser.id)}
-      WHERE (t.genre ILIKE $1 OR al.genre ILIKE $1) AND t.missing_since IS NULL
+      WHERE (t.genre ILIKE $1 OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.metadata->'genres','[]'::jsonb)) g WHERE g ILIKE $1) OR (t.genre IS NULL AND al.genre ILIKE $1)) AND t.missing_since IS NULL
       ORDER BY a.name ASC NULLS LAST, al.title ASC NULLS LAST, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC
       LIMIT $2 OFFSET $3
     `;
@@ -902,14 +893,14 @@ export default async function subsonicRoutes(fastify) {
     const userId = req.subsonicUser.id;
 
     const artistRows = await query(
-      `SELECT a.id, a.name,
+      `SELECT a.id, a.name, a.musicbrainz_id,
               COUNT(DISTINCT al.id)::int AS album_count,
               MIN(al.id) FILTER (WHERE al.cover_path IS NOT NULL) AS sample_album_id,
               sa.created_at AS starred_at,
               ur.rating AS user_rating
        FROM user_starred_artists sa
        JOIN artists a ON a.id = sa.artist_id
-       LEFT JOIN albums al ON al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL)
+       LEFT JOIN albums al ON (al.artist_id = a.id OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE c.artist_id=a.id AND member.album_id=al.id AND member.missing_since IS NULL)) AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL)
        LEFT JOIN user_ratings ur ON ur.entity_type = 'artist' AND ur.entity_id = a.id AND ur.user_id = $1
        WHERE sa.user_id = $1
        GROUP BY a.id, a.name, sa.created_at, ur.rating
@@ -948,37 +939,40 @@ export default async function subsonicRoutes(fastify) {
   // ---- Search (search2 and search3) ----
 
   const handleSearch = async (req, reply, params, key) => {
-    const q = String(params.query || '').trim();
-    if (!q) {
-      return sendOk(reply, req, { [key]: { artist: [], album: [], song: [] } });
-    }
-
-    const pattern = `%${q}%`;
-    const artistCount = Math.min(Math.max(parseInt(params.artistCount, 10) || 20, 0), 100);
-    const albumCount = Math.min(Math.max(parseInt(params.albumCount, 10) || 20, 0), 100);
-    const songCount = Math.min(Math.max(parseInt(params.songCount, 10) || 20, 0), 100);
+    const rawQuery = String(params.query ?? '').trim();
+    const q = rawQuery === '""' ? '' : rawQuery;
+    const pattern = q ? `%${q.replace(/[\\%_]/g, '\\$&')}%` : '%';
+    const count = name => {
+      const value = params[name] === undefined ? 20 : Number(params[name]);
+      if (!Number.isInteger(value) || value < 0 || value > 10000) throw badRequest(`${name} must be an integer between 0 and 10000`);
+      return value;
+    };
+    const artistCount = count('artistCount');
+    const albumCount = count('albumCount');
+    const songCount = count('songCount');
     const artistOffset = Math.max(parseInt(params.artistOffset, 10) || 0, 0);
     const albumOffset = Math.max(parseInt(params.albumOffset, 10) || 0, 0);
     const songOffset = Math.max(parseInt(params.songOffset, 10) || 0, 0);
 
     const artistPromise = artistCount > 0
       ? query(
-          `SELECT a.id, a.name,
+          `SELECT a.id, a.name, a.musicbrainz_id,
                   COUNT(DISTINCT al.id)::int AS album_count,
                   MIN(al.id) FILTER (WHERE al.cover_path IS NOT NULL) AS sample_album_id,
                   sa.created_at AS starred_at,
                   ur.rating AS user_rating
            FROM artists a
-           LEFT JOIN albums al ON al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL)
+           LEFT JOIN albums al ON (al.artist_id = a.id OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE c.artist_id=a.id AND member.album_id=al.id AND member.missing_since IS NULL)) AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL)
            LEFT JOIN user_starred_artists sa ON sa.artist_id = a.id AND sa.user_id = $2
            LEFT JOIN user_ratings ur ON ur.entity_type = 'artist' AND ur.entity_id = a.id AND ur.user_id = $2
-           WHERE a.name ILIKE $1
+           WHERE ($1 = '%' OR a.name ILIKE $1)
              AND (
                EXISTS (SELECT 1 FROM tracks tr WHERE tr.artist_id = a.id AND tr.missing_since IS NULL)
+               OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks tr ON tr.id=c.track_id WHERE c.artist_id=a.id AND tr.missing_since IS NULL)
                OR EXISTS (SELECT 1 FROM albums al2 WHERE al2.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al2.id AND tr.missing_since IS NULL))
              )
            GROUP BY a.id, a.name, sa.created_at, ur.rating
-           ORDER BY a.name ASC
+           ORDER BY a.name ASC, a.id ASC
            LIMIT $3 OFFSET $4`,
           [pattern, req.subsonicUser.id, artistCount, artistOffset]
         )
@@ -987,10 +981,10 @@ export default async function subsonicRoutes(fastify) {
     const albumPromise = albumCount > 0
       ? query(
           `${albumSelectSql(req.subsonicUser.id)}
-           WHERE (al.title ILIKE $1 OR a.name ILIKE $1)
+           WHERE ($1 = '%' OR al.title ILIKE $1 OR a.name ILIKE $1)
              AND EXISTS (SELECT 1 FROM tracks tr WHERE tr.album_id = al.id AND tr.missing_since IS NULL)
            ${ALBUM_GROUP}, sa.created_at, ur.rating
-           ORDER BY al.title ASC
+           ORDER BY al.title ASC, al.id ASC
            LIMIT $2 OFFSET $3`,
           [pattern, albumCount, albumOffset]
         )
@@ -999,9 +993,9 @@ export default async function subsonicRoutes(fastify) {
     const songPromise = songCount > 0
       ? query(
           `${songSelectSql(req.subsonicUser.id)}
-           WHERE (t.title ILIKE $1 OR al.title ILIKE $1 OR a.name ILIKE $1 OR t.track_artist_credit ILIKE $1)
+           WHERE ($1 = '%' OR t.title ILIKE $1 OR al.title ILIKE $1 OR a.name ILIKE $1 OR t.track_artist_credit ILIKE $1)
              AND t.missing_since IS NULL
-           ORDER BY t.title ASC
+           ORDER BY t.title ASC, t.id ASC
            LIMIT $2 OFFSET $3`,
           [pattern, songCount, songOffset]
         )
@@ -1030,11 +1024,12 @@ export default async function subsonicRoutes(fastify) {
               u.username AS owner_username,
               COUNT(t.id)::int AS song_count,
               COALESCE(SUM(t.duration), 0)::int AS duration,
-              MIN(t.album_id) FILTER (WHERE t.album_id IS NOT NULL) AS cover_art
+              MIN(CASE WHEN t.cover_path IS NOT NULL THEN 'tr-' || t.id::text WHEN al.cover_path IS NOT NULL THEN 'al-' || al.id::text END) AS cover_art
        FROM playlists p
        JOIN users u ON u.id = p.owner_id
        LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
        LEFT JOIN tracks t ON t.id = pt.track_id AND t.missing_since IS NULL
+       LEFT JOIN albums al ON al.id = t.album_id
        WHERE p.owner_id = $1 OR p.is_public = true
        GROUP BY p.id, p.name, p.comment, p.is_public, p.created_at, p.updated_at, u.username
        ORDER BY p.name ASC`,
@@ -1058,11 +1053,12 @@ export default async function subsonicRoutes(fastify) {
               u.username AS owner_username,
               COUNT(t.id)::int AS song_count,
               COALESCE(SUM(t.duration), 0)::int AS duration,
-              MIN(t.album_id) FILTER (WHERE t.album_id IS NOT NULL) AS cover_art
+              MIN(CASE WHEN t.cover_path IS NOT NULL THEN 'tr-' || t.id::text WHEN al.cover_path IS NOT NULL THEN 'al-' || al.id::text END) AS cover_art
        FROM playlists p
        JOIN users u ON u.id = p.owner_id
        LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
        LEFT JOIN tracks t ON t.id = pt.track_id AND t.missing_since IS NULL
+       LEFT JOIN albums al ON al.id = t.album_id
        WHERE p.id = $1 AND (p.owner_id = $2 OR p.is_public = true OR $3 = true)
        GROUP BY p.id, p.name, p.comment, p.is_public, p.created_at, p.updated_at, u.username`,
       [id, userId, Boolean(req.subsonicUser.is_admin)]
@@ -1247,18 +1243,7 @@ export default async function subsonicRoutes(fastify) {
     const file = await coverFileFromPath(await resolveCoverPath(params.id));
     if (!file) return reply.status(404).send('Not found');
 
-    const ext = path.extname(file).toLowerCase();
-    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      'Content-Type': mime,
-      'Content-Length': fs.statSync(file).size,
-      'Cache-Control': 'no-cache',
-    });
-    const stream = fs.createReadStream(file);
-    reply.raw.on('close', () => stream.destroy());
-    stream.on('error', () => { if (!reply.raw.writableEnded) reply.raw.end(); });
-    stream.pipe(reply.raw);
+    return sendCoverFile(req, reply, file, params.size);
   });
 
   // ---- Play Queue ----
@@ -1394,7 +1379,7 @@ export default async function subsonicRoutes(fastify) {
     let idx = 2;
 
     if (genre) {
-      conds.push(`(LOWER(t.genre) = LOWER($${idx}) OR LOWER(al.genre) = LOWER($${idx}))`);
+      conds.push(`(LOWER(t.genre) = LOWER($${idx}) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.metadata->'genres','[]'::jsonb)) g WHERE LOWER(g)=LOWER($${idx})))`);
       values.push(genre);
       idx++;
     }
@@ -1507,7 +1492,7 @@ export default async function subsonicRoutes(fastify) {
               t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
               t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
               t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
-              t.track_artist_credit,
+              t.track_artist_credit, t.metadata,
               al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
               al.cover_path AS album_cover, a.name AS artist_name,
               st.created_at AS starred_at, ur.rating AS user_rating
@@ -1626,7 +1611,7 @@ export default async function subsonicRoutes(fastify) {
 
     const count = Math.min(Math.max(parseInt(params.count, 10) || 20, 1), 100);
 
-    const { rows: aRows } = await query('SELECT * FROM artists WHERE id = $1', [id]);
+    const { rows: aRows } = await query(`SELECT a.*, (SELECT MIN(al.id) FROM albums al WHERE (al.artist_id = a.id OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE c.artist_id=a.id AND member.album_id=al.id AND member.missing_since IS NULL)) AND al.cover_path IS NOT NULL AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id=al.id AND t.missing_since IS NULL)) AS sample_album_id FROM artists a WHERE a.id = $1`, [id]);
     const artist = aRows[0];
     if (!artist) return notFound(reply, req, 'Artist');
 
@@ -1658,11 +1643,11 @@ export default async function subsonicRoutes(fastify) {
     return sendOk(reply, req, {
       artistInfo2: {
         biography: '',
-        musicBrainzId: '',
+        musicBrainzId: artist.musicbrainz_id || '',
         lastFmUrl: '',
-        smallImageUrl: artist.sample_album_id ? `/rest/getCoverArt.view?id=ar-${artist.id}` : undefined,
-        mediumImageUrl: artist.sample_album_id ? `/rest/getCoverArt.view?id=ar-${artist.id}` : undefined,
-        largeImageUrl: artist.sample_album_id ? `/rest/getCoverArt.view?id=ar-${artist.id}` : undefined,
+        smallImageUrl: artist.sample_album_id ? `/api/cover/artist/${artist.id}` : undefined,
+        mediumImageUrl: artist.sample_album_id ? `/api/cover/artist/${artist.id}` : undefined,
+        largeImageUrl: artist.sample_album_id ? `/api/cover/artist/${artist.id}` : undefined,
         similarArtist: similar,
       },
     });
@@ -1678,11 +1663,11 @@ export default async function subsonicRoutes(fastify) {
     return sendOk(reply, req, {
       albumInfo: {
         notes: '',
-        musicBrainzId: '',
+        musicBrainzId: rows[0].musicbrainz_id || '',
         lastFmUrl: '',
-        smallImageUrl: rows[0].cover_path ? `/rest/getCoverArt.view?id=al-${id}` : undefined,
-        mediumImageUrl: rows[0].cover_path ? `/rest/getCoverArt.view?id=al-${id}` : undefined,
-        largeImageUrl: rows[0].cover_path ? `/rest/getCoverArt.view?id=al-${id}` : undefined,
+        smallImageUrl: rows[0].cover_path ? `/api/cover/album/${id}` : undefined,
+        mediumImageUrl: rows[0].cover_path ? `/api/cover/album/${id}` : undefined,
+        largeImageUrl: rows[0].cover_path ? `/api/cover/album/${id}` : undefined,
       },
     });
   });
@@ -1732,7 +1717,7 @@ export default async function subsonicRoutes(fastify) {
     const { rows } = await query('SELECT * FROM internet_radio_stations ORDER BY name ASC');
     return sendOk(reply, req, {
       internetRadioStations: {
-        station: rows.map(formatInternetRadioStation),
+        internetRadioStation: rows.map(formatInternetRadioStation),
       },
     });
   });

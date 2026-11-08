@@ -1,3 +1,4 @@
+import { splitArtists, readMetadata, saveTrackMetadata, albumReleaseKey } from './metadata.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { computeFileHashes } from './file-fingerprints.js';
@@ -99,7 +100,7 @@ function cleanStr(v) {
 
 export function extractLeadingArtist(name) {
   if (!name) return null;
-  return name.split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)[0].trim();
+  return splitArtists(name)[0] || null;
 }
 
 /**
@@ -238,7 +239,8 @@ async function flushTrackBatch(client, items) {
       normFolder: group.normFolder,
       title: group.title,
       albumArtistName: canonicalAlbumArtist,
-      compilation: inferred.compilation,
+      compilation: inferred.compilation || group.tracks.some(t => t.metadata?.compilation),
+      releaseKey: albumReleaseKey(group.normFolder, sample.metadata),
       year: sample.year,
       genre: sample.genre,
     });
@@ -246,7 +248,7 @@ async function flushTrackBatch(client, items) {
 
   // Pre-calculate canonical artist name and preserve full track artist credit
   for (const item of items) {
-    item.canonicalArtistName = extractLeadingArtist(item.artistName) || item.artistName;
+    item.canonicalArtistName = item.metadata?.artists?.[0]?.name || extractLeadingArtist(item.artistName) || item.artistName;
     item.trackArtistCredit = item.artistName || null;
     item.albumArtistCredit = item.albumArtistName || null;
     item.parseError = Boolean(item.parseError);
@@ -301,7 +303,7 @@ async function flushTrackBatch(client, items) {
   const artistIds = albumMetaList.map((a) => a.artistId).filter((id) => id !== null);
 
   const { rows: existingAlbumRows } = await client.query(
-    `SELECT id, title, folder_path, artist_id,
+    `SELECT id, title, folder_path, artist_id, release_key,
             ARRAY(SELECT t.file_path FROM tracks t WHERE t.album_id = albums.id AND t.missing_since IS NULL) AS member_paths
      FROM albums
      WHERE LOWER(folder_path) = ANY($1::text[])
@@ -330,15 +332,18 @@ async function flushTrackBatch(client, items) {
     // If not found, match on title + artist_id (case-insensitive, album was moved to another folder)
     if (!match && a.artistId != null) {
       match = existingAlbumRows.find(
-        (r) => r.title.toLowerCase() === titleLower && r.artist_id === a.artistId
+        (r) => r.title.toLowerCase() === titleLower && r.artist_id === a.artistId &&
+          (r.release_key === a.releaseKey || (!r.folder_path && !r.release_key) ||
+           (r.member_paths.length > 0 && r.member_paths.every(file => albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))))
       );
     }
 
     if (match) {
       if (match.folder_path !== a.normFolder || match.title !== a.title) {
-        await client.query('UPDATE albums SET folder_path = $1, title = $2 WHERE id = $3', [a.normFolder, a.title, match.id]);
+        await client.query('UPDATE albums SET folder_path = $1, title = $2, release_key = $4 WHERE id = $3', [a.normFolder, a.title, match.id, a.releaseKey]);
         match.folder_path = a.normFolder;
         match.title = a.title;
+        match.release_key = a.releaseKey;
       }
       albumMap.set(a.groupKey, match.id);
     }
@@ -349,16 +354,16 @@ async function flushTrackBatch(client, items) {
 
   if (albumsToUpsert.length > 0) {
     const { rows: upsertedRows } = await client.query(
-      `INSERT INTO albums (title, artist_id, year, genre, folder_path, compilation)
+      `INSERT INTO albums (title, artist_id, year, genre, folder_path, compilation, release_key)
        SELECT * FROM unnest(
-         $1::text[], $2::int[], $3::int[], $4::text[], $5::text[], $6::boolean[]
+         $1::text[], $2::int[], $3::int[], $4::text[], $5::text[], $6::boolean[], $7::text[]
        )
-       ON CONFLICT (title, artist_id) DO UPDATE SET
+       ON CONFLICT (LOWER(title), artist_id, release_key) DO UPDATE SET
          year = COALESCE(EXCLUDED.year, albums.year),
          genre = COALESCE(EXCLUDED.genre, albums.genre),
          folder_path = COALESCE(EXCLUDED.folder_path, albums.folder_path),
          compilation = COALESCE(EXCLUDED.compilation, albums.compilation)
-       RETURNING id, title, folder_path, artist_id`,
+       RETURNING id, title, folder_path, artist_id, release_key`,
       [
         albumsToUpsert.map((a) => a.title),
         albumsToUpsert.map((a) => a.artistId),
@@ -366,12 +371,13 @@ async function flushTrackBatch(client, items) {
         albumsToUpsert.map((a) => a.genre),
         albumsToUpsert.map((a) => a.normFolder),
         albumsToUpsert.map((a) => a.compilation),
+        albumsToUpsert.map((a) => a.releaseKey),
       ]
     );
 
     for (const r of upsertedRows) {
       const meta = albumsToUpsert.find(
-        (a) => a.title.toLowerCase() === r.title.toLowerCase() && (a.artistId === r.artist_id || (a.normFolder && r.folder_path && a.normFolder.toLowerCase() === r.folder_path.toLowerCase()))
+        (a) => a.releaseKey === r.release_key && a.title.toLowerCase() === r.title.toLowerCase() && (a.artistId === r.artist_id || (a.normFolder && r.folder_path && a.normFolder.toLowerCase() === r.folder_path.toLowerCase()))
       );
       if (meta) {
         albumMap.set(meta.groupKey, r.id);
@@ -450,6 +456,7 @@ async function flushTrackBatch(client, items) {
     cols
   );
 
+  await saveTrackMetadata(client, items.filter(i => !i.parseError).map(i => ({ file_path: i.filePath, metadata: i.metadata })));
   return touchedAlbumIds;
 }
 
@@ -543,6 +550,7 @@ async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = n
       year: toInt(common.year),
       bitrate: toInt(format.bitrate),
       sampleRate: toInt(format.sampleRate),
+      metadata: readMetadata(common, format),
       parseError: false,
     };
   } catch (err) {
@@ -805,7 +813,7 @@ function hasCompatibleBirthtime(oldBirthtimeMs, newBirthtimeMs) {
 async function reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds) {
   const { rows: allRows } = await client.query(
     `SELECT id, file_path, file_name, file_size, duration, title, artist_id, album_id,
-            track_number, disc_number, format, mtime, missing_since,
+            track_number, disc_number, format, mtime, missing_since, metadata,
             dev, ino, birthtime_ms, content_hash, audio_hash
      FROM tracks
      WHERE starts_with(file_path, $1)
@@ -916,7 +924,8 @@ async function removeOrphans(client) {
   await client.query(
     `DELETE FROM artists a
      WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id)
-       AND NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id)`
+       AND NOT EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id)
+       AND NOT EXISTS (SELECT 1 FROM track_credits c WHERE c.artist_id = a.id)`
   );
 }
 
@@ -933,7 +942,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transacti
     const { rows: allTracks } = await client.query(
       `SELECT t.id, t.title, t.track_number, t.disc_number, t.genre, t.year,
               t.track_artist_credit, t.album_artist_credit, t.artist_id,
-              t.missing_since,
+              t.missing_since, t.metadata,
               a.name AS artist_name
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
@@ -946,7 +955,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transacti
     const tracks = availableTracks.length > 0 ? availableTracks : allTracks;
 
     // Disc count: max disc number across available tracks
-    const maxDisc = Math.max(1, ...tracks.map((t) => t.disc_number || 1));
+    const maxDisc = Math.max(1, ...tracks.map((t) => Math.max(t.disc_number || 1, t.metadata?.discTotal || 1)));
 
     // Consensus year: most frequent non-null year
     const yearCounts = new Map();
@@ -1010,7 +1019,7 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transacti
 
     // Check existing album row
     const { rows: albRows } = await client.query(
-      'SELECT id, title, artist_id FROM albums WHERE id = $1',
+      'SELECT id, title, artist_id, release_key FROM albums WHERE id = $1',
       [albumId]
     );
     if (albRows.length === 0) continue;
@@ -1019,8 +1028,8 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transacti
     // If another album already exists with (title, artistId), merge tracks to avoid conflict
     if (artistId != null) {
       const { rows: conflictRows } = await client.query(
-        'SELECT id FROM albums WHERE LOWER(title) = LOWER($1) AND artist_id = $2 AND id != $3',
-        [albumTitle, artistId, albumId]
+        'SELECT id FROM albums WHERE LOWER(title) = LOWER($1) AND artist_id = $2 AND id != $3 AND release_key=$4',
+        [albumTitle, artistId, albumId, albRows[0].release_key]
       );
       if (conflictRows.length > 0) {
         const targetAlbumId = conflictRows[0].id;
@@ -1056,9 +1065,10 @@ export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transacti
            genre = $2,
            artist_id = $3,
            compilation = $4,
-           disc_count = $5
+           disc_count = $5,
+           musicbrainz_id = $7
        WHERE id = $6`,
-      [consensusYear, consensusGenre, artistId, inferred.compilation, maxDisc, albumId]
+      [consensusYear, consensusGenre, artistId, inferred.compilation || tracks.some(t => t.metadata?.compilation), maxDisc, albumId, tracks.find(t => t.metadata?.albumMusicBrainzId)?.metadata.albumMusicBrainzId || null]
     );
 
     // Sync album_credits
@@ -1096,7 +1106,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   const prefix = root.endsWith(path.sep) ? root : root + path.sep;
   const { rows: known } = await query(
     `SELECT id, file_path, file_name, file_size, duration, title, artist_id, album_id,
-            track_number, disc_number, format, mtime, missing_since,
+            track_number, disc_number, format, mtime, missing_since, metadata,
             dev, ino, birthtime_ms, content_hash, audio_hash
      FROM tracks
      WHERE starts_with(file_path, $1)`,
@@ -1150,7 +1160,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       unmatchedFiles.push(f);
     }
 
-    if (full || !k || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null) {
+    if (full || !k || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null || !k.metadata || Object.keys(k.metadata).length === 0) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
     } else if (k.dev == null || k.ino == null || k.content_hash == null || k.audio_hash == null) {

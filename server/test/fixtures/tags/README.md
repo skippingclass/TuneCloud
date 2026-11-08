@@ -6,3 +6,5 @@ The MP3 includes both ID3v2.3 and ID3v1 tags to exercise clearing legacy values.
 Tags include a full date, album artist, composer, comment, track/disc totals,
 and a one-pixel PNG cover. FLAC/Ogg/Opus also have an ARTISTS alias, lyrics and
 a custom Vorbis comment to exercise preservation of unrelated metadata.
+
+The WAV, WMA and AAC fixtures are 0.2-second synthetic 440 Hz tones generated with FFmpeg. They contain no third-party recordings and exercise the RIFF, ASF and ADTS tag writers. Tests compare encoded audio payloads before and after tag edits.

@@ -161,6 +161,7 @@ export const api = {
   scan: ({ full = false, reextractCovers = false } = {}) =>
     fetchJson('/scan', { method: 'POST', body: JSON.stringify({ full, reextractCovers }) }),
   scanStatus: (opts) => fetchJson('/scan/status', opts),
+  tagCapabilities: (opts) => fetchJson('/tags/capabilities', opts),
   tags: (id, opts) => fetchJson(`/tags/${id}`, opts),
   updateTags: async (id, data) => {
     const result = await fetchJson(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(data) });

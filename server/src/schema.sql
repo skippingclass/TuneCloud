@@ -19,11 +19,11 @@ CREATE TABLE IF NOT EXISTS albums (
   compilation BOOLEAN DEFAULT false,
   disc_count INTEGER DEFAULT 1,
   created_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(title, artist_id)
+  release_key TEXT NOT NULL DEFAULT ''
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_mbid ON albums(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_artist_lower ON albums(LOWER(title), artist_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_null_artist_lower ON albums(LOWER(title)) WHERE artist_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_albums_mbid ON albums(musicbrainz_id) WHERE musicbrainz_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_artist_lower ON albums(LOWER(title), artist_id, release_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_title_null_artist_lower ON albums(LOWER(title), release_key) WHERE artist_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_albums_folder_path ON albums(folder_path);
 
 CREATE TABLE IF NOT EXISTS tracks (
@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tracks (
   format TEXT,
   cover_path TEXT,
   composer TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}',
   track_artist_credit TEXT,
   album_artist_credit TEXT,
   parse_error BOOLEAN NOT NULL DEFAULT false,

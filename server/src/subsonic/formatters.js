@@ -36,7 +36,8 @@ export function formatArtist(row) {
     name: row.name,
     albumCount: Number(row.album_count || 0),
     coverArt: row.sample_album_id ? `al-${row.sample_album_id}` : undefined,
-    artistImageUrl: row.sample_album_id ? `/rest/getCoverArt.view?id=ar-${row.id}` : undefined,
+    musicBrainzId: row.musicbrainz_id || undefined,
+    artistImageUrl: row.sample_album_id ? `/api/cover/artist/${row.id}` : undefined,
     starred: iso(row.starred_at),
     userRating: row.user_rating != null ? Number(row.user_rating) : undefined,
   });
@@ -45,7 +46,7 @@ export function formatArtist(row) {
 export function splitArtistNames(str) {
   if (!str) return [];
   return str
-    .split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)
+    .split(/\s*;\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)
     .map((s) => s.trim())
     .filter(Boolean);
 }
@@ -75,6 +76,9 @@ export function formatAlbum(row) {
     starred: iso(row.starred_at),
     userRating: row.user_rating != null ? Number(row.user_rating) : undefined,
     isDir: true,
+    musicBrainzId: row.musicbrainz_id || undefined,
+    isCompilation: row.compilation != null ? Boolean(row.compilation) : undefined,
+    discCount: row.disc_count || undefined,
   });
 }
 
@@ -89,17 +93,14 @@ export function formatSong(row) {
 
   const trackArtist = row.track_artist_credit || row.artist_name || '';
   const names = splitArtistNames(trackArtist);
-  const artists = names.length > 0 ? names.map((name, idx) => ({
-    id: idx === 0 && row.artist_id ? String(row.artist_id) : str(row.artist_id) || '0',
-    name,
-  })) : undefined;
+  const artists = row.metadata?.artists?.length ? row.metadata.artists : row.artist_id && names.length
+    ? [{ id: String(row.artist_id), name: names[0] }] : undefined;
 
   const albumArtistName = row.album_artist_name || (row.album_compilation ? 'Various Artists' : (row.artist_name || ''));
   const albumArtistId = row.album_artist_id ? String(row.album_artist_id) : (row.artist_id ? String(row.artist_id) : undefined);
   const albumArtistNames = splitArtistNames(albumArtistName);
-  const albumArtists = albumArtistNames.length > 0
-    ? albumArtistNames.map((name) => ({ id: albumArtistId || '0', name }))
-    : (albumArtistName ? [{ id: albumArtistId || '0', name: albumArtistName }] : undefined);
+  const albumArtists = row.metadata?.albumArtists?.length ? row.metadata.albumArtists : albumArtistId && albumArtistNames.length
+    ? [{ id: albumArtistId, name: albumArtistNames[0] }] : undefined;
 
   return compact({
     id: String(row.id),
@@ -116,6 +117,12 @@ export function formatSong(row) {
     track: Number.isInteger(row.track_number) && row.track_number > 0 ? row.track_number : undefined,
     year: row.year || row.album_year || undefined,
     genre: row.genre || row.album_genre || undefined,
+    genres: row.metadata?.genres?.map(name => ({ name })),
+    musicBrainzId: row.metadata?.musicBrainzId,
+    contributors: row.metadata?.contributors,
+    replayGain: row.metadata?.replayGain,
+    bitDepth: row.metadata?.bitDepth,
+    channelCount: row.metadata?.channelCount,
     coverArt,
     size: Number(row.file_size || 0),
     contentType: contentTypeFor(suffix),
@@ -148,7 +155,7 @@ export function formatPlaylist(row, songs = []) {
     duration: Math.round(Number(row.duration || (songs.reduce((acc, s) => acc + (s.duration || 0), 0)))),
     created: iso(row.created_at),
     changed: iso(row.updated_at),
-    coverArt: row.cover_art ? `al-${row.cover_art}` : (songs[0]?.coverArt || undefined),
+    coverArt: row.cover_art || (songs.length ? formatSong(songs[0]).coverArt : undefined),
     entry: songs.length > 0 ? songs.map(formatSong) : undefined,
   });
 }
@@ -158,7 +165,7 @@ export const SONG_SELECT = `
          t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
          t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
          t.missing_since, (t.missing_since IS NULL) AS available,
-         t.track_artist_credit,
+         t.track_artist_credit, t.metadata,
          al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
          al.cover_path AS album_cover,
          al.artist_id AS album_artist_id,
@@ -178,7 +185,7 @@ export function songSelectSql(userId = null) {
            t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
            t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
            t.missing_since, (t.missing_since IS NULL) AS available,
-           t.track_artist_credit,
+           t.track_artist_credit, t.metadata,
            al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
            al.cover_path AS album_cover,
            al.artist_id AS album_artist_id,
@@ -196,7 +203,7 @@ export function songSelectSql(userId = null) {
 }
 
 export const ALBUM_SELECT = `
-  SELECT al.id, al.title, al.year, al.genre, al.cover_path, al.created_at,
+  SELECT al.id, al.title, al.year, al.genre, al.cover_path, al.created_at, al.compilation, al.disc_count, al.musicbrainz_id,
          a.id AS artist_id, a.name AS artist_name,
          COUNT(t.id)::int AS song_count,
          COALESCE(SUM(t.duration), 0) AS duration
@@ -208,7 +215,7 @@ export function albumSelectSql(userId = null) {
   if (!userId) return ALBUM_SELECT;
   const uid = Number(userId);
   return `
-    SELECT al.id, al.title, al.year, al.genre, al.cover_path, al.created_at,
+    SELECT al.id, al.title, al.year, al.genre, al.cover_path, al.created_at, al.compilation, al.disc_count, al.musicbrainz_id,
            a.id AS artist_id, a.name AS artist_name,
            COUNT(t.id)::int AS song_count,
            COALESCE(SUM(t.duration), 0) AS duration,
@@ -222,31 +229,31 @@ export function albumSelectSql(userId = null) {
 }
 
 export const ARTIST_SELECT = `
-  SELECT a.id, a.name,
+  SELECT a.id, a.name, a.musicbrainz_id,
          COUNT(DISTINCT al.id)::int AS album_count,
          MIN(al.id) FILTER (WHERE al.cover_path IS NOT NULL) AS sample_album_id
   FROM artists a
-  LEFT JOIN albums al ON al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)`;
+  LEFT JOIN albums al ON (al.artist_id = a.id OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE c.artist_id=a.id AND member.album_id=al.id AND member.missing_since IS NULL)) AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)`;
 
 export function artistSelectSql(userId = null) {
   const availFilter = `(
     EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL)
+    OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks t ON t.id=c.track_id WHERE c.artist_id=a.id AND t.missing_since IS NULL)
     OR EXISTS (SELECT 1 FROM albums al2 WHERE al2.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al2.id AND t.missing_since IS NULL))
   )`;
-  if (!userId) return `${ARTIST_SELECT} WHERE a.name NOT LIKE '%,%' AND ${availFilter} GROUP BY a.id, a.name ORDER BY a.name ASC`;
+  if (!userId) return `${ARTIST_SELECT} WHERE ${availFilter} GROUP BY a.id, a.name ORDER BY a.name ASC`;
   const uid = Number(userId);
   return `
-    SELECT a.id, a.name,
+    SELECT a.id, a.name, a.musicbrainz_id,
            COUNT(DISTINCT al.id)::int AS album_count,
            MIN(al.id) FILTER (WHERE al.cover_path IS NOT NULL) AS sample_album_id,
            sar.created_at AS starred_at,
            ur.rating AS user_rating
     FROM artists a
-    LEFT JOIN albums al ON al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
+    LEFT JOIN albums al ON (al.artist_id = a.id OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE c.artist_id=a.id AND member.album_id=al.id AND member.missing_since IS NULL)) AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
     LEFT JOIN user_starred_artists sar ON sar.artist_id = a.id AND sar.user_id = ${uid}
     LEFT JOIN user_ratings ur ON ur.entity_type = 'artist' AND ur.entity_id = a.id AND ur.user_id = ${uid}
-    WHERE a.name NOT LIKE '%,%'
-      AND ${availFilter}
+    WHERE ${availFilter}
     GROUP BY a.id, a.name, sar.created_at, ur.rating
     ORDER BY a.name ASC`;
 }
