@@ -82,6 +82,14 @@ The Mix interface with the music library from the [production instance](https://
 
 </details>
 
+## Install as an app
+
+TuneCloud can be installed as a PWA on supported browsers. Open your instance over HTTPS (or localhost), then use **Settings → TuneCloud App → Install TuneCloud** when the install button is available, or your browser’s installation menu. On iPhone and iPad, use Safari’s **Share → Add to Home Screen**.
+
+The installed app opens in its own window and uses the same account and server. Only the public interface assets are cached; audio, artwork from the API, authentication responses, and library data are not saved by the service worker. An offline launch displays a reconnect screen; offline music playback is not supported.
+
+Updates wait until all TuneCloud windows and tabs close, so an update does not restart a playing session. You can check for updates in Settings. The service worker is generated only for production builds; the Vite development server does not register it.
+
 ## DevOps focus
 
 TuneCloud is primarily a DevOps portfolio project, with a working music server as the application behind it. The focus is on the full delivery and operations lifecycle: container builds, automated checks, image publishing, GitOps deployments to Kubernetes, persistent storage, health checks, and monitoring with Prometheus and Grafana. Application code lives here; Helm charts and deployment configuration are maintained in the separate [TuneCloud-GitOps repository](https://github.com/skippingclass/TuneCloud-GitOps).
