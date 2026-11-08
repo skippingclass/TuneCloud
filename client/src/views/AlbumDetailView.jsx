@@ -1,10 +1,11 @@
 import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
 import { shuffled as shuffleTracks } from '../utils/playback.js';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { Play, Pause, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2, Maximize2 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { CoverModal } from '../components/modals/CoverModal.jsx';
+import { MoreByArtist } from '../components/MoreByArtist.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { useFavorites } from '../context/FavoritesContext.jsx';
 
@@ -35,9 +36,9 @@ export function AlbumDetailView({
 
   const albumArtist =
     tracks[0]?.album_artist ||
-    (album.artist && !album.artist.includes(',') ? album.artist : null) ||
+    album.artist ||
     tracks[0]?.primary_artist ||
-    (album.artist ? album.artist.split(',')[0].trim() : 'Unknown Artist');
+    'Unknown Artist';
 
   const albumArtistId =
     album.artist_id ||
@@ -256,6 +257,11 @@ export function AlbumDetailView({
             </table>
           </div>
         </div>
+      )}
+
+      {albumArtistId && (
+        <MoreByArtist key={`${album.id}:${albumArtistId}`} artist={{ id: albumArtistId, name: albumArtist }}
+          albumId={album.id} onGoToAlbum={onGoToAlbum} onGoToArtist={onGoToArtist} />
       )}
 
       {/* Fullscreen Cover Lightbox */}

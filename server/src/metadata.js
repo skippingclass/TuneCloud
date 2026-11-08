@@ -6,7 +6,13 @@ export function splitArtists(value) {
 
 const list = value => [...new Set((Array.isArray(value) ? value : value ? [value] : []).map(v => String(v).trim()).filter(Boolean))];
 export function readMetadata(common, format = {}) {
-  const artists = common.artists?.length > 1 ? list(common.artists) : splitArtists(common.artist || common.artists?.[0]);
+  let artists = common.artists?.length > 1 ? list(common.artists) : splitArtists(common.artist || common.artists?.[0]);
+  // A comma is a participant separator only when a distinct explicit album
+  // artist identifies its leading performer. Preserve Earth, Wind & Fire.
+  if (artists.length === 1 && common.albumartist && common.artist) {
+    const parts = common.artist.split(',').map(name => name.trim()).filter(Boolean);
+    if (parts.length > 1 && parts[0].toLowerCase() === common.albumartist.trim().toLowerCase()) artists = parts;
+  }
   const albumArtists = common.albumartists?.length > 1 ? list(common.albumartists) : splitArtists(common.albumartist);
   return {
     artists: artists.map(name => ({ name })), albumArtists: albumArtists.map(name => ({ name })),

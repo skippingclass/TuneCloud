@@ -26,7 +26,7 @@ export function PlaybackIdentity({ onGoToArtist, onGoToAlbum, onNavigate, showFa
         <Heart size={22} fill={starred ? 'currentColor' : 'none'} />
       </button>}
     </div>
-    <div className="np-artist"><ArtistLinks artist={track.artist} primaryArtistId={track.artist_id}
+    <div className="np-artist"><ArtistLinks artist={track.artist} primaryArtistId={track.artist_id} primaryArtistName={track.primary_artist} albumArtistName={track.album_artist || track.album_artist_credit} artists={track.metadata?.artists || track.artists}
       onGoToArtist={onGoToArtist} onBeforeNavigate={onNavigate} /></div>
     {track.album && <button className="np-album" onClick={() => { onGoToAlbum?.({ id: track.album_id, title: track.album, artist: track.artist, cover_path: track.cover_path }); onNavigate?.(); }}>{track.album}</button>}
   </div>;

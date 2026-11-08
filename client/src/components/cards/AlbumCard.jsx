@@ -18,8 +18,9 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick, compact = fal
 
   const isCurrentAlbum =
     currentTrack &&
-    (currentTrack.album_id === album.id ||
-      (album.title && currentTrack.album === album.title));
+    (currentTrack.album_id != null && album.id != null
+      ? String(currentTrack.album_id) === String(album.id)
+      : album.title && currentTrack.album === album.title);
   const isCurrentAlbumPlaying = isCurrentAlbum && isPlaying;
 
   const handleFavoriteClick = (e) => {
@@ -45,7 +46,7 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick, compact = fal
     >
       {/* Artwork container */}
       <div
-        className={`aspect-square w-full rounded-xl overflow-hidden bg-surface-900 relative ring-1 ring-white/[0.08] shadow-md ${
+        className={`album-artwork aspect-square w-full shrink-0 rounded-xl overflow-hidden bg-surface-900 relative ring-1 ring-white/[0.08] shadow-md ${
           compact ? 'mb-2' : 'mb-3'
         }`}
       >
@@ -53,7 +54,7 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick, compact = fal
           <img
             src={api.coverUrl(album.cover_path)}
             alt={album.title}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+            className="absolute inset-0 block w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
             draggable="false"
             loading="lazy"
           />
@@ -118,7 +119,7 @@ export function AlbumCard({ album, onClick, onPlay, onArtistClick, compact = fal
         <p className={`text-surface-400 truncate mt-0.5 ${compact ? 'text-[11px]' : 'text-xs'}`}>
           <ArtistLinks
             artist={album.artist}
-            primaryArtistId={album.artist_id}
+            primaryArtistId={album.artist_id} primaryArtistName={album.artist}
             onGoToArtist={onArtistClick}
           />
         </p>

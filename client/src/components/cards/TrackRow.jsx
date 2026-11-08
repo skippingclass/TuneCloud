@@ -221,7 +221,7 @@ export function TrackRow({
           <div className="sm:hidden text-[11px] text-surface-400 truncate mt-0.5">
             <ArtistLinks
               artist={track.artist || albumArtist}
-              primaryArtistId={track.artist_id}
+              primaryArtistId={track.artist_id} primaryArtistName={track.primary_artist} albumArtistName={track.album_artist || track.album_artist_credit} artists={track.metadata?.artists || track.artists}
               onGoToArtist={onGoToArtist}
             />
           </div>
@@ -234,7 +234,7 @@ export function TrackRow({
           {track.artist || albumArtist ? (
             <ArtistLinks
               artist={track.artist || albumArtist}
-              primaryArtistId={track.artist_id}
+              primaryArtistId={track.artist_id} primaryArtistName={track.primary_artist} albumArtistName={track.album_artist || track.album_artist_credit} artists={track.metadata?.artists || track.artists}
               onGoToArtist={onGoToArtist}
             />
           ) : (

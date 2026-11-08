@@ -61,7 +61,7 @@ export function Player({ onGoToAlbum, onGoToArtist, onAddToPlaylist }) {
         </button>
         <div className="playback-meta">
           <button className="playback-title" onClick={goAlbum} disabled={!track.album_id && !track.album} title={title}>{title}</button>
-          <div className="playback-artist"><ArtistLinks artist={track.artist} primaryArtistId={track.artist_id} onGoToArtist={onGoToArtist} /></div>
+          <div className="playback-artist"><ArtistLinks artist={track.artist} primaryArtistId={track.artist_id} primaryArtistName={track.primary_artist} albumArtistName={track.album_artist || track.album_artist_credit} artists={track.metadata?.artists || track.artists} onGoToArtist={onGoToArtist} /></div>
         </div>
         <button className={`player-icon playback-like ${starred ? 'is-active' : ''}`} onClick={() => toggleFavoriteTrack(track.id)} aria-label={starred ? 'Unlike' : 'Like'} aria-pressed={starred} title={starred ? 'Unlike' : 'Like'}><Heart size={17} fill={starred ? 'currentColor' : 'none'} /></button>
         {onAddToPlaylist && <button className="player-icon playback-add" onClick={() => onAddToPlaylist(track)} aria-label="Add to playlist" title="Add to playlist"><Plus size={17} /></button>}

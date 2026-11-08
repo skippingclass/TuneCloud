@@ -1,14 +1,26 @@
-export function parseArtistTokens(artistStr) {
+export function parseArtistTokens(artistStr, artists = []) {
   if (!artistStr || typeof artistStr !== 'string') return [];
   // Matches delimiters while capturing them: explicit participant separators; ampersands and slashes may be part of a band name
   const regex = /(\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+)/gi;
-  const parts = artistStr.split(regex);
-  return parts;
+  // Protect explicit artist names before splitting display delimiters: a band
+  // such as Earth, Wind & Fire can itself be followed by "feat. Guest".
+  const names = artists.map(a => a.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!names.length) return artistStr.split(regex);
+  const protectedNames = [];
+  const pattern = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const protectedText = artistStr.replace(new RegExp(pattern, 'gi'), name => {
+    protectedNames.push(name);
+    return `\uE000${protectedNames.length - 1}\uE001`;
+  });
+  return protectedText.split(regex).map(part => part.replace(/\uE000(\d+)\uE001/g, (_, index) => protectedNames[index]));
 }
 
 export function ArtistLinks({
   artist,
   primaryArtistId,
+  primaryArtistName,
+  albumArtistName,
+  artists,
   onGoToArtist,
   className = '',
   linkClassName = 'hover:underline hover:text-white cursor-pointer transition-colors',
@@ -19,7 +31,12 @@ export function ArtistLinks({
     return <span className={className}>Unknown Artist</span>;
   }
 
-  const parts = parseArtistTokens(String(artist));
+  const text = String(artist).trim();
+  const references = Array.isArray(artists) ? artists : [];
+  const explicitLead = albumArtistName && text.toLowerCase().startsWith(`${albumArtistName.trim().toLowerCase()},`);
+  const wholeArtist = references.find(a => a.name?.trim().toLowerCase() === text.toLowerCase());
+  const parts = !explicitLead && (wholeArtist || primaryArtistName?.trim().toLowerCase() === text.toLowerCase())
+    ? [text] : parseArtistTokens(text, explicitLead ? references.filter(a => a !== wholeArtist) : references);
 
   // Single artist without delimiters
   if (parts.length <= 1) {
@@ -30,7 +47,7 @@ export function ArtistLinks({
           if (onGoToArtist) {
             e.stopPropagation();
             onBeforeNavigate?.();
-            onGoToArtist({ id: primaryArtistId, name });
+            onGoToArtist({ id: wholeArtist?.id ?? primaryArtistId, name });
           }
         }}
         className={`${onGoToArtist ? linkClassName : ''} ${className}`}
@@ -61,7 +78,8 @@ export function ArtistLinks({
         if (!trimmed) return null;
 
         const currentIdx = artistIndex++;
-        const targetId = currentIdx === 0 ? primaryArtistId : undefined;
+        const reference = references.find(a => a.name?.trim().toLowerCase() === trimmed.toLowerCase());
+        const targetId = reference?.id ?? (currentIdx === 0 && (!primaryArtistName || primaryArtistName.trim().toLowerCase() === trimmed.toLowerCase()) ? primaryArtistId : undefined);
 
         return (
           <span

@@ -74,7 +74,7 @@ export default async function trackRoutes(fastify) {
 
     const { rows } = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
-              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata, t.album_artist_credit,
               (t.missing_since IS NULL) AS available,
               COALESCE(uph.user_play_count, 0)::int as play_count,
               uph.user_last_played_at as last_played_at,
@@ -164,7 +164,7 @@ export default async function trackRoutes(fastify) {
 
   fastify.get('/api/albums', { preHandler: requireAuth }, async (req, reply) => {
     const userId = req.user?.id || 0;
-    const { limit, offset, sort, order, q, genre, year, all } = req.query;
+    const { limit, offset, sort, order, q, genre, year, all, artist_id, exclude_id } = req.query;
     const isAll = all === 'true' || all === '1';
     const safeLimit = isAll ? 5000 : Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
     const safeOffset = isAll ? 0 : Math.max(0, parseInt(offset, 10) || 0);
@@ -173,6 +173,18 @@ export default async function trackRoutes(fastify) {
       'EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)',
     ];
     const params = [];
+
+    for (const [name, value, column, operator] of [
+      ['artist_id', artist_id, 'al.artist_id', '='],
+      ['exclude_id', exclude_id, 'al.id', '<>'],
+    ]) {
+      if (value === undefined) continue;
+      if (!/^[1-9]\d*$/.test(String(value)) || Number(value) > 2147483647) {
+        return reply.code(400).send({ error: `Invalid ${name}` });
+      }
+      params.push(Number(value));
+      conditions.push(`${column} ${operator} $${params.length}`);
+    }
 
     if (typeof q === 'string' && q.trim()) {
       params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
@@ -358,7 +370,7 @@ export default async function trackRoutes(fastify) {
 
     const tracksRes = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
-              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata, t.album_artist_credit,
               (t.missing_since IS NULL) AS available,
               COALESCE(t.play_count, 0) as play_count, t.last_played_at,
               COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
@@ -367,7 +379,10 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE (LOWER(a.name) = LOWER($1) OR EXISTS (SELECT 1 FROM track_credits c JOIN artists ca ON ca.id=c.artist_id WHERE c.track_id=t.id AND c.role='artist' AND LOWER(ca.name)=LOWER($2)))
+       WHERE (LOWER(a.name) = LOWER($1) OR LOWER(t.album_artist_credit)=LOWER($1) OR EXISTS (SELECT 1 FROM track_credits c JOIN artists ca ON ca.id=c.artist_id WHERE c.track_id=t.id AND c.role IN ('artist','albumartist') AND LOWER(ca.name)=LOWER($2)) OR ((LOWER(COALESCE(a.name,'')) <> LOWER(COALESCE(t.track_artist_credit,''))
+             OR (t.album_artist_credit IS NOT NULL AND LOWER(BTRIM(split_part(t.track_artist_credit, ',', 1)))=LOWER(t.album_artist_credit)
+                 AND LOWER(t.album_artist_credit)<>LOWER(t.track_artist_credit)))
+           AND EXISTS (SELECT 1 FROM regexp_split_to_table(t.track_artist_credit, '[,;]|[[:space:]]+(feat[.]?|ft[.]?|featuring|vs[.]?)[[:space:]]+', 'i') credit WHERE LOWER(BTRIM(credit))=LOWER($2))))
          AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
       [trimmed, trimmed]
@@ -393,7 +408,7 @@ export default async function trackRoutes(fastify) {
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
     const albumsRes = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
-              (al.artist_id = $1) as is_primary_album,
+              (al.artist_id = $1 OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE member.album_id=al.id AND c.artist_id=$1 AND c.role='albumartist' AND member.missing_since IS NULL)) as is_primary_album,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
               (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration
        FROM albums al
@@ -405,7 +420,7 @@ export default async function trackRoutes(fastify) {
     );
 
     return {
-      artist,
+      artist: { ...artist, track_count: tracksRes.rows.length, album_count: albumsRes.rows.filter(a => a.is_primary_album).length },
       albums: albumsRes.rows,
       tracks: tracksRes.rows,
     };
@@ -434,7 +449,7 @@ export default async function trackRoutes(fastify) {
 
     const tracksRes = await query(
       `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
-              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size,
+              t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata, t.album_artist_credit,
               (t.missing_since IS NULL) AS available,
               COALESCE(t.play_count, 0) as play_count, t.last_played_at,
               COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
@@ -443,7 +458,10 @@ export default async function trackRoutes(fastify) {
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
-       WHERE (t.artist_id = $1 OR EXISTS (SELECT 1 FROM track_credits c JOIN artists ca ON ca.id=c.artist_id WHERE c.track_id=t.id AND c.role='artist' AND LOWER(ca.name)=LOWER($2)))
+       WHERE (t.artist_id = $1 OR al.artist_id=$1 OR EXISTS (SELECT 1 FROM track_credits c JOIN artists ca ON ca.id=c.artist_id WHERE c.track_id=t.id AND c.role IN ('artist','albumartist') AND LOWER(ca.name)=LOWER($2)) OR ((LOWER(COALESCE(a.name,'')) <> LOWER(COALESCE(t.track_artist_credit,''))
+             OR (t.album_artist_credit IS NOT NULL AND LOWER(BTRIM(split_part(t.track_artist_credit, ',', 1)))=LOWER(t.album_artist_credit)
+                 AND LOWER(t.album_artist_credit)<>LOWER(t.track_artist_credit)))
+           AND EXISTS (SELECT 1 FROM regexp_split_to_table(t.track_artist_credit, '[,;]|[[:space:]]+(feat[.]?|ft[.]?|featuring|vs[.]?)[[:space:]]+', 'i') credit WHERE LOWER(BTRIM(credit))=LOWER($2))))
          AND t.missing_since IS NULL
        ORDER BY al.year DESC NULLS LAST, al.title ASC, t.disc_number ASC, COALESCE(t.track_number, 999) ASC, t.file_name ASC`,
       [artistId, artist.name]
@@ -452,7 +470,7 @@ export default async function trackRoutes(fastify) {
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
     const albumsRes = await query(
       `SELECT al.*, a.name as artist, a.id as artist_id,
-              (al.artist_id = $1) as is_primary_album,
+              (al.artist_id = $1 OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE member.album_id=al.id AND c.artist_id=$1 AND c.role='albumartist' AND member.missing_since IS NULL)) as is_primary_album,
               (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
               (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration
        FROM albums al
@@ -464,7 +482,7 @@ export default async function trackRoutes(fastify) {
     );
 
     return {
-      artist,
+      artist: { ...artist, track_count: tracksRes.rows.length, album_count: albumsRes.rows.filter(a => a.is_primary_album).length },
       albums: albumsRes.rows,
       tracks: tracksRes.rows,
     };

@@ -22,6 +22,7 @@ import { TrackRow } from '../components/cards/TrackRow.jsx';
 import { AlbumCard } from '../components/cards/AlbumCard.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { useFavorites } from '../context/FavoritesContext.jsx';
+import { toast } from '../components/layout/Toast.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -45,6 +46,8 @@ export function ArtistDetailView({
   const selection = useTrackSelection(tracks, onAddToPlaylist);
   const [loading, setLoading] = useState(true);
   const [artistMeta, setArtistMeta] = useState(null);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [discographyTab, setDiscographyTab] = useState('all'); // 'all' | 'albums' | 'singles'
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
   const [showAllTopTracks, setShowAllTopTracks] = useState(false);
@@ -56,58 +59,38 @@ export function ArtistDetailView({
   const isStarred = artistDbId ? isArtistStarred(artistDbId) : false;
 
   useEffect(() => {
+    const controller = new AbortController();
+    const queryName = (artist.name || '').trim();
     setLoading(true);
-    const primaryName = (artist.name || '').split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i)[0].trim();
-    const fetchPromise = artist.id
-      ? api.artist(artist.id)
-      : api.artistByName(primaryName || artist.name);
-
-    let isMounted = true;
-
-    fetchPromise
-      .then((res) => {
-        if (!isMounted) return;
-        if (res && res.artist) {
-          setResolvedArtist(res.artist);
-          setAlbums(res.albums || []);
-          setTracks(res.tracks || []);
-          if (res.artist.name && res.artist.name !== initialQuery) {
-            api
-              .spotifyArtist(res.artist.name)
-              .then((data) => {
-                if (isMounted && data?.found && data.artist) {
-                  setArtistMeta(data.artist);
-                }
-              })
-              .catch(() => {});
-          }
-        } else if (Array.isArray(res)) {
-          setTracks(res);
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to load artist details:', err);
-      })
-      .finally(() => {
-        if (isMounted) setLoading(false);
-      });
-
-    const initialQuery = primaryName || artist.name;
-    if (initialQuery) {
-      api
-        .spotifyArtist(initialQuery)
-        .then((data) => {
-          if (isMounted && data?.found && data.artist) {
-            setArtistMeta(data.artist);
-          }
-        })
-        .catch(() => {});
-    }
-
-    return () => {
-      isMounted = false;
+    setLoadError(false);
+    setResolvedArtist(artist);
+    setAlbums([]);
+    setTracks([]);
+    setArtistMeta(null);
+    setShowAllTopTracks(false);
+    setDiscographyTab('all');
+    const options = { signal: controller.signal };
+    const request = artist.id ? api.artist(artist.id, options) : api.artistByName(queryName, options);
+    const loadPortrait = name => {
+      if (!name) return;
+      api.spotifyArtist(name, options).then(data => {
+        if (!controller.signal.aborted && data?.found && data.artist) setArtistMeta(data.artist);
+      }).catch(() => {});
     };
-  }, [artist.id, artist.name]);
+    request.then(res => {
+      if (controller.signal.aborted) return;
+      if (!res?.artist) throw new Error('Artist not found');
+      setResolvedArtist(res.artist);
+      setAlbums(res.albums || []);
+      setTracks(res.tracks || []);
+      loadPortrait(res.artist.name);
+    }).catch(() => {
+      if (!controller.signal.aborted) setLoadError(true);
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [artist.id, artist.name, loadAttempt]);
 
   const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
   const displayName = resolvedArtist?.name || artist.name || 'Artist';
@@ -160,7 +143,7 @@ export function ArtistDetailView({
         map[t.album_id].tracks.push(t);
       } else {
         const titleKey = t.album || 'Singles & Standalone';
-        let found = list.find((g) => g.title === titleKey);
+        let found = t.album_id ? map[t.album_id] : list.find(g => !g.album_id && g.title === titleKey);
         if (!found) {
           found = {
             id: t.album_id || `loose-${titleKey}`,
@@ -174,6 +157,7 @@ export function ArtistDetailView({
             tracks: [],
           };
           list.push(found);
+          if (t.album_id) map[t.album_id] = found;
         }
         found.tracks.push(t);
       }
@@ -199,10 +183,11 @@ export function ArtistDetailView({
     const appears = [];
 
     for (const alb of albumGroups) {
-      const isAppearsOn =
-        alb.is_primary_album === false ||
-        (alb.artist_id && artistDbId && Number(alb.artist_id) !== Number(artistDbId)) ||
-        (alb.artist && displayName && alb.artist.toLowerCase() !== displayName.toLowerCase());
+      const isAppearsOn = typeof alb.is_primary_album === 'boolean'
+        ? !alb.is_primary_album
+        : alb.artist_id && artistDbId
+          ? String(alb.artist_id) !== String(artistDbId)
+          : Boolean(alb.artist && displayName && alb.artist.toLowerCase() !== displayName.toLowerCase());
 
       if (isAppearsOn) {
         appears.push(alb);
@@ -230,8 +215,7 @@ export function ArtistDetailView({
   const filteredReleases = useMemo(() => {
     if (discographyTab === 'albums') return fullAlbums;
     if (discographyTab === 'singles') return singlesAndEPs;
-    if (discographyTab === 'appears_on') return appearsOn;
-    return albumGroups;
+    return albumGroups.filter(album => !appearsOn.includes(album));
   }, [discographyTab, fullAlbums, singlesAndEPs, appearsOn, albumGroups]);
 
   const handlePlayAll = () => {
@@ -255,20 +239,21 @@ export function ArtistDetailView({
     }
   };
 
-  const handlePlayAlbum = (album) => {
-    const albTracks = tracks.filter(
-      (t) => (t.album_id === album.album_id || t.album === album.title) && t.available !== false
-    );
-    if (albTracks.length > 0) {
-      playTrack(albTracks[0], albTracks);
-    } else if (album.album_id) {
-      api.album(album.album_id).then((res) => {
-        const rawList = res?.tracks || res || [];
-        const list = (Array.isArray(rawList) ? rawList : []).filter((t) => t.available !== false);
-        if (list.length > 0) playTrack(list[0], list);
-      });
-    }
+  const handlePlayAlbum = async album => {
+    try {
+      // A release card plays the full album, including in Appears On. The
+      // artist's Play All action above plays only tracks involving this artist.
+      const raw = album.album_id ? await api.album(album.album_id) : album.tracks;
+      const list = (Array.isArray(raw) ? raw : raw?.tracks || []).filter(t => t.available !== false);
+      if (list.length) playTrack(list[0], list);
+    } catch { toast('Could not play this release. Try again.', 'error'); }
   };
+
+  const releaseCard = alb => (
+    <AlbumCard key={alb.id} album={{ ...alb, id: alb.album_id || alb.id, artist: alb.artist || displayName }}
+      onClick={() => alb.album_id && onGoToAlbum?.({ ...alb, id: alb.album_id })}
+      onArtistClick={onGoToArtist} onPlay={() => handlePlayAlbum(alb)} />
+  );
 
   return (
     <div className="space-y-8 sm:space-y-10 animate-fade-in pb-16">
@@ -387,7 +372,12 @@ export function ArtistDetailView({
           <Loader2 className="w-7 h-7 animate-spin text-accent" />
           <span className="text-xs font-medium">Loading artist discography...</span>
         </div>
-      ) : tracks.length === 0 ? (
+      ) : loadError ? (
+        <div role="status" className="glass-panel p-8 rounded-2xl text-surface-400">
+          <p>Could not load this artist.</p>
+          <button className="btn-glass mt-3" onClick={() => setLoadAttempt(value => value + 1)}>Retry</button>
+        </div>
+      ) : tracks.length === 0 && albumGroups.length === 0 ? (
         <div className="glass-panel p-12 text-center rounded-3xl border border-white/[0.06] text-surface-400">
           <Disc className="w-12 h-12 stroke-1 text-surface-500 mx-auto mb-3 opacity-60" />
           <p className="text-base font-semibold text-white">No tracks found for this artist</p>
@@ -444,7 +434,7 @@ export function ArtistDetailView({
           )}
 
           {/* Section 2: Discography with Tabs & View Switcher */}
-          <div className="space-y-6">
+          {fullAlbums.length + singlesAndEPs.length > 0 && <div className="space-y-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 px-1">
               <h2 className="text-xl font-bold text-white tracking-tight">
                 Discography
@@ -461,7 +451,7 @@ export function ArtistDetailView({
                         : 'text-surface-400 hover:text-white'
                     }`}
                   >
-                    All ({albumGroups.length})
+                    All ({fullAlbums.length + singlesAndEPs.length})
                   </button>
                   {fullAlbums.length > 0 && (
                     <button
@@ -487,18 +477,7 @@ export function ArtistDetailView({
                       Singles & EPs ({singlesAndEPs.length})
                     </button>
                   )}
-                  {appearsOn.length > 0 && (
-                    <button
-                      onClick={() => setDiscographyTab('appears_on')}
-                      className={`px-3 py-1.5 rounded-lg font-medium transition-all ${
-                        discographyTab === 'appears_on'
-                          ? 'bg-accent/20 text-accent shadow-sm'
-                          : 'text-surface-400 hover:text-white'
-                      }`}
-                    >
-                      Appears On ({appearsOn.length})
-                    </button>
-                  )}
+
                 </div>
 
                 {/* View Mode Toggle (Grid vs List) */}
@@ -536,32 +515,7 @@ export function ArtistDetailView({
               </div>
             ) : viewMode === 'grid' ? (
               <div className="album-grid album-grid--discography">
-                {filteredReleases.map((alb) => (
-                  <AlbumCard
-                    key={alb.id}
-                    album={{
-                      id: alb.album_id || alb.id,
-                      title: alb.title,
-                      cover_path: alb.cover_path,
-                      artist: alb.artist || displayName,
-                      artist_id: alb.artist_id || artistDbId,
-                      year: alb.year,
-                      track_count: alb.track_count,
-                    }}
-                    onClick={() => {
-                      if (alb.album_id) {
-                        onGoToAlbum?.({
-                          id: alb.album_id,
-                          title: alb.title,
-                          artist: alb.artist || displayName,
-                          artist_id: alb.artist_id || artistDbId,
-                          cover_path: alb.cover_path,
-                        });
-                      }
-                    }}
-                    onPlay={() => handlePlayAlbum(alb)}
-                  />
-                ))}
+                {filteredReleases.map(releaseCard)}
               </div>
             ) : (
               <div className="space-y-6">
@@ -633,7 +587,13 @@ export function ArtistDetailView({
                 ))}
               </div>
             )}
-          </div>
+          </div>}
+          {appearsOn.length > 0 && (
+            <section aria-label="Appears On" className="space-y-4">
+              <h2 className="text-xl font-bold text-white tracking-tight px-1">Appears On</h2>
+              <div className="album-grid album-grid--discography">{appearsOn.map(releaseCard)}</div>
+            </section>
+          )}
         </div>
       )}
     </div>

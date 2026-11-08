@@ -483,6 +483,23 @@
   box-shadow: none;
   --tw-ring-color: rgba(255, 255, 255, 0.04);
 }
+.album-artwork {
+  aspect-ratio: 1 / 1;
+  flex-shrink: 0;
+}
+.artist-release-shelf {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: clamp(148px, 16vw, 220px);
+  gap: 16px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  padding: 2px 2px 14px;
+}
+.artist-release-shelf > * {
+  scroll-snap-align: start;
+}
 .tune-design .shelf-album img {
   scale: none;
   transform: none;

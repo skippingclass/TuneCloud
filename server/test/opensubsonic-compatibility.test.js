@@ -193,6 +193,43 @@ test('OpenSubsonic sync, artwork, edition identity and complete tag metadata', {
         assert.deepEqual(audioFrames(await fs.readFile(file), format), before);
       }
     });
+    await t.test('artist release shelves filter the full collection before pagination and exclude the current album', async () => {
+      const a = (await query("INSERT INTO artists(name) VALUES('Shelf Artist') RETURNING id")).rows[0].id;
+      const b = (await query("INSERT INTO artists(name) VALUES('Other Shelf Artist') RETURNING id")).rows[0].id;
+      const albums = (await query(`INSERT INTO albums(title,artist_id,year) SELECT 'Shelf '||n,$1,2020+n FROM generate_series(0,13) n RETURNING id`, [a])).rows;
+      for (const [index, album] of albums.entries()) await query(`INSERT INTO tracks(file_path,file_name,album_id,missing_since) VALUES($1,'shelf.mp3',$2,$3)`, ['/virtual/shelf-'+album.id, album.id, index === 13 ? new Date() : null]);
+      const unrelated = (await query("INSERT INTO albums(title,artist_id,year) VALUES('Unrelated',$1,2099) RETURNING id", [b])).rows[0].id;
+      await query("INSERT INTO tracks(file_path,file_name,album_id) VALUES('/virtual/unrelated','other.mp3',$1)", [unrelated]);
+      const get = offset => app.inject({ url: `/api/albums?artist_id=${a}&exclude_id=${albums[0].id}&sort=year_desc&limit=10&offset=${offset}`, headers });
+      const first = (await get(0)).json(); const next = (await get(10)).json();
+      assert.equal(first.total, 12); assert.equal(first.albums.length, 10); assert.equal(next.albums.length, 2);
+      assert.equal(first.albums[0].year, 2032);
+      const rows = [...first.albums, ...next.albums];
+      assert.equal(new Set(rows.map(row => row.id)).size, 12);
+      assert.ok(rows.every(row => row.artist_id === a && row.id !== albums[0].id));
+      assert.equal((await app.inject({ url: '/api/albums?artist_id=bad', headers })).statusCode, 400);
+    });
+    await t.test('guest artist pages resolve legacy comma credits and distinguish primary releases from appearances', async () => {
+      const main = (await query("INSERT INTO artists(name) VALUES('Scally Milano') RETURNING id")).rows[0].id;
+      const album = (await query("INSERT INTO albums(title,artist_id) VALUES('Really Rich',$1) RETURNING id", [main])).rows[0].id;
+      const rows = (await query(`INSERT INTO tracks(file_path,file_name,title,artist_id,album_id,track_artist_credit,album_artist_credit)
+        VALUES('/legacy/feature','feature.flac','Два',$1,$2,'Scally Milano, 163ONMYNECK, FEARMUCH','Scally Milano'),
+              ('/legacy/solo','solo.flac','Solo',$1,$2,'Scally Milano','Scally Milano') RETURNING id`, [main,album])).rows;
+      const byName = await app.inject({ url: '/api/artists/by-name?name=163ONMYNECK', headers });
+      assert.equal(byName.statusCode, 200, byName.body);
+      const guest = byName.json(); assert.equal(guest.artist.name, '163ONMYNECK');
+      assert.deepEqual(guest.tracks.map(t => t.id), [rows[0].id]);
+      assert.equal(guest.artist.track_count, 1); assert.equal(guest.albums[0].is_primary_album, false);
+      const byId = (await app.inject({ url: `/api/artists/${guest.artist.id}`, headers })).json();
+      assert.deepEqual(byId.tracks.map(t => t.id), [rows[0].id]);
+      assert.equal((await app.inject({ url: '/api/artists/by-name?name=163ON', headers })).statusCode, 404);
+      // A genuine comma-containing band is one identity, never an inferred guest.
+      assert.equal((await app.inject({ url: '/api/artists/by-name?name=Wind%20%26%20Fire', headers })).statusCode, 404);
+      const tagged = await make('Features/song', { title: 'Tagged feature', album: 'Features', artist: 'Scally Milano, 163ONMYNECK, FEARMUCH', performerInfo: 'Scally Milano' });
+      const refs = (await sub('getSong', { id: String(tagged.id) })).song.artists;
+      assert.deepEqual(refs.map(a => a.name), ['Scally Milano','163ONMYNECK','FEARMUCH']);
+      assert.equal(refs[1].id, String(guest.artist.id));
+    });
     await t.test('GIF content types, radio response names and editing capabilities are accurate', async () => {
       const gif = await sharp(front).gif().toBuffer(); await fs.writeFile(path.join(process.env.COVERS_DIR, 'test.gif'), gif);
       const response = await app.inject('/api/cover/test.gif'); assert.equal(response.headers['content-type'], 'image/gif');

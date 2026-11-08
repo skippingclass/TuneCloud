@@ -314,7 +314,7 @@ function MainLayout({ user, onLogout }) {
             )}
             {route.view === 'album' && activeAlbum && (
               <AlbumDetailView
-                key={scanVersion}
+                key={`${scanVersion}:${activeAlbum.id}`}
                 album={activeAlbum}
                 onBack={handleBack}
                 user={user}
@@ -332,7 +332,7 @@ function MainLayout({ user, onLogout }) {
             )}
             {route.view === 'artist' && activeArtist && (
               <ArtistDetailView
-                key={scanVersion}
+                key={`${scanVersion}:${activeArtist.id ?? activeArtist.name}`}
                 artist={activeArtist}
                 onBack={handleBack}
                 user={user}
