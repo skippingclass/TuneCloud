@@ -13,12 +13,17 @@ test('Last.fm account isolation, playback acceptance and persistent concurrent d
     LASTFM_API_KEY: 'api-key', LASTFM_API_SECRET: 'api-secret', LASTFM_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'), PUBLIC_URL: 'https://music.example.test' });
   const { default: pool, initDb, query } = await import('../src/db.js');
   const { signToken } = await import('../src/auth.js');
-  const { processAccount, LastfmError, decryptSession } = await import('../src/services/lastfm.js');
+  const { processAccount, LastfmError, decryptSession, hash } = await import('../src/services/lastfm.js');
   const originalFetch = globalThis.fetch;
+  const authorizedTokens = new Set();
   let serial = 0, calls = [];
   globalThis.fetch = async (url, opts) => {
     const body = Object.fromEntries(opts.body); calls.push(body);
-    const data = body.method === 'auth.getToken' ? { token: 'token-' + ++serial } : body.method === 'auth.getSession' ? { session: { name: 'lastfm-user', key: 'session-secret' } } : {};
+    const data = body.method === 'auth.getToken' ? { token: 'token-' + ++serial }
+      : body.method === 'auth.getSession' ? authorizedTokens.delete(body.token)
+        ? { session: { name: 'lastfm-user', key: 'session-secret' } }
+        : { error: 14, message: 'Token has not been authorized' }
+      : {};
     return { ok: true, status: 200, json: async () => data };
   };
   let app;
@@ -32,18 +37,46 @@ test('Last.fm account isolation, playback acceptance and persistent concurrent d
       const res = await request('POST', '/connect', {}, user); assert.equal(res.statusCode, 200, res.body);
       const authUrl = new URL(res.json().url), cb = new URL(authUrl.searchParams.get('cb'));
       assert.equal(cb.pathname, '/settings');
-      return { token: authUrl.searchParams.get('token'), state: cb.searchParams.get('lastfm_state') };
+      // Model Last.fm granting access and returning a new token to the callback.
+      const token = 'callback-token-' + ++serial;
+      authorizedTokens.add(token);
+      return { token, state: cb.searchParams.get('lastfm_state') };
     };
     const connect = async user => {
       const data = await start(user); const res = await request('POST', '/complete', data, user); assert.equal(res.statusCode, 200, res.body);
       return (await request('GET', '', undefined, user)).json().connectionId;
     };
-    await t.test('authorization is single use, bound to user, token and current login version', async () => {
+    await t.test('web authorization uses a callback without a pre-issued desktop token', async () => {
+      const previousCalls = calls.length;
+      const response = await request('POST', '/connect', {});
+      assert.equal(response.statusCode, 200, response.body);
+      const authorization = new URL(response.json().url);
+      const callback = new URL(authorization.searchParams.get('cb'));
+      assert.equal(authorization.origin, 'https://www.last.fm');
+      assert.equal(authorization.searchParams.get('api_key'), 'api-key');
+      assert.equal(callback.origin, 'https://music.example.test');
+      assert.equal(callback.pathname, '/settings');
+      assert.match(callback.searchParams.get('lastfm_state'), /^[a-f0-9]{64}$/);
+      assert.equal(authorization.searchParams.has('token'), false,
+        'A pre-issued token selects desktop authorization, which does not redirect back to the web callback');
+      assert.equal(calls.slice(previousCalls).some(call => call.method === 'auth.getToken'), false,
+        'Web authorization receives its token from Last.fm after the user grants access');
+    });
+    await t.test('callback validates state, user, authorization token and current login version', async () => {
       const data = await start(users[0]);
+      assert.equal((await query('SELECT token_hash FROM lastfm_auth_attempts WHERE user_id=$1', [users[0].id])).rows[0].token_hash, null);
+      const previousCalls = calls.length;
       assert.equal((await request('POST', '/complete', data, users[1])).statusCode, 400);
-      assert.equal((await request('POST', '/complete', { ...data, token: 'attacker-token' })).statusCode, 400);
+      assert.equal((await request('POST', '/complete', { ...data, state: '0'.repeat(64) })).statusCode, 400);
+      assert.equal((await request('POST', '/complete', { ...data, token: '' })).statusCode, 400);
+      assert.equal(calls.length, previousCalls, 'Invalid callback bindings must be rejected before calling Last.fm');
+      assert.equal((await request('POST', '/complete', { ...data, token: 'attacker-token' })).statusCode, 502);
+      assert.equal((await request('GET', '')).json().connected, false);
       assert.equal((await request('POST', '/complete', data)).statusCode, 200);
+      assert.equal(calls.at(-1).token, data.token);
+      const afterCompleteCalls = calls.length;
       assert.equal((await request('POST', '/complete', data)).statusCode, 400);
+      assert.equal(calls.length, afterCompleteCalls, 'A replay must not exchange the token a second time');
       const row = (await query('SELECT session_secret FROM lastfm_accounts WHERE user_id=$1', [users[0].id])).rows[0];
       assert.equal(decryptSession(row.session_secret), 'session-secret');
       const status = (await request('GET', '')).body;
@@ -53,6 +86,14 @@ test('Last.fm account isolation, playback acceptance and persistent concurrent d
       const revoked = await start(users[0]); await query('UPDATE lastfm_auth_attempts SET auth_version=auth_version+1');
       assert.equal((await request('POST', '/complete', revoked)).statusCode, 400);
       assert.equal((await app.inject('/api/lastfm')).statusCode, 401);
+    });
+    await t.test('attempts created by the old server retain their token binding during rollout', async () => {
+      const data = await start(users[0]);
+      await query('UPDATE lastfm_auth_attempts SET token_hash=$2 WHERE user_id=$1', [users[0].id, hash(data.token)]);
+      const previousCalls = calls.length;
+      assert.equal((await request('POST', '/complete', { ...data, token: 'different-token' })).statusCode, 400);
+      assert.equal(calls.length, previousCalls);
+      assert.equal((await request('POST', '/complete', data)).statusCode, 200);
     });
     let connectionId = (await request('GET', '')).json().connectionId;
     const event = (extra = {}) => ({ trackId: track, eventId: crypto.randomUUID(), connectionId, startedAt: Math.floor(Date.now() / 1000) - 160, listenedSeconds: 150, ...extra });

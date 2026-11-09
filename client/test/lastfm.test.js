@@ -99,6 +99,38 @@ test('settings render connection, diagnostics and editable thresholds', async ()
     assert.equal(update.percent, 75);
   } finally { await view.unmount(); Object.assign(api, originals); }
 });
+test('web callback exchanges the returned token once and removes credentials from the URL', async () => {
+  const originals = { lastfm: api.lastfm, lastfmQueue: api.lastfmQueue, lastfmRules: api.lastfmRules, lastfmComplete: api.lastfmComplete };
+  const originalHistory = window.history;
+  const state = 'a'.repeat(64), token = 'lastfm-authorized-callback-token';
+  const callback = new URL(`http://localhost:5173/settings?lastfm_state=${state}&token=${token}&keep=value`);
+  window.location = { href: callback.href, search: callback.search, pathname: callback.pathname };
+  let cleanedUrl, exchanges = 0;
+  window.history = { state: { idx: 1 }, replaceState: (historyState, title, url) => { cleanedUrl = url; } };
+  api.lastfmComplete = async body => {
+    assert.equal(cleanedUrl, '/settings?keep=value', 'Clean the URL before exchanging callback credentials');
+    assert.deepEqual(body, { state, token });
+    exchanges++;
+    return { success: true };
+  };
+  api.lastfm = async () => ({ ...connected, connected: exchanges === 1 });
+  api.lastfmQueue = async () => ({ items: [] });
+  api.lastfmRules = async () => ({ tracks: [], artists: [] });
+  let view;
+  try {
+    view = await render(<React.StrictMode><LastfmSettings /></React.StrictMode>);
+    await flushAsync();
+    assert.equal(exchanges, 1);
+    assert.ok(view.container.textContent.includes('Connected as listener'));
+    assert.equal(cleanedUrl.includes(token), false);
+    assert.equal(cleanedUrl.includes(state), false);
+  } finally {
+    if (view) await view.unmount();
+    Object.assign(api, originals);
+    if (originalHistory === undefined) delete window.history;
+    else window.history = originalHistory;
+  }
+});
 test('correction dialog previews changes and saves personal overrides', async () => {
   const originals = { lastfmTrack: api.lastfmTrack, lastfmSaveTrack: api.lastfmSaveTrack };
   const original = { artist: 'Artist', track: 'Song', album: 'Album', albumArtist: '' };

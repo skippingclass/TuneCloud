@@ -32,25 +32,27 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
   });
   app.post('/api/lastfm/connect', auth, async req => {
     available();
-    const data = await request('auth.getToken');
-    if (typeof data.token !== 'string' || !data.token) throw fail('Last.fm returned no authorization token', 502);
     const state = crypto.randomBytes(32).toString('hex');
-    await query(`INSERT INTO lastfm_auth_attempts(user_id,state_hash,token_hash,auth_version,expires_at) VALUES($1,$2,$3,$4,now()+interval '10 minutes')
-      ON CONFLICT(user_id) DO UPDATE SET state_hash=$2,token_hash=$3,auth_version=$4,expires_at=EXCLUDED.expires_at`,
-    [req.user.id, hash(state), hash(data.token), req.user.auth_version]);
+    // Web authorization returns a token in the callback. Pre-issuing a token
+    // selects Last.fm's desktop flow, which asks the user to return manually.
+    await query(`INSERT INTO lastfm_auth_attempts(user_id,state_hash,token_hash,auth_version,expires_at) VALUES($1,$2,NULL,$3,now()+interval '10 minutes')
+      ON CONFLICT(user_id) DO UPDATE SET state_hash=$2,token_hash=NULL,auth_version=$3,expires_at=EXCLUDED.expires_at`,
+    [req.user.id, hash(state), req.user.auth_version]);
     const callback = new URL(process.env.PUBLIC_URL);
     callback.pathname = callback.pathname.replace(/\/$/, '') + '/settings'; callback.search = ''; callback.hash = '';
     callback.searchParams.set('lastfm_state', state);
     const url = new URL('https://www.last.fm/api/auth/');
-    url.search = new URLSearchParams({ api_key: process.env.LASTFM_API_KEY, token: data.token, cb: callback.href }).toString();
+    url.search = new URLSearchParams({ api_key: process.env.LASTFM_API_KEY, cb: callback.href }).toString();
     return { url: url.href };
   });
   app.post('/api/lastfm/complete', auth, async req => {
     available();
     const { token, state } = req.body || {};
-    if (typeof token !== 'string' || token.length > 256 || typeof state !== 'string' || !/^[a-f0-9]{64}$/.test(state)) throw fail('Invalid authorization callback');
+    if (typeof token !== 'string' || !token.trim() || token.length > 256 || typeof state !== 'string' || !/^[a-f0-9]{64}$/.test(state)) throw fail('Invalid authorization callback');
     return transaction(async client => {
-      const attempt = (await client.query(`DELETE FROM lastfm_auth_attempts WHERE user_id=$1 AND state_hash=$2 AND token_hash=$3 AND auth_version=$4 AND expires_at>now() RETURNING user_id`,
+      // Keep the old token binding for attempts created before the web-flow
+      // migration; new attempts are bound by their one-time state instead.
+      const attempt = (await client.query(`DELETE FROM lastfm_auth_attempts WHERE user_id=$1 AND state_hash=$2 AND (token_hash IS NULL OR token_hash=$3) AND auth_version=$4 AND expires_at>now() RETURNING user_id`,
         [req.user.id, hash(state), hash(token), req.user.auth_version])).rows[0];
       if (!attempt) throw fail('Authorization expired or belongs to another account. Connect again.');
       const result = await request('auth.getSession', { token });

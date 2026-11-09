@@ -5,6 +5,221 @@
 > The same reproducer changed from failing to passing and broader checks passed.
 
 **Project:** TuneCloud
+**Bug:** Last.fm authorization returns to TuneCloud
+**Environment:** v26.13.0 on Linux; disposable PostgreSQL and mocked Last.fm boundary; React callback exercised under StrictMode.
+**Generated:** 2026-11-09T19:05:37.440080+00:00
+
+## Original report
+
+User grants access on Last.fm but is not redirected back to TuneCloud and the integration stays disconnected.
+
+| Contract | Expected | Actual |
+|---|---|---|
+| Observed behavior | Last.fm redirects the user to PUBLIC_URL/settings with a token; TuneCloud exchanges that callback token once and shows the connected account. | Before: /connect pre-issued a desktop token, selecting a manual-return flow; production logs contained /connect but no /complete. After: the URL carries only api_key and cb, and callback exchange and credential cleanup pass regression tests. |
+
+## Minimal reproduction
+
+Call the real authenticated /api/lastfm/connect route and inspect its authorization URL. The regression asserts no initial token and no auth.getToken request.
+
+**Confirming signal:** AssertionError: A pre-issued token selects desktop authorization, which does not redirect back to the web callback; actual true, expected false.
+
+### Reproduction files approved at Gate 1
+
+- [lastfm-integration.test.js](/home/pirkov/self/server/test/lastfm-integration.test.js:51) — Unchanged red-to-green assertion checks that web authorization never sends a pre-issued token.
+
+## Red to green evidence
+
+| Evidence | Before fix | After fix |
+|---|---:|---:|
+| Exit code | 1 | 0 |
+| Timed out | False | False |
+| Duration | — ms | 36,120.367 ms |
+| Same command | — | True |
+| Broader suite | — | passed |
+
+### Before — failing evidence
+
+```text
+waiting for server to start.... done
+server started
+npm notice run tunecloud-server@0.1.0 test
+npm notice run node --test --test-concurrency=1 test/*.test.js
+✔ embedded lyrics retain text and millisecond SYLT timestamps (36.92578ms)
+✔ upstream timeout includes a body stalled after successful headers (106.284061ms)
+[Migrations] Applying 001_initial.sql
+[Migrations] Applying 002_track_mtime.sql
+[Migrations] Applying 003_metadata_credits_and_genres.sql
+[Migrations] Applying 004_album_dedup_and_subsonic_features.sql
+[Migrations] Applying 005_gonic_parity_features.sql
+[Migrations] Applying 006_track_lyrics.sql
+[Migrations] Applying 007_session_revocation_and_missing_tracks.sql
+[Migrations] Applying 008_album_metadata_and_availability.sql
+[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql
+[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql
+[Migrations] Applying 011_playback_event_id.sql
+[Migrations] Applying 012_release_metadata.sql
+[Migrations] Applying 013_lastfm.sql
+Database migrations up to date
+Found 2 audio files (full scan)
+Unchanged: 0, to process: 2
+Processed 2/2
+Covers extracted: 0/2
+Scan complete in 0s. Processed 2 files.
+▶ library identity, tag consistency, exact artist matching, playback retries and personal Subsonic lists
+  ✔ same directory never supplies identity for an unrelated new album (70.241106ms)
+Found 2 audio files (incremental scan)
+Unchanged: 2, to process: 0
+Covers extracted: 0/4
+Scan complete in 0s. Processed 0 files.
+  ✔ tag edit refreshes album year/genre, invalidates lyrics, and remains correct after an incremental scan (63.720836ms)
+  ✔ a late lookup for old metadata cannot poison the corrected lyrics cache (21.468151ms)
+  ✔ a failure during album refresh rolls back both tags on disk and metadata in PostgreSQL (11.709048ms)
+  ✔ artist names preserve band punctuation and only whole participant credits match (65.257315ms)
+  ✔ retrying an acknowledged or lost playback event cannot double-count it (6.491925ms)
+  ✔ Subsonic frequent and recent use personal listening history rather than import dates (107.720263ms)
+✔ library identity, tag consistency, exact artist matching, playback retries and personal Subsonic lists (763.776174ms)
+[Migrations] Applying 001_initial.sql
+[Migrations] Applying 002_track_mtime.sql
+[Migrations] Applying 003_metadata_credits_and_genres.sql
+[Migrations] Applying 004_album_dedup_and_subsonic_features.sql
+[Migrations] Applying 005_gonic_parity_features.sql
+[Migrations] Applying 006_track_lyrics.sql
+[Migrations] Applying 007_session_revocation_and_missing_tracks.sql
+[Migrations] Applying 008_album_metadata_and_availability.sql
+[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql
+[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql
+[Migrations] Applying 011_playback_event_id.sql
+[Migrations] Applying 012_release_metadata.sql
+[Migrations] Applying 013_lastfm.sql
+Database migrations up to date
+▶ web discovery lists individual participants and hides legacy composite artist cards
+  ✔ /api/artists (596.656199ms)
+  ✔ /api/artists?q=Scally%20Milano (542.404108ms)
+  ✔ /api/artists?q=uglystephan (524.714283ms)
+  ✔ /api/search?q=Scally%20Milano (363.79912ms)
+  ✔ /api/search?q=uglystephan (343.235617ms)
+✔ web discovery lists individual participants and hides legacy composite artist cards (2657.836491ms)
+[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql
+[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql
+[Migrations] Applying 011_playback_event_id.sql
+[Migrations] Applying 012_release_metadata.sql
+[Migrations] Applying 013_lastfm.sql
+✔ upgrade from populated pre-009 DB preserves recordings and per-user stars, ratings, credits and track references (120.201353ms)
+[Migrations] Applying 001_initial.sql
+[Migrations] Applying 002_track_mtime.sql
+[Migrations] Applying 003_metadata_credits_and_genres.sql
+[Migrations] Applying 004_album_dedup_and_subsonic_features.sql
+[Migrations] Applying 005_gonic_parity_features.sql
+[Migrations] Applying 006_track_lyrics.sql
+[Migrations] Applying 007_session_revocation_and_missing_tracks.sql
+[Migrations] Applying 008_album_metadata_and_availability.sql
+[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql
+[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql
+[Migrations] Applying 011_playback_event_id.sql
+[Migrations] Applying 012_release_metadata.sql
+[Migrations] Applying 013_lastfm.sql
+▶ audit regressions: tag APIs, atomic album merge, and safe artwork fallback
+  ✔ case-only edits reuse artist/album IDs, including albums without artists (91.815236ms)
+  ✔ mp3 tag endpoint updates DB/file atomically, enforces admin and rolls back failures (51.165522ms)
+  ✔ flac tag endpoint updates DB/file atomically, enforces admin and rolls back failures (41.763497ms)
+  ✔ opus tag endpoint updates DB/file atomically, enforces admin and rolls back failures (53.070494ms)
+  ✔ ogg tag endpoint updates DB/file atomically, enforces admin and rolls back failures (33.894347ms)
+  ✔ m4a tag endpoint updates DB/file atomically, enforces admin and rolls back failures (67.051856ms)
+  ✔ unsupported and corrupt files leave source and database intact (4.543737ms)
+  ✔ album merge preserves conflicting user links and rolls back on mid-merge failure (10.459024ms)
+  ✔ folder artwork rejects outside symlinks, falls back, and cached/embedded artwork still works (208.666049ms)
+✔ audit regressions: tag APIs, atomic album merge, and safe artwork fallback (940.889303ms)
+▶ comma-separated track and album credits identify individual participants
+  ✔ no album artist (1.446461ms)
+  ✔ explicit album artist (0.200151ms)
+  ✔ participant arrays (0.191905ms)
+✔ comma-separated track and album credits identify individual participants (3.133373ms)
+[Migrations] Applying 001_initial.sql
+[Migrations] Applying 002_track_mtime.sql
+[Migrations] Applying 003_metadata_credits_and_genres.sql
+[Migrations] Applying 004_album_dedup_and_subsonic_features.sql
+[Migrations] A
+```
+
+### After — fixed evidence
+
+```text
+npm notice run tunecloud-server@0.1.0 test
+npm notice run node --test --test-concurrency=1 test/*.test.js
+```
+
+## Root cause
+
+A pre-issued token combines the desktop authorization path with an expected web callback. Last.fm desktop authorization asks users to return manually.
+
+## Approved fix
+
+Use Last.fm web authorization, bind callback to the one-time state and current TuneCloud user/login version, and exchange the token only after it returns from Last.fm. Migration 014 permits an initially unknown token hash while retaining validation of older attempts.
+
+**Why this is causal:** Removing the initial token selects the documented web authorization flow that honors cb and supplies a token on return.
+
+### Production files approved at Gate 2
+
+- [lastfm.js](/home/pirkov/self/server/src/routes/lastfm.js:33) — Use web authorization and validate callback state, user, login version and upstream token.
+- [014_lastfm_web_auth.sql](/home/pirkov/self/server/src/migrations/014_lastfm_web_auth.sql:1) — Allow initially unknown token hash without invalidating existing attempts.
+- [schema.sql](/home/pirkov/self/server/src/schema.sql:198) — Keep canonical schema in sync.
+- [lastfm.test.js](/home/pirkov/self/client/test/lastfm.test.js:99) — Verify token exchange exactly once under StrictMode and credential removal from URL.
+
+## Verification
+
+| Check | Status | Evidence |
+|---|---|---|
+| Server suite / identical reproducer command | ✅ passed | 154 passed, 0 failed, 0 skipped on disposable PostgreSQL. Before: exit 1 on token URL assertion; after: exit 0. |
+| Client suite | ✅ passed | 91 passed, including callback token exchange and URL cleanup. |
+| Server syntax | ✅ passed | npm run check --prefix server |
+| Frontend production build | ✅ passed | npm run build |
+
+## Reproduce
+
+```bash
+bash server/scripts/test-postgres.sh
+```
+```bash
+npm test --prefix client
+```
+```bash
+npm run check --prefix server
+```
+```bash
+npm run build
+```
+
+## Limitations
+
+- Automated tests mock the Last.fm grant; they do not perform a real user consent flow. Production URL and applied migration will be checked after deployment.
+
+## Residual risks
+
+- A user stuck on the old Last.fm authorization screen must restart Connect Last.fm.
+
+## Notes
+
+- Gate 1: user approved creating and running the reproduction test with “делай”. Gate 2: user separately approved the exact production fix, tests, report artifacts, push and deployment check with “да”.
+- Official protocol reference: https://www.last.fm/api/webauth and https://www.last.fm/api/authspec
+- Previous evidence and report are retained in these artifacts.
+
+---
+
+Generated by `$bug-reproducer`. A fix is proven only by the same red-to-green reproducer plus relevant broader checks.
+
+
+---
+
+<details>
+<summary>Previous verified report: artist identities and navigation</summary>
+
+# Bug Reproducer
+
+## ✅ FIX_PROVEN — Bug reproduced and fix proven
+
+> The same reproducer changed from failing to passing and broader checks passed.
+
+**Project:** TuneCloud
 **Bug:** Separate comma feature artists; retain playlist indexing and folder navigation fixes
 **Environment:** Linux, Node v26.13.0, disposable local PostgreSQL over Unix socket, isolated schema; checked-in synthetic MP3 fixture copied into /tmp.
 **Generated:** 2026-11-09T18:16:34.568768+00:00
@@ -452,3 +667,5 @@ npm run build
 ---
 
 Generated by `$bug-reproducer`. A fix is proven only by the same red-to-green reproducer plus relevant broader checks.
+
+</details>

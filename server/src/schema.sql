@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS lastfm_accounts (
 CREATE TABLE IF NOT EXISTS lastfm_auth_attempts (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   state_hash TEXT NOT NULL,
-  token_hash TEXT NOT NULL,
+  token_hash TEXT,
   auth_version INTEGER NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL
 );
