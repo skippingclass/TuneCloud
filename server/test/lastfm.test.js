@@ -28,7 +28,7 @@ test('Last.fm thresholds exclude short tracks and can only be raised by settings
   assert.equal(eligible(300, 299, { ...DEFAULT_SETTINGS, percent: 100, seconds: 600 }), false);
   assert.equal(eligible(300, 300, { ...DEFAULT_SETTINGS, percent: 100, seconds: 600 }), true);
 });
-test('metadata corrections take precedence; first artist requires structured credits', () => {
+test('metadata corrections take precedence and structured credits identify the first artist', () => {
   const track = { title: 'Song', artist: 'Earth, Wind & Fire', album: 'Album', duration: 123.5 };
   assert.equal(metadataPayload(track, { first_artist: true }).artist, 'Earth, Wind & Fire');
   track.metadata = { artists: [{ name: 'A' }, { name: 'B' }] };
@@ -36,6 +36,12 @@ test('metadata corrections take precedence; first artist requires structured cre
   const payload = metadataPayload(track, DEFAULT_SETTINGS, { artist: ' Correct ', album: '' });
   assert.equal(payload.artist, 'Correct'); assert.equal(payload.album, ''); assert.equal(payload.duration, '123');
   assert.equal(metadataPayload({ file_name: 'Artist - Song.mp3' }, DEFAULT_SETTINGS).track, '');
+});
+test('first-artist scrobbling uses the library primary artist when structured credits are missing', () => {
+  const track = { title: 'Song', artist: 'OG Buda', track_artist_credit: 'OG Buda, 163ONMYNECK, Yanix', metadata: {}, duration: 180 };
+  assert.equal(metadataPayload(track, { ...DEFAULT_SETTINGS, first_artist: true }).artist, 'OG Buda');
+  assert.equal(metadataPayload(track, { ...DEFAULT_SETTINGS, first_artist: false }).artist, 'OG Buda, 163ONMYNECK, Yanix');
+  assert.equal(metadataPayload({ ...track, artist: 'Earth, Wind & Fire', track_artist_credit: 'Earth, Wind & Fire' }, { ...DEFAULT_SETTINGS, first_artist: true }).artist, 'Earth, Wind & Fire');
 });
 test('requests are signed form POSTs; errors never expose Last.fm response secrets', async () => {
   process.env.LASTFM_API_KEY = 'key'; process.env.LASTFM_API_SECRET = 'secret';

@@ -5,6 +5,178 @@
 > The same reproducer changed from failing to passing and broader checks passed.
 
 **Project:** TuneCloud
+**Bug:** First-artist scrobbling falls back to the library primary artist
+**Environment:** v26.13.0 on Linux; focused unit regression, disposable PostgreSQL, React test harness and headless Chromium.
+**Generated:** 2026-11-09T19:32:09.894314+00:00
+
+## Original report
+
+The user reports that First credited artist only does not work, alongside a request to redesign Settings and use Pano-style sliders.
+
+| Contract | Expected | Actual |
+|---|---|---|
+| Observed behavior | When first_artist is enabled and structured credits are absent, use the canonical primary artist already stored in the library. | Before: OG Buda, 163ONMYNECK, Yanix was emitted even though the primary artist was OG Buda. After: the same regression emits OG Buda, preserves full credits when the option is off, and preserves band names containing commas. |
+
+## Minimal reproduction
+
+Call the real metadataPayload with artist=OG Buda, track_artist_credit=OG Buda, 163ONMYNECK, Yanix, metadata={} and first_artist=true.
+
+**Confirming signal:** AssertionError: expected OG Buda, received OG Buda, 163ONMYNECK, Yanix.
+
+### Reproduction files approved at Gate 1
+
+- [lastfm.test.js](/home/pirkov/self/server/test/lastfm.test.js:40) — Unchanged red-to-green test covers missing structured credits, disabled option and a band name containing commas.
+
+## Red to green evidence
+
+| Evidence | Before fix | After fix |
+|---|---:|---:|
+| Exit code | 1 | 0 |
+| Timed out | False | False |
+| Duration | 242.258 ms | 227.786 ms |
+| Same command | — | True |
+| Broader suite | — | passed |
+
+### Before — failing evidence
+
+```text
+✔ Last.fm signatures use ASCII ordering, UTF-8 and exclude response parameters (1.632275ms)
+✔ sessions are authenticated encrypted and independent of JWT secret (101.197513ms)
+✔ Last.fm thresholds exclude short tracks and can only be raised by settings (0.291349ms)
+✔ metadata corrections take precedence; first artist requires structured credits (0.276633ms)
+✖ first-artist scrobbling uses the library primary artist when structured credits are missing (1.052042ms)
+✔ requests are signed form POSTs; errors never expose Last.fm response secrets (2.153084ms)
+✔ configuration requires stable encryption and an explicit safe public URL (0.294558ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 6
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 198.270905
+
+✖ failing tests:
+
+test at server/test/lastfm.test.js:40:1
+✖ first-artist scrobbling uses the library primary artist when structured credits are missing (1.052042ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + 'OG Buda, 163ONMYNECK, Yanix'
+  - 'OG Buda'
+            ^
+
+      at TestContext.<anonymous> (file:///home/pirkov/self/server/test/lastfm.test.js:42:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:974:18)
+      at Test.postRun (node:internal/test_runner/test:1542:19)
+      at Test.run (node:internal/test_runner/test:1467:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'OG Buda, 163ONMYNECK, Yanix',
+    expected: 'OG Buda',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+```
+
+### After — fixed evidence
+
+```text
+✔ Last.fm signatures use ASCII ordering, UTF-8 and exclude response parameters (1.637938ms)
+✔ sessions are authenticated encrypted and independent of JWT secret (102.039794ms)
+✔ Last.fm thresholds exclude short tracks and can only be raised by settings (0.279592ms)
+✔ metadata corrections take precedence and structured credits identify the first artist (0.272967ms)
+✔ first-artist scrobbling uses the library primary artist when structured credits are missing (0.184268ms)
+✔ requests are signed form POSTs; errors never expose Last.fm response secrets (2.150126ms)
+✔ configuration requires stable encryption and an explicit safe public URL (0.297432ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 187.18467
+```
+
+## Root cause
+
+The first-artist branch read only metadata.artists[0]. If the array was absent it fell through to the full credit string before considering track.artist, even though the database join already supplied the primary artist.
+
+## Approved fix
+
+Fall back to track.artist within the first-artist branch. Keep structured credits first and explicit per-track overrides last.
+
+**Why this is causal:** The canonical primary artist is selected before the full credit fallback, so legacy tracks without structured metadata now honor the option without guessing where to split artist names.
+
+### Production files approved at Gate 2
+
+- [lastfm.js](/home/pirkov/self/server/src/services/lastfm.js:68) — Primary-artist fallback in metadataPayload.
+
+## Verification
+
+| Check | Status | Evidence |
+|---|---|---|
+| Focused regression / unchanged command | ✅ passed | node --test server/test/lastfm.test.js: exit 1 before, exit 0 after; 7 passed. |
+| Server suite | ✅ passed | 155 passed, 0 failed, 0 skipped on disposable PostgreSQL, including migration 015 and new-connection defaults. |
+| Client suite | ✅ passed | 91 passed, including percentage slider changes/reset/save and OAuth callback handling. |
+| Server syntax and frontend production build | ✅ passed | npm run check --prefix server; npm run build. |
+| Chromium visual and native control verification | ✅ passed | No runtime errors or horizontal overflow at 390, 1024, 1440 and 1920 px. Native ArrowRight increments and reset verified for all three sliders; accent theme checked. |
+
+## Reproduce
+
+```bash
+node --test server/test/lastfm.test.js
+```
+```bash
+bash server/scripts/test-postgres.sh
+```
+```bash
+npm test --prefix client
+```
+```bash
+npm run check --prefix server
+```
+```bash
+npm run build
+```
+
+## Limitations
+
+- Already delivered Last.fm scrobbles are not rewritten. Explicit personal artist corrections continue to override automatic first-artist selection.
+
+## Residual risks
+
+- When neither structured credits nor a primary library artist are present, only the full credit remains available.
+
+## Notes
+
+- Gate 1: user explicitly approved editing server/test/lastfm.test.js and running node --test server/test/lastfm.test.js through the question tool. Gate 2: user separately approved the exact metadataPayload fallback, verification, evidence/report updates and deployment through the question tool.
+- Independent authorized UI work: responsive Settings columns, Pano-style sliders with reset and time formatting, new connection defaults (Now Playing off, first artist on), quieter delivery history, and replacement of the hard-coded System & Protocol cards with project links.
+- Migration 015 changes only defaults for new connections; existing saved preferences are preserved.
+- Previous bug evidence and reports are retained in these artifacts.
+
+---
+
+Generated by `$bug-reproducer`. A fix is proven only by the same red-to-green reproducer plus relevant broader checks.
+
+
+---
+
+<details>
+<summary>Previous verified reports</summary>
+
+# Bug Reproducer
+
+## ✅ FIX_PROVEN — Bug reproduced and fix proven
+
+> The same reproducer changed from failing to passing and broader checks passed.
+
+**Project:** TuneCloud
 **Bug:** Last.fm authorization returns to TuneCloud
 **Environment:** v26.13.0 on Linux; disposable PostgreSQL and mocked Last.fm boundary; React callback exercised under StrictMode.
 **Generated:** 2026-11-09T19:05:37.440080+00:00
@@ -667,5 +839,7 @@ npm run build
 ---
 
 Generated by `$bug-reproducer`. A fix is proven only by the same red-to-green reproducer plus relevant broader checks.
+
+</details>
 
 </details>

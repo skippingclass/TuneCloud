@@ -4,6 +4,7 @@ import App from './App.jsx';
 import { getPwaController } from './pwa.js';
 import './index.css';
 import './mix.css';
+import './settings.css';
 
 getPwaController().start({ registerWorker: import.meta.env.PROD });
 

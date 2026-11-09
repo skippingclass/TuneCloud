@@ -183,11 +183,11 @@ CREATE TABLE IF NOT EXISTS lastfm_accounts (
   session_secret TEXT NOT NULL,
   needs_reauth BOOLEAN NOT NULL DEFAULT false,
   enabled BOOLEAN NOT NULL DEFAULT true,
-  now_playing BOOLEAN NOT NULL DEFAULT true,
+  now_playing BOOLEAN NOT NULL DEFAULT false,
   percent INTEGER NOT NULL DEFAULT 50 CHECK (percent BETWEEN 50 AND 100),
   seconds INTEGER NOT NULL DEFAULT 240 CHECK (seconds BETWEEN 240 AND 600),
   min_duration INTEGER NOT NULL DEFAULT 30 CHECK (min_duration BETWEEN 30 AND 3600),
-  first_artist BOOLEAN NOT NULL DEFAULT false,
+  first_artist BOOLEAN NOT NULL DEFAULT true,
   connected_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS lastfm_auth_attempts (

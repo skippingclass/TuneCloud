@@ -4,7 +4,7 @@ import { query, transaction } from '../db.js';
 // Behavior inspired by Pano Scrobbler (GPL-3.0-or-later): MainPrefs,
 // PendingScrobblesWorker and FirstArtistExtractor. Independently implemented.
 // https://github.com/kawaiiDango/pano-scrobbler
-export const DEFAULT_SETTINGS = { enabled: true, now_playing: true, percent: 50, seconds: 240, min_duration: 30, first_artist: false };
+export const DEFAULT_SETTINGS = { enabled: true, now_playing: false, percent: 50, seconds: 240, min_duration: 30, first_artist: true };
 export const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 export function configured() {
   try {
@@ -65,7 +65,7 @@ export function eligible(duration, listened, settings = DEFAULT_SETTINGS) {
 }
 export function metadataPayload(track, settings, overrides = {}) {
   const value = {
-    artist: (settings.first_artist ? track.metadata?.artists?.[0]?.name : null) || track.track_artist_credit || track.artist || '',
+    artist: (settings.first_artist ? track.metadata?.artists?.[0]?.name || track.artist : null) || track.track_artist_credit || track.artist || '',
     track: track.title || '', album: track.album || '',
     albumArtist: track.album_artist_credit || track.album_artist || '',
     duration: String(Math.floor(track.duration || 0)),

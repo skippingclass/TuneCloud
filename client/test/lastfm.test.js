@@ -88,15 +88,24 @@ test('player excludes seeks and pauses, persists start time, and separates local
 });
 test('settings render connection, diagnostics and editable thresholds', async () => {
   const originals = { lastfm: api.lastfm, lastfmQueue: api.lastfmQueue, lastfmRules: api.lastfmRules, lastfmSettings: api.lastfmSettings };
-  Object.assign(api, { lastfm: async () => connected, lastfmQueue: async () => ({ items: [] }), lastfmRules: async () => ({ tracks: [], artists: [] }) });
+  Object.assign(api, { lastfm: async () => ({ ...connected, settings: { ...settings, percent: 100, seconds: 600, min_duration: 3600 } }), lastfmQueue: async () => ({ items: [] }), lastfmRules: async () => ({ tracks: [], artists: [] }) });
   let update; api.lastfmSettings = async body => { update = body; return body; };
   const view = await render(<LastfmSettings />);
   try {
-    await flushAsync(); assert.ok(view.container.textContent.includes('listener')); assert.ok(view.container.textContent.includes('Pending: 0'));
-    const percent = view.container.findAll(n => n.tagName === 'INPUT' && n.type === 'number')[0];
+    await flushAsync(); assert.ok(view.container.textContent.includes('listener')); assert.ok(view.container.textContent.includes('Scrobble history')); assert.ok(view.container.textContent.includes('Pending'));
+    const percent = view.container.findAll(n => n.tagName === 'INPUT' && n.getAttribute('aria-label') === 'Percent')[0];
+    assert.equal(percent.value, '95');
+    assert.ok(view.container.textContent.includes('06:00'));
+    assert.ok(view.container.textContent.includes('01:00'));
+    await changeInput(percent, '75');
+    assert.ok(view.container.textContent.includes('75%'));
+    await click(view.container.find(n => n.getAttribute('aria-label') === 'Reset Percent'));
+    assert.equal(percent.value, '50');
     await changeInput(percent, '75');
     const { submitForm } = await import('./setup.js'); await submitForm(view.container.find(n => n.tagName === 'FORM'));
     assert.equal(update.percent, 75);
+    assert.equal(update.seconds, 360);
+    assert.equal(update.min_duration, 60);
   } finally { await view.unmount(); Object.assign(api, originals); }
 });
 test('web callback exchanges the returned token once and removes credentials from the URL', async () => {
@@ -121,7 +130,8 @@ test('web callback exchanges the returned token once and removes credentials fro
     view = await render(<React.StrictMode><LastfmSettings /></React.StrictMode>);
     await flushAsync();
     assert.equal(exchanges, 1);
-    assert.ok(view.container.textContent.includes('Connected as listener'));
+    assert.ok(view.container.textContent.includes('listener'));
+    assert.ok(view.container.textContent.includes('Connected'));
     assert.equal(cleanedUrl.includes(token), false);
     assert.equal(cleanedUrl.includes(state), false);
   } finally {

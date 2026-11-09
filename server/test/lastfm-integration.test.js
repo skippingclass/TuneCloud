@@ -79,6 +79,7 @@ test('Last.fm account isolation, playback acceptance and persistent concurrent d
       assert.equal(calls.length, afterCompleteCalls, 'A replay must not exchange the token a second time');
       const row = (await query('SELECT session_secret FROM lastfm_accounts WHERE user_id=$1', [users[0].id])).rows[0];
       assert.equal(decryptSession(row.session_secret), 'session-secret');
+      assert.deepEqual((await request('GET', '')).json().settings, { enabled: true, now_playing: false, percent: 50, seconds: 240, min_duration: 30, first_artist: true });
       const status = (await request('GET', '')).body;
       assert.ok(!status.includes('session-secret')); assert.ok(!status.includes('session_secret'));
       const expired = await start(users[0]); await query("UPDATE lastfm_auth_attempts SET expires_at=now()-interval '1 minute'");
@@ -118,7 +119,7 @@ test('Last.fm account isolation, playback acceptance and persistent concurrent d
       const rule = { overrides: { artist: 'Correct Artist', track: 'Correct Song', album: '' }, blocked: false };
       assert.equal((await request('PUT', `/tracks/${track}`, rule)).statusCode, 200);
       assert.equal((await request('GET', `/tracks/${track}`)).json().preview.artist, 'Correct Artist');
-      assert.equal((await request('GET', `/tracks/${track}`, undefined, users[1])).json().preview.artist, 'Artist');
+      assert.equal((await request('GET', `/tracks/${track}`, undefined, users[1])).json().preview.artist, 'First');
       const body = event(); await request('POST', '/scrobble', body);
       await request('PUT', `/tracks/${track}`, { ...rule, blocked: true });
       assert.equal((await request('POST', '/scrobble', event())).json().reason, 'blocked');
