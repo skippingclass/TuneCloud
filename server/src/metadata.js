@@ -1,19 +1,12 @@
-// Commas, slashes and ampersands can be part of one artist's name. Only an
-// explicit participant list or feature separator supplies multiple identities.
+// Commas and semicolons separate participants; slashes and ampersands remain names.
 export function splitArtists(value) {
-  return String(value || '').split(/\s*;\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i).map(s => s.trim()).filter(Boolean);
+  return String(value || '').split(/\s*[,;]\s*|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i).map(s => s.trim()).filter(Boolean);
 }
 
 const list = value => [...new Set((Array.isArray(value) ? value : value ? [value] : []).map(v => String(v).trim()).filter(Boolean))];
 export function readMetadata(common, format = {}) {
-  let artists = common.artists?.length > 1 ? list(common.artists) : splitArtists(common.artist || common.artists?.[0]);
-  // A comma is a participant separator only when a distinct explicit album
-  // artist identifies its leading performer. Preserve Earth, Wind & Fire.
-  if (artists.length === 1 && common.albumartist && common.artist) {
-    const parts = common.artist.split(',').map(name => name.trim()).filter(Boolean);
-    if (parts.length > 1 && parts[0].toLowerCase() === common.albumartist.trim().toLowerCase()) artists = parts;
-  }
-  const albumArtists = common.albumartists?.length > 1 ? list(common.albumartists) : splitArtists(common.albumartist);
+  const artists = list((common.artists?.length > 1 ? common.artists : [common.artist || common.artists?.[0]]).flatMap(splitArtists));
+  const albumArtists = list((common.albumartists?.length > 1 ? common.albumartists : [common.albumartist || common.albumartists?.[0]]).flatMap(splitArtists));
   return {
     artists: artists.map(name => ({ name })), albumArtists: albumArtists.map(name => ({ name })),
     genres: list(common.genre), composers: list(common.composer),

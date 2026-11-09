@@ -1453,11 +1453,11 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     // Repair already-created live+missing duplicate pairs when BOTH have matching verified stored hashes
     mergedPairs = await reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds);
 
-    // Clean up empty albums/artists
-    await removeOrphans(client);
-
     // Refresh album metadata across all member tracks in DB
     await refreshAlbumsMetadata(client, touchedAlbumIds);
+
+    // Album refresh can release an obsolete composite artist too.
+    await removeOrphans(client);
   } finally {
     client.release();
   }

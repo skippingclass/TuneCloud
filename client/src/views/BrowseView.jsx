@@ -20,16 +20,21 @@ export function BrowseView({
   const path = browsePath || '';
   const setPath = onBrowsePathChange;
 
-  const reload = () => {
+  useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
     api
-      .browse(path)
-      .then(setDirs)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    reload();
+      .browse(path, { signal: controller.signal })
+      .then(result => {
+        if (!controller.signal.aborted) setDirs(result);
+      })
+      .catch(error => {
+        if (error.name !== 'AbortError' && !controller.signal.aborted) setDirs([]);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, [path]);
 
   const parentPath = path.split('/').slice(0, -1).join('/');

@@ -10,6 +10,12 @@ import {
   fetchLrclibLyrics,
 } from '../lyrics.js';
 
+// Credit-only guests must be discoverable even without a solo track or album.
+const artistTrackMatch = `(t.artist_id = a.id OR EXISTS (
+  SELECT 1 FROM track_credits c WHERE c.track_id = t.id
+    AND c.artist_id = a.id AND c.role IN ('artist','albumartist')
+))`;
+
 export default async function trackRoutes(fastify) {
   fastify.get('/api/tracks', { preHandler: requireAuth }, async (req, reply) => {
     const { limit = 50, offset = 0, sort = 'title', order = 'asc', artist_id, artist, album_id, genre, q } = req.query;
@@ -308,7 +314,7 @@ export default async function trackRoutes(fastify) {
     const conditions = [
       "a.name NOT LIKE '%,%'",
       `(
-        EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL)
+        EXISTS (SELECT 1 FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL)
         OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL))
       )`,
     ];
@@ -331,7 +337,7 @@ export default async function trackRoutes(fastify) {
 
     const { rows } = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COUNT(*) FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL) as track_count,
               (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
        ${whereClause}
@@ -522,12 +528,13 @@ export default async function trackRoutes(fastify) {
 
     const artists = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
+              (SELECT COUNT(*) FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL) as track_count,
               (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
        FROM artists a
        WHERE a.name ILIKE $1
+         AND a.name NOT LIKE '%,%'
          AND (
-           EXISTS (SELECT 1 FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL)
+           EXISTS (SELECT 1 FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL)
            OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL))
          )
        LIMIT $2`,

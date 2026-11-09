@@ -1,0 +1,454 @@
+# Bug Reproducer
+
+## ✅ FIX_PROVEN — Bug reproduced and fix proven
+
+> The same reproducer changed from failing to passing and broader checks passed.
+
+**Project:** TuneCloud
+**Bug:** Separate comma feature artists; retain playlist indexing and folder navigation fixes
+**Environment:** Linux, Node v26.13.0, disposable local PostgreSQL over Unix socket, isolated schema; checked-in synthetic MP3 fixture copied into /tmp.
+**Generated:** 2026-11-09T18:16:34.568768+00:00
+
+## Discovery scope
+
+- Metadata parsing and scanner import/album refresh/orphan cleanup.
+- Artist list, search, participant counts and by-ID/by-name details; Subsonic artist identities.
+- Git history of comma splitting and the previous artist-filter change. Existing playlist and folder regressions retained.
+
+## Ranked and tested candidates
+
+| # | Candidate | Contract evidence | Trigger | Location | Confidence | Outcome |
+|---:|---|---|---|---|---|---|
+| 1 | Comma credits import as a composite artist without ALBUMARTIST | User explicitly requires Scally Milano and uglystephan as separate participants, including artist arrays. | Import an MP3 with ARTIST=Scally Milano, uglystephan and no ALBUMARTIST. | /home/pirkov/self/server/src/metadata.js:2 | high | FIX_PROVEN |
+| 2 | Guest-only artist missing from the web list/search/counts | Both credited performers must be discoverable and open the shared track. | Import the same credit with ALBUMARTIST=Scally Milano; uglystephan has no solo track. | /home/pirkov/self/server/src/routes/tracks.js:13 | high | FIX_PROVEN |
+| 3 | Full rescan fails to repair a legacy composite identity | Rescan must create the two identities without replacing the track or losing its playlist/favorite/history references. | Seed a legacy composite artist linked to track and album; full-scan the original tagged MP3. | /home/pirkov/self/server/src/scanner.js:1456 | high | FIX_PROVEN |
+
+## Original report
+
+User reported that Scally Milano, uglystephan must be two distinct artists rather than a composite artist card. They approved reproduction and the exact patch, then requested amend and push of the previous commit.
+
+| Contract | Expected | Actual |
+|---|---|---|
+| Observed behavior | Two separate artist records and cards; each list/search/detail returns the shared track; full rescan removes the obsolete composite and preserves track ID, playlist, favorite, history and MP3 bytes. | Before: parser/import/rescan retained the composite; list count was 1 rather than 2; the guest disappeared even with explicit ALBUMARTIST. After: all 23 unchanged test/subtest records pass. |
+
+## Minimal reproduction
+
+The unchanged test covers scalar artist credits with/without ALBUMARTIST, participant arrays, real MP3 imports, authenticated REST/Subsonic requests, paginated list totals, per-participant track counts, both by-ID/by-name detail pages, and a full rescan seeded with a legacy composite artist. Legacy rescan assertions also check playlist, track favorite, history and original MP3 bytes.
+
+**Confirming signal:** Before: exit 1, 19 failing and 4 passing test/subtest records. Examples: expected [Scally Milano, uglystephan] as two names but received a single combined name; expected artist total 2, got 1. After: exit 0, 23 passed, 0 failed, 0 skipped.
+
+### Reproduction files approved at Gate 1
+
+- [comma-feature-artists.test.js](/home/pirkov/self/server/test/comma-feature-artists.test.js:16) — Unchanged red-to-green integration/metadata reproducer, 23 test/subtest records.
+- [reproduce-comma-feature-artists.sh](/home/pirkov/self/server/scripts/reproduce-comma-feature-artists.sh:1) — Disposable PostgreSQL runner; no development or production DB.
+- [artist-comma-regression.test.js](/home/pirkov/self/server/test/artist-comma-regression.test.js:9) — Approved replacement of the prior comma-band contract with separate credited participants and hidden legacy composite cards.
+- [opensubsonic-compatibility.test.js](/home/pirkov/self/server/test/opensubsonic-compatibility.test.js:114) — Approved fixture update to Simon & Garfunkel; preserves single-identity ampersand punctuation and all artwork/guest compatibility assertions.
+
+## Red to green evidence
+
+| Evidence | Before fix | After fix |
+|---|---:|---:|
+| Exit code | 1 | 0 |
+| Timed out | False | False |
+| Duration | 1,275.341 ms | 9,863.601 ms |
+| Same command | — | True |
+| Broader suite | — | passed |
+
+### Before — failing evidence
+
+```text
+waiting for server to start.... done
+server started
+TAP version 13
+# Subtest: comma-separated track and album credits identify individual participants
+    # Subtest: no album artist
+    not ok 1 - no album artist
+      ---
+      duration_ms: 2.653512
+      type: 'test'
+      location: '/home/pirkov/self/server/test/comma-feature-artists.test.js:22:13'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly deep-equal:
+        + actual - expected
+
+          [
+        +   'Scally Milano, uglystephan'
+        -   'Scally Milano',
+        -   'uglystephan'
+          ]
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected:
+        0: 'Scally Milano'
+        1: 'uglystephan'
+      actual:
+        0: 'Scally Milano, uglystephan'
+      operator: 'deepStrictEqual'
+      stack: |-
+        TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:25:14)
+        Test.runInAsyncScope (node:async_hooks:226:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Test.start (node:internal/test_runner/test:1262:17)
+        TestContext.test (node:internal/test_runner/test:400:20)
+        TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:22:13)
+        Test.runInAsyncScope (node:async_hooks:226:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Test.start (node:internal/test_runner/test:1262:17)
+        startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17)
+      ...
+    # Subtest: explicit album artist
+    ok 2 - explicit album artist
+      ---
+      duration_ms: 0.377406
+      type: 'test'
+      ...
+    # Subtest: participant arrays
+    not ok 3 - participant arrays
+      ---
+      duration_ms: 0.348304
+      type: 'test'
+      location: '/home/pirkov/self/server/test/comma-feature-artists.test.js:22:13'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly deep-equal:
+        + actual - expected
+
+          [
+        +   'Scally Milano, uglystephan',
+        -   'Scally Milano',
+        -   'uglystephan',
+            'Guest'
+          ]
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected:
+        0: 'Scally Milano'
+        1: 'uglystephan'
+        2: 'Guest'
+      actual:
+        0: 'Scally Milano, uglystephan'
+        1: 'Guest'
+      operator: 'deepStrictEqual'
+      stack: |-
+        TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:25:14)
+        Test.runInAsyncScope (node:async_hooks:226:14)
+        Test.run (node:internal/test_runner/test:1402:25)
+        Test.start (node:internal/test_runner/test:1262:17)
+        TestContext.test (node:internal/test_runner/test:400:20)
+        TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:22:13)
+        async Test.run (node:internal/test_runner/test:1409:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+      ...
+    1..3
+not ok 1 - comma-separated track and album credits identify individual participants
+  ---
+  duration_ms: 4.651218
+  type: 'test'
+  location: '/home/pirkov/self/server/test/comma-feature-artists.test.js:16:1'
+  failureType: 'subtestsFailed'
+  error: '2 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# [Migrations] Applying 001_initial.sql
+# [Migrations] Applying 002_track_mtime.sql
+# [Migrations] Applying 003_metadata_credits_and_genres.sql
+# [Migrations] Applying 004_album_dedup_and_subsonic_features.sql
+# [Migrations] Applying 005_gonic_parity_features.sql
+# [Migrations] Applying 006_track_lyrics.sql
+# [Migrations] Applying 007_session_revocation_and_missing_tracks.sql
+# [Migrations] Applying 008_album_metadata_and_availability.sql
+# [Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql
+# [Migrations] Applying 010_track_identity_and_rename_reconciliation.sql
+# [Migrations] Applying 011_playback_event_id.sql
+# [Migrations] Applying 012_release_metadata.sql
+# Database migrations up to date
+# Subtest: import, web discovery, Subsonic and legacy rescan keep comma feature artists separate
+    # Subtest: import without ALBUMARTIST
+        # Subtest: stored identities and credits
+        not ok 1 - stored identities and credits
+          ---
+          duration_ms: 1.31445
+          type: 'test'
+          location: '/home/pirkov/self/server/test/comma-feature-artists.test.js:82:21'
+          failureType: 'testCodeFailure'
+          error: |-
+            Expected values to be strictly deep-equal:
+            + actual - expected
+
+              [
+            +   'Scally Milano, uglystephan'
+            -   'Scally Milano',
+            -   'uglystephan'
+              ]
+
+          code: 'ERR_ASSERTION'
+          name: 'AssertionError'
+          expected:
+            0: 'Scally Milano'
+            1: 'uglystephan'
+          actual:
+            0: 'Scally Milano, uglystephan'
+          operator: 'deepStrictEqual'
+          stack: |-
+            TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:84:16)
+            process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+            async Test.run (node:internal/test_runner/test:1409:7)
+            async verify (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:82:7)
+            async TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:125:11)
+            async Test.run (node:internal/test_runner/test:1409:7)
+            async TestContext.<anonymous> (file:///home/pirkov/self/server/test/comma-feature-artists.test.js:120:7)
+            async Test.run (node:internal/test_runner/test:1409:7)
+            async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+          ...
+        # Subtest: web list, guest counts and pagination
+        not ok 2 - web list, gues
+```
+
+### After — fixed evidence
+
+```text
+waiting for server to start.... done
+server started
+TAP version 13
+# Subtest: comma-separated track and album credits identify individual participants
+    # Subtest: no album artist
+    ok 1 - no album artist
+      ---
+      duration_ms: 1.41851
+      type: 'test'
+      ...
+    # Subtest: explicit album artist
+    ok 2 - explicit album artist
+      ---
+      duration_ms: 0.17797
+      type: 'test'
+      ...
+    # Subtest: participant arrays
+    ok 3 - participant arrays
+      ---
+      duration_ms: 0.262728
+      type: 'test'
+      ...
+    1..3
+ok 1 - comma-separated track and album credits identify individual participants
+  ---
+  duration_ms: 3.116337
+  type: 'test'
+  ...
+# [Migrations] Applying 001_initial.sql
+# [Migrations] Applying 002_track_mtime.sql
+# [Migrations] Applying 003_metadata_credits_and_genres.sql
+# [Migrations] Applying 004_album_dedup_and_subsonic_features.sql
+# [Migrations] Applying 005_gonic_parity_features.sql
+# [Migrations] Applying 006_track_lyrics.sql
+# [Migrations] Applying 007_session_revocation_and_missing_tracks.sql
+# [Migrations] Applying 008_album_metadata_and_availability.sql
+# [Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql
+# [Migrations] Applying 010_track_identity_and_rename_reconciliation.sql
+# [Migrations] Applying 011_playback_event_id.sql
+# [Migrations] Applying 012_release_metadata.sql
+# Database migrations up to date
+# Subtest: import, web discovery, Subsonic and legacy rescan keep comma feature artists separate
+    # Subtest: import without ALBUMARTIST
+        # Subtest: stored identities and credits
+        ok 1 - stored identities and credits
+          ---
+          duration_ms: 1.405895
+          type: 'test'
+          ...
+        # Subtest: web list, guest counts and pagination
+        ok 2 - web list, guest counts and pagination
+          ---
+          duration_ms: 1146.096089
+          type: 'test'
+          ...
+        # Subtest: web search and detail: Scally Milano
+        ok 3 - web search and detail: Scally Milano
+          ---
+          duration_ms: 863.207905
+          type: 'test'
+          ...
+        # Subtest: web search and detail: uglystephan
+        ok 4 - web search and detail: uglystephan
+          ---
+          duration_ms: 910.226122
+          type: 'test'
+          ...
+        # Subtest: Subsonic artist identities
+        ok 5 - Subsonic artist identities
+          ---
+          duration_ms: 7.629524
+          type: 'test'
+          ...
+        1..5
+    ok 1 - import without ALBUMARTIST
+      ---
+      duration_ms: 2974.629972
+      type: 'test'
+      ...
+    # Subtest: import with ALBUMARTIST
+        # Subtest: stored identities and credits
+        ok 1 - stored identities and credits
+          ---
+          duration_ms: 0.798253
+          type: 'test'
+          ...
+        # Subtest: web list, guest counts and pagination
+        ok 2 - web list, guest counts and pagination
+          ---
+          duration_ms: 1058.561403
+          type: 'test'
+          ...
+        # Subtest: web search and detail: Scally Milano
+        ok 3 - web search and detail: Scally Milano
+          ---
+          duration_ms: 854.262348
+          type: 'test'
+          ...
+        # Subtest: web search and detail: uglystephan
+        ok 4 - web search and detail: uglystephan
+          ---
+          duration_ms: 953.738479
+          type: 'test'
+          ...
+        # Subtest: Subsonic artist identities
+        ok 5 - Subsonic artist identities
+          ---
+          duration_ms: 4.09545
+          type: 'test'
+          ...
+        1..5
+    ok 2 - import with ALBUMARTIST
+      ---
+      duration_ms: 2886.493815
+      type: 'test'
+      ...
+# Found 1 audio files (full scan)
+# Unchanged: 0, to process: 1
+# Processed 1/1
+# Covers extracted: 0/1
+# Scan complete in 0s. Processed 1 files.
+    # Subtest: full rescan repairs legacy identity and retains track references
+        # Subtest: stored identities and credits
+        ok 1 - stored identities and credits
+          ---
+          duration_ms: 0.718146
+          type: 'test'
+          ...
+        # Subtest: web list, guest counts and pagination
+        ok 2 - web list, guest counts and pagination
+          ---
+          duration_ms: 1079.187018
+          type: 'test'
+          ...
+        # Subtest: web search and detail: Scally Milano
+        ok 3 - web search and detail: Scally Milano
+          ---
+          duration_ms: 846.657982
+          type: 'test'
+          ...
+        # Subtest: web search and detail: uglystephan
+        ok 4 - web search and detail: uglystephan
+          ---
+          duration_ms: 914.212478
+          type: 'test'
+          ...
+        # Subtest: Subsonic artist identities
+        ok 5 - Subsonic artist identities
+          ---
+          duration_ms: 4.395211
+          type: 'test'
+          ...
+        1..5
+    ok 3 - full rescan repairs legacy identity and retains track references
+      ---
+      duration_ms: 2874.613872
+      type: 'test'
+      ...
+    1..3
+ok 2 - import, web discovery, Subsonic and legacy rescan keep comma feature artists separate
+  ---
+  duration_ms: 9068.920122
+  type: 'test'
+  ...
+1..2
+# tests 23
+# suites 0
+# pass 23
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9198.358061
+```
+
+## Root cause
+
+Comma splitting was removed in 7c265df, replacing the prior extractLeadingArtist comma behavior. The artist-list SQL still hid comma names until the previous patch removed that protection. Participant-only artists were excluded because list/search/counts checked only the primary track/album owner. Orphan cleanup ran before album-artist refresh, leaving a released composite artist after one rescan.
+
+## Approved fix
+
+Restore comma splitting in scalar and array metadata. Reuse a role-limited participant match in artist-list/search discovery and track counts, and hide comma-composite cards. Run orphan cleanup after album refresh. Replace prior comma-band expectations with the user-selected participant contract; preserve ampersand-name and exact-name tests. Keep the previous playlist-index and stale-folder fixes.
+
+**Why this is causal:** The new reproduction file was not changed after its failing baseline. The patch repairs the parser, query visibility/count and cleanup order exercised by those exact assertions. No audio-tag rewrites, migrations, dependency changes or relaxed assertions.
+
+### Production files approved at Gate 2
+
+- [metadata.js](/home/pirkov/self/server/src/metadata.js:2) — Comma separation for artist and album-artist credits, including arrays; shared helper also serves scanner/tag editing.
+- [tracks.js](/home/pirkov/self/server/src/routes/tracks.js:13) — Participant visibility and counts in artist list/search, with composite-card exclusion.
+- [scanner.js](/home/pirkov/self/server/src/scanner.js:1456) — Refresh album metadata before deleting newly orphaned artist records.
+
+## Verification
+
+| Check | Status | Evidence |
+|---|---|---|
+| New unchanged reproducer | ✅ passed | bash server/scripts/reproduce-comma-feature-artists.sh: exit 1 to 0; 23 records pass after fix. |
+| Complete PostgreSQL suite | ✅ passed | bash server/scripts/test-postgres.sh: 139 passed, 0 failed, 0 skipped; includes retained playlist-index regression. |
+| Complete client suite | ✅ passed | npm test --prefix client: 81 passed, 0 failed, 0 skipped; includes retained three-run stale-folder regression. |
+| Server syntax | ✅ passed | npm run check --prefix server, exit 0. |
+| Production build | ✅ passed | npm run build, exit 0. |
+| Whitespace | ✅ passed | git diff --check, exit 0. |
+
+## Reproduce
+
+```bash
+bash server/scripts/reproduce-comma-feature-artists.sh
+```
+```bash
+bash server/scripts/test-postgres.sh
+```
+```bash
+npm test --prefix client
+```
+```bash
+npm run check --prefix server
+```
+```bash
+npm run build
+```
+
+## Limitations
+
+- Existing deployed libraries need one full metadata rescan after updating; ordinary incremental scans may skip unchanged files.
+- Real user music and production databases were not accessed or scanned.
+- No manual browser verification was performed; the client suite uses the repository DOM harness.
+
+## Residual risks
+
+- Comma is intentionally always a participant separator under the user-selected rule; genuine comma-containing names are also split.
+- The rescan proves preservation of track favorites, playlists and history. A favorite on an obsolete composite artist card is not mapped to one or both replacement artists.
+
+## Notes
+
+- This report supersedes the previous comma-band report and its claimed artist behavior; that expectation was rejected by the user.
+- All new reproducer assertions remained identical between red and green. Updating two older test contracts was explicitly approved.
+- User approved the complete three-production-file patch, including scanner cleanup order, and requested amend/push.
+- Track display credits remain intact: Scally Milano, uglystephan is still shown as the song credit, while artist identities and cards are separate.
+- The playlist-index and stale-folder fixes from the previous commit remain unchanged and pass the current full suites.
+
+---
+
+Generated by `$bug-reproducer`. A fix is proven only by the same red-to-green reproducer plus relevant broader checks.

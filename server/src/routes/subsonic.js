@@ -1136,7 +1136,11 @@ export default async function subsonicRoutes(fastify) {
       const toRemove = raw == null || raw === '' ? [] : (Array.isArray(raw) ? raw : String(raw).split(',')).map(Number);
       if (toRemove.some(i => !Number.isSafeInteger(i) || i < 0)) throw badRequest('Invalid track index');
       if (toRemove.length) {
-        const { rows } = await client.query('SELECT id FROM playlist_tracks WHERE playlist_id = $1 ORDER BY track_order, id', [playlistId]);
+        // Match the entry sequence exposed by getPlaylist, retaining missing references.
+        const { rows } = await client.query(`SELECT pt.id FROM playlist_tracks pt
+          JOIN tracks t ON t.id = pt.track_id
+          WHERE pt.playlist_id = $1 AND t.missing_since IS NULL
+          ORDER BY pt.track_order, pt.id`, [playlistId]);
         if (toRemove.some(i => i >= rows.length)) throw badRequest('Invalid track index');
         await client.query('DELETE FROM playlist_tracks WHERE id = ANY($1::int[])', [toRemove.map(i => rows[i].id)]);
       }

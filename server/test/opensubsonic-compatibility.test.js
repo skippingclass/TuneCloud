@@ -111,11 +111,11 @@ test('OpenSubsonic sync, artwork, edition identity and complete tag metadata', {
     });
     let rich, richAlbum;
     await t.test('front cover wins; artist URLs are directly usable; requested cover size is honored', async () => {
-      rich = await make('Rich/song', { title: 'Rich', artist: 'Earth, Wind & Fire', album: 'Rich', performerInfo: 'Earth, Wind & Fire' }, [back, front]);
+      rich = await make('Rich/song', { title: 'Rich', artist: 'Simon & Garfunkel', album: 'Rich', performerInfo: 'Simon & Garfunkel' }, [back, front]);
       richAlbum = (await query('SELECT * FROM albums WHERE id=$1', [rich.album_id])).rows[0];
       assert.deepEqual(await fs.readFile(cover.coverUrl(richAlbum.cover_path)), front);
       const artist = (await sub('getArtist', { id: String(rich.artist_id) })).artist;
-      assert.equal(artist.name, 'Earth, Wind & Fire');
+      assert.equal(artist.name, 'Simon & Garfunkel');
       const image = await app.inject(new URL(artist.artistImageUrl).pathname);
       assert.equal(image.statusCode, 200); assert.deepEqual(image.rawPayload, front);
       const info = (await sub('getArtistInfo2', { id: String(rich.artist_id) })).artistInfo2;
@@ -126,7 +126,7 @@ test('OpenSubsonic sync, artwork, edition identity and complete tag metadata', {
       for (let n = 0; n < 305; n++) assert.equal((await app.inject(new URL(artist.artistImageUrl).pathname)).statusCode, 200);
       const small = await request('getCoverArt', { id: `al-${rich.album_id}`, size: '32' });
       const dimensions = await sharp(small.rawPayload).metadata(); assert.equal(dimensions.width, 32);
-      const listed = (await sub('getArtists')).artists.index.flatMap(i => i.artist); assert.ok(listed.some(a => a.name === 'Earth, Wind & Fire'));
+      const listed = (await sub('getArtists')).artists.index.flatMap(i => i.artist); assert.ok(listed.some(a => a.name === 'Simon & Garfunkel'));
     });
     await t.test('feature credits have distinct real artist IDs and rich tags survive import and editing', async () => {
       const file = rich.file_path; const tagged = File.createFromPath(file);
@@ -154,7 +154,7 @@ test('OpenSubsonic sync, artwork, edition identity and complete tag metadata', {
       assert.equal((await query('SELECT disc_count FROM albums WHERE id=$1', [rich.album_id])).rows[0].disc_count, 5);
     });
     await t.test('moving tracks between albums refreshes their unique artwork immediately', async () => {
-      const other = await make('Rich/other', { title: 'Other', artist: 'Earth, Wind & Fire', album: 'Other', performerInfo: 'Earth, Wind & Fire' }, [back]);
+      const other = await make('Rich/other', { title: 'Other', artist: 'Simon & Garfunkel', album: 'Other', performerInfo: 'Simon & Garfunkel' }, [back]);
       const response = await edit(rich.id, { album: 'Other' }); assert.equal(response.statusCode, 200, response.body);
       const moved = (await query('SELECT album_id FROM tracks WHERE id=$1', [rich.id])).rows[0]; assert.equal(moved.album_id, other.album_id);
       const song = (await sub('getSong', { id: String(rich.id) })).song;
@@ -223,8 +223,8 @@ test('OpenSubsonic sync, artwork, edition identity and complete tag metadata', {
       const byId = (await app.inject({ url: `/api/artists/${guest.artist.id}`, headers })).json();
       assert.deepEqual(byId.tracks.map(t => t.id), [rows[0].id]);
       assert.equal((await app.inject({ url: '/api/artists/by-name?name=163ON', headers })).statusCode, 404);
-      // A genuine comma-containing band is one identity, never an inferred guest.
-      assert.equal((await app.inject({ url: '/api/artists/by-name?name=Wind%20%26%20Fire', headers })).statusCode, 404);
+      // Ampersands remain part of a band name, never an inferred guest.
+      assert.equal((await app.inject({ url: '/api/artists/by-name?name=Garfunkel', headers })).statusCode, 404);
       const tagged = await make('Features/song', { title: 'Tagged feature', album: 'Features', artist: 'Scally Milano, 163ONMYNECK, FEARMUCH', performerInfo: 'Scally Milano' });
       const refs = (await sub('getSong', { id: String(tagged.id) })).song.artists;
       assert.deepEqual(refs.map(a => a.name), ['Scally Milano','163ONMYNECK','FEARMUCH']);
