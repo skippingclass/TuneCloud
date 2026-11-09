@@ -16,6 +16,20 @@ A self-hosted music server with a React web player, a Subsonic-compatible API, a
 - **Listening history.** A personal timeline with repeated plays, dates, and pagination. Select multiple tracks to add them to favorites, a playlist, or the queue.
 - **Multiple users.** Administrator-managed accounts, personal listening history, session revocation, and optional tag editing for MP3, FLAC, Ogg, Opus, M4A, WAV, WMA, and AAC.
 
+## Last.fm
+
+The web player and installed PWA can scrobble to a personal Last.fm account. Subsonic clients keep their existing behavior and can manage their own Last.fm connection.
+
+The server owner registers a [Last.fm API application](https://www.last.fm/api/account/create), sets its callback to `PUBLIC_URL/settings`, and configures `PUBLIC_URL`, `LASTFM_API_KEY`, `LASTFM_API_SECRET`, and `LASTFM_ENCRYPTION_KEY` (a stable random secret of at least 32 characters). HTTPS is required except on localhost. Docker Compose passes these variables to the server; Kubernetes installations must add them to their server configuration and Secrets in the GitOps repository. Back up the encryption key with the database.
+
+Each user then opens **Settings → Last.fm → Connect Last.fm** and grants access on Last.fm. No Last.fm password or API key is entered in TuneCloud. Sessions are encrypted on the server. Changing the encryption key requires reconnecting accounts; rotating `JWT_SECRET` does not.
+
+The default threshold is half the track or four minutes, excluding tracks of 30 seconds or less. Users can raise these thresholds, toggle Now Playing, select the first credited artist, correct metadata for individual tracks, and exclude tracks or artists. Corrections affect future Last.fm events only. Local listening history keeps its own threshold. Existing history is never uploaded automatically.
+
+Accepted scrobbles are stored in PostgreSQL and retried after temporary failures, including server restarts. A per-user browser buffer holds up to 250 unacknowledged events while the server is unavailable; installed-app offline audio playback is still unsupported. Settings show delivery results and allow retrying pending errors. Disabling scrobbling pauses the queue; disconnecting or reconnecting clears the old connection and its queue. Events are never transferred to a different Last.fm account. An ambiguous upstream timeout is retried with the original metadata and timestamp; Last.fm does not expose an idempotency key, so absolute exactly-once delivery cannot be guaranteed.
+
+Scrobbling settings, persistent delivery and first-artist selection are inspired by [Pano Scrobbler](https://github.com/kawaiiDango/pano-scrobbler), GPL-3.0-or-later; this integration is independently implemented for TuneCloud.
+
 ## Screenshots
 
 The Mix interface with the music library from the [production instance](https://tune.realgeek.ru/). Desktop screenshots are captured at 1920 × 1080; mobile screenshots at 390 × 844. Select an image to open it at full resolution.

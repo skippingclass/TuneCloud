@@ -4,6 +4,9 @@ import { Play, Pause, Heart, MoreVertical, Disc, User, Edit3, ListPlus, ListStar
 import { useFavorites } from '../../context/FavoritesContext.jsx';
 import { usePlayer } from '../../context/PlayerContext.jsx';
 import { ArtistLinks } from '../common/ArtistLinks.jsx';
+import { api } from '../../api.js';
+import { lastfmChanged } from '../../utils/lastfm.js';
+import { LastfmTrackModal } from '../modals/LastfmTrackModal.jsx';
 import { toast } from '../layout/Toast.jsx';
 
 function formatDuration(sec) {
@@ -38,6 +41,7 @@ export function TrackRow({
   onContextSelect,
   selectionActions,
 }) {
+  const [lastfmOpen, setLastfmOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 });
@@ -78,7 +82,7 @@ export function TrackRow({
 
   const positionMenu = (x, y) => {
     setMenuPos({
-      top: Math.max(8, Math.min(y, window.innerHeight - 400)),
+      top: Math.max(8, Math.min(y, window.innerHeight - 560)),
       right: Math.max(8, window.innerWidth - Math.max(228, Math.min(x, window.innerWidth - 8))),
     });
   };
@@ -285,6 +289,7 @@ export function TrackRow({
         </td>
       )}
 
+      {lastfmOpen && <LastfmTrackModal track={track} onClose={() => setLastfmOpen(false)} />}
       {/* Context menu */}
       <td className="px-2 py-2.5 text-sm w-9 text-right">
         <button
@@ -311,7 +316,7 @@ export function TrackRow({
             onClick={event => event.stopPropagation()}
             onDoubleClick={event => event.stopPropagation()}
             className="track-context-menu fixed glass-panel rounded-2xl py-1.5 min-w-[220px] z-[200] shadow-glass border border-white/[0.1] animate-fade-in"
-            style={{ top: menuPos.top, right: menuPos.right }}
+            style={{ top: menuPos.top, right: menuPos.right, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto' }}
           >
             {multipleSelected ? <>
               <div className="track-context-heading">{selectionActions.count} selected tracks</div>
@@ -320,6 +325,17 @@ export function TrackRow({
               {selectionActions.playlist && <button onClick={runSelectionAction(selectionActions.playlist)} className="track-context-action"><FolderPlus size={15} /> Add to Playlist</button>}
               <button disabled={selectionActions.busy} onClick={runSelectionAction(selectionActions.favorite)} className="track-context-action"><Heart size={15} /> Add to favorites</button>
             </> : <>
+            <button className="track-context-action" onClick={() => { setMenuOpen(false); setLastfmOpen(true); }}><Edit3 size={15} />Correct for Last.fm</button>
+            <button className="track-context-action" onClick={async () => {
+              setMenuOpen(false);
+              try { const rule = await api.lastfmTrack(track.id); await api.lastfmSaveTrack(track.id, { overrides: rule.overrides, blocked: true }); lastfmChanged(); toast('Track excluded from Last.fm', 'success'); }
+              catch (e) { toast(e.message, 'error'); }
+            }}><Trash2 size={15} />Do not scrobble this track</button>
+            {track.artist_id && <button className="track-context-action" onClick={async () => {
+              setMenuOpen(false);
+              try { await api.lastfmBlockArtist(track.artist_id, true); lastfmChanged(); toast('Artist excluded from Last.fm', 'success'); }
+              catch (e) { toast(e.message, 'error'); }
+            }}><User size={15} />Do not scrobble this artist</button>}
             {canPlay && <button onClick={(e) => { e.stopPropagation(); setMenuOpen(false); playNext(track); }} className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white"><ListStart className="w-3.5 h-3.5 text-accent" /><span>Play Next</span></button>}
             {canPlay && (
               <button

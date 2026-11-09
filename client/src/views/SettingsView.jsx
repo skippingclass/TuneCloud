@@ -1,5 +1,6 @@
 import { useLibraryScan } from '../hooks/useLibraryScan.js';
 import { Palette, RefreshCw, Check, Sparkles, Info, ExternalLink, Loader2 } from 'lucide-react';
+import { LastfmSettings } from '../components/common/LastfmSettings.jsx';
 import { PwaSettings } from '../components/common/PwaSettings.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
 
@@ -19,6 +20,7 @@ export function SettingsView({ user, onScanComplete }) {
       </div>
 
       <PwaSettings />
+      <LastfmSettings />
 
       {/* Theme selection section */}
       <section className="glass-panel p-6 sm:p-7 rounded-3xl border border-white/[0.08] space-y-5">

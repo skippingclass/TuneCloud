@@ -129,6 +129,12 @@ export async function buildApp() {
   await auth(app);
   await subsonic(app);
   await playlists(app);
+  const { default: lastfm } = await import('./routes/lastfm.js');
+  await app.register(lastfm);
+  const { startWorker } = await import('./services/lastfm.js');
+  let stopLastfm;
+  app.addHook('onListen', async () => { stopLastfm = startWorker(app.log); });
+  app.addHook('onClose', async () => { await stopLastfm?.(); });
 
   if (fs.existsSync(clientDist)) {
     app.setNotFoundHandler(async (req, reply) => {
