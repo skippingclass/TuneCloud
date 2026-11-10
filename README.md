@@ -88,7 +88,7 @@ The Mix interface with the music library from the [production instance](https://
 
 [MP4](pictures/home_demo.mp4) · [WebM](pictures/home_demo.webm)
 
-**Synchronized lyrics** — «Выдох», with smooth line highlighting and scrolling alongside the artwork and its background colors.
+**Synchronized lyrics** — Playboi Carti — “Not Real”, with smooth line highlighting and scrolling alongside the artwork and its background colors.
 
 ![Synchronized lyrics demo](pictures/lyrics_demo.gif)
 
@@ -223,7 +223,7 @@ Database integration tests require `TEST_DATABASE_URL` pointing to a separate te
 The capture script uses headless Chromium against a running instance and defaults to the Midnight theme. It captures the home, player, album library, album detail, lyrics, desktop side panels, and mobile layouts. Credentials are read from `TUNECLOUD_USERNAME` and `TUNECLOUD_PASSWORD`; they are never written to the script, screenshots, or browser state files. See [scripts/capture-readme.mjs](scripts/capture-readme.mjs) for setup and capture options.
 
 Set `CAPTURE_DEMOS=1` to also refresh the 1080p GIF, MP4, and WebM demos. This option requires `ffmpeg`.
-Use `CAPTURE_ONLY_DEMOS=1` to update the animations without changing the screenshots. Use `CAPTURE_ONLY_LYRICS=1` to refresh only the lyrics demo with natural animation, and `CAPTURE_LYRICS_START` to choose its starting time in seconds (default: 16). The default demo track is «Выдох»; use `CAPTURE_LYRICS_QUERY` and `CAPTURE_LYRICS_ARTIST` to select a different track.
+Use `CAPTURE_ONLY_DEMOS=1` to update the animations without changing the screenshots. Use `CAPTURE_ONLY_LYRICS=1` to refresh only the lyrics demo with natural animation, and `CAPTURE_LYRICS_START` to choose its starting time in seconds (default: 16). The default demo track is “Not Real” by Playboi Carti; use `CAPTURE_LYRICS_QUERY` and `CAPTURE_LYRICS_ARTIST` to select a different track.
 
 ## Credits and license
 

@@ -4,20 +4,18 @@
  * Setup: npm install --no-save --package-lock=false playwright-core
  * Provide TUNECLOUD_USERNAME and TUNECLOUD_PASSWORD through your environment.
  * Optional: TUNECLOUD_URL, CHROMIUM_PATH, PLAYWRIGHT_MODULE_PATH, SCREENSHOT_DIR,
- * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Выдох), CAPTURE_LYRICS_ARTIST,
+ * TUNECLOUD_THEME (default: oled / Midnight), CAPTURE_LYRICS_QUERY (default: Not Real), CAPTURE_LYRICS_ARTIST,
  * CAPTURE_ALBUM_QUERY (default: Sqwore),
  * CAPTURE_DETAIL_QUERY (default: Draining Love Story), CAPTURE_SKIP_ALBUMS=1, CAPTURE_ONLY_ALBUMS=1.
  * CAPTURE_DEMOS=1 also refreshes GIF/MP4/WebM demos (requires ffmpeg).
  * CAPTURE_ONLY_DEMOS=1 refreshes only those demos, leaving screenshots unchanged.
  * CAPTURE_ONLY_LYRICS=1 refreshes only the lyrics GIF/MP4/WebM with natural animation.
  * CAPTURE_LYRICS_START selects the demo starting position in seconds (default: 16).
- * CAPTURE_CLEAR_LYRICS=1 omits the capture-only blur for user-supplied lyrics.
  * Run: node scripts/capture-readme.mjs
  *
  * No credentials, tokens, browser profiles, or storage-state files are persisted.
  * Desktop captures are 1920x1080 with no cover hover; mobile captures are 390x844.
- * Screenshots hide the account identity. Surrounding lyric text is blurred;
- * only a short active line is retained in the lyrics capture.
+ * Screenshots hide the account identity and preserve the player’s native lyric styling.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -187,7 +185,7 @@ try {
   }
 
   async function findLyricTrack() {
-    const query = process.env.CAPTURE_LYRICS_QUERY || "Выдох";
+    const query = process.env.CAPTURE_LYRICS_QUERY || "Not Real";
     const trackResult = await api(
       `/api/tracks?q=${encodeURIComponent(query)}&limit=10`,
     );
@@ -223,12 +221,11 @@ try {
       input.dispatchEvent(new Event('change', { bubbles: true }));
     }, requestedStart);
     await settle();
-    const clear = process.env.CAPTURE_CLEAR_LYRICS === '1';
     await demo('lyrics_demo', [
       { seconds: 1 },
       { action: () => page.locator('audio').evaluate(audio => audio.play()), seconds: 10 },
       { action: () => page.locator('audio').evaluate(audio => audio.pause()), seconds: 1 },
-    ], clear ? '' : '.full-player-lyrics .lyrics-line:not([aria-current="true"]) p { filter: blur(12px) !important; }');
+    ], '');
   } else if (process.env.CAPTURE_ONLY_ALBUMS === "1") {
     await captureAlbums();
   } else {
@@ -296,7 +293,7 @@ try {
     await page.getByRole('button', { name: 'Now playing', exact: true }).click();
     await page.locator('.now-playing-panel').waitFor();
     await page.locator('.np-lyrics-card .lyrics-content[aria-busy="false"]').waitFor({ timeout: 90000 });
-    await shot('08_now_playing.png', process.env.CAPTURE_CLEAR_LYRICS === '1' ? '' : '.np-lyrics-card .lyrics-line p, .np-lyrics-card .lyrics-plain { filter: blur(12px) !important; }');
+    await shot('08_now_playing.png', '');
     await page.getByRole('button', { name: 'Close now playing', exact: true }).click();
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.getByRole('button', { name: 'Queue', exact: true }).click();
@@ -339,13 +336,13 @@ try {
     await page.locator('[aria-current="true"]').waitFor();
     await shot(
       "06_karaoke_lyrics.png",
-      process.env.CAPTURE_CLEAR_LYRICS === '1' ? '' : ' .full-player-lyrics .lyrics-line:not([aria-current="true"]) p { filter: blur(12px) !important; }',
+      '',
     );
     await demo('lyrics_demo', [
       { seconds: 2 },
       { action: () => page.locator('audio').evaluate(audio => audio.play()), seconds: 6 },
       { action: () => page.locator('audio').evaluate(audio => audio.pause()), seconds: 2 },
-    ], process.env.CAPTURE_CLEAR_LYRICS === '1' ? '' : ` .full-player-lyrics .lyrics-line:not(:nth-child(${index + 1})) p { filter: blur(12px) !important; }`);
+    ], '');
     await page.getByRole('button', { name: 'Close player view', exact: true }).click();
 
     await page
