@@ -690,6 +690,19 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query('DELETE FROM track_genres WHERE track_id = $1', [l.id]);
 
+  // Migrate Last.fm rules and outbox references
+  await client.query(
+    `UPDATE lastfm_track_rules SET track_id = $1
+     WHERE track_id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM lastfm_track_rules r2
+         WHERE r2.user_id = lastfm_track_rules.user_id AND r2.track_id = $1
+       )`,
+    [m.id, l.id]
+  );
+  await client.query('DELETE FROM lastfm_track_rules WHERE track_id = $1', [l.id]);
+  await client.query('UPDATE lastfm_outbox SET track_id = $1 WHERE track_id = $2', [m.id, l.id]);
+
   // Delete the duplicate live row first to release UNIQUE(file_path)
   await client.query('DELETE FROM tracks WHERE id = $1', [l.id]);
 

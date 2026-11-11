@@ -16,7 +16,7 @@ export function LastfmTrackModal({ track, onClose }) {
   async function save(e) {
     e.preventDefault(); setBusy(true); setError('');
     try {
-      const overrides = Object.fromEntries(Object.keys(labels).filter(key => values[key] !== data.original[key]).map(key => [key, values[key].trim()]));
+      const overrides = Object.fromEntries(Object.keys(labels).map(key => [key, (values[key] || '').trim()]).filter(([key, val]) => val !== data.original[key]));
       await api.lastfmSaveTrack(track.id, { overrides, blocked }); lastfmChanged(); onClose();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }

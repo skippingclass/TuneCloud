@@ -48,10 +48,10 @@ export function PlayerProvider({ children, userId = 'local' }) {
     return () => { tracker.stop(); lastfmRef.current = null; };
   }, [userId]);
   const listeningRef = useRef(null);
-  if (!listeningRef.current) listeningRef.current = { startedAt: saved?.startedAt || null, lastfmConnection: saved?.lastfmConnection, lastfmQueued: saved?.lastfmQueued || false, seconds: saved?.listenedSeconds || 0, eventId: saved?.eventId || playbackEventId(), pending: false, retryAfter: 0, sample: null };
+  if (!listeningRef.current) listeningRef.current = { startedAt: saved?.startedAt || null, lastfmConnection: saved?.lastfmConnection, lastfmQueued: saved?.lastfmQueued || false, nowPlayingSent: saved?.nowPlayingSent || false, seconds: saved?.listenedSeconds || 0, eventId: saved?.eventId || playbackEventId(), pending: false, retryAfter: 0, sample: null };
   const resetListening = useCallback(() => {
     scrobbledRef.current = false;
-    listeningRef.current = { startedAt: null, seconds: 0, eventId: playbackEventId(), pending: false, retryAfter: 0, sample: null };
+    listeningRef.current = { startedAt: null, nowPlayingSent: false, seconds: 0, eventId: playbackEventId(), pending: false, retryAfter: 0, sample: null };
   }, []);
   const playRequestIdRef = useRef(0);
 
@@ -467,12 +467,12 @@ export function PlayerProvider({ children, userId = 'local' }) {
 
   // Keep writes bounded during playback, and flush the exact position on pause/exit.
   const sessionRef = useRef(null);
-  sessionRef.current = { queue, queueIndex, currentTime, repeat, shuffle, order, scrobbled: scrobbledRef.current, listenedSeconds: listeningRef.current.seconds, eventId: listeningRef.current.eventId, startedAt: listeningRef.current.startedAt, lastfmConnection: listeningRef.current.lastfmConnection, lastfmQueued: listeningRef.current.lastfmQueued };
+  sessionRef.current = { queue, queueIndex, currentTime, repeat, shuffle, order, scrobbled: scrobbledRef.current, listenedSeconds: listeningRef.current.seconds, eventId: listeningRef.current.eventId, startedAt: listeningRef.current.startedAt, lastfmConnection: listeningRef.current.lastfmConnection, lastfmQueued: listeningRef.current.lastfmQueued, nowPlayingSent: Boolean(listeningRef.current.nowPlayingSent) };
   const persist = useCallback(() => {
     try {
       const state = sessionRef.current;
       if (!state.queue.length) localStorage.removeItem(sessionKey);
-      else localStorage.setItem(sessionKey, JSON.stringify({ ...state, scrobbled: scrobbledRef.current, listenedSeconds: listeningRef.current.seconds, eventId: listeningRef.current.eventId, startedAt: listeningRef.current.startedAt, lastfmConnection: listeningRef.current.lastfmConnection, lastfmQueued: listeningRef.current.lastfmQueued }));
+      else localStorage.setItem(sessionKey, JSON.stringify({ ...state, scrobbled: scrobbledRef.current, listenedSeconds: listeningRef.current.seconds, eventId: listeningRef.current.eventId, startedAt: listeningRef.current.startedAt, lastfmConnection: listeningRef.current.lastfmConnection, lastfmQueued: listeningRef.current.lastfmQueued, nowPlayingSent: Boolean(listeningRef.current.nowPlayingSent) }));
     } catch { /* Full or unavailable browser storage must not interrupt playback. */ }
   }, [sessionKey]);
   const timeBucket = Math.floor(currentTime / 5);
@@ -567,16 +567,21 @@ export function PlayerProvider({ children, userId = 'local' }) {
       // Count only media progress backed by elapsed playback time, excluding seeks.
       const listening = listeningRef.current;
       const now = performance.now();
-      if ((!el.paused || el.ended) && !el.seeking && listening.sample) {
-        const delta = cur - listening.sample.position;
-        const elapsed = (now - listening.sample.wall) / 1000 * (el.playbackRate || 1);
-        if (delta > 0) listening.seconds += Math.min(delta, Math.max(0, elapsed));
+      if ((!el.paused || el.ended) && !el.seeking) {
+        if (!listening.startedAt) listening.startedAt = Math.floor(Date.now() / 1000);
+        if (listening.sample) {
+          const delta = cur - listening.sample.position;
+          const elapsed = (now - listening.sample.wall) / 1000 * (el.playbackRate || 1);
+          if (delta > 0) listening.seconds += Math.min(delta, Math.max(0, elapsed));
+        }
       }
+      const trackDur = Number.isFinite(currentTrack?.duration) && currentTrack.duration > 0 ? currentTrack.duration : 0;
+      const scrobbleDur = Math.max(effDur, trackDur);
       // Browser clocks differ by a few milliseconds; allow a completed, fully
       // listened track to reach a user-selected 100% threshold.
-      if (el.ended && effDur > 0 && listening.seconds >= effDur - 0.25) listening.seconds = Math.max(listening.seconds, effDur);
+      if (el.ended && effDur > 0 && listening.seconds >= effDur - 0.25) listening.seconds = Math.max(listening.seconds, scrobbleDur);
       listening.sample = { position: cur, wall: now };
-      if ((!el.paused || el.ended) && !el.seeking) lastfmRef.current?.sample(listening, currentTrack?.id, effDur);
+      if ((!el.paused || el.ended) && !el.seeking) lastfmRef.current?.sample(listening, currentTrack?.id, scrobbleDur);
       if (!scrobbledRef.current && !listening.pending && currentTrack?.id && effDur > 0 &&
           listening.seconds >= Math.min(effDur * 0.5, 30) && Date.now() >= listening.retryAfter) {
         listening.pending = true;
@@ -636,7 +641,8 @@ export function PlayerProvider({ children, userId = 'local' }) {
     const onPlaying = () => {
       const listening = listeningRef.current;
       if (!listening.startedAt) listening.startedAt = Math.floor(Date.now() / 1000);
-      lastfmRef.current?.sample(listening, currentTrack?.id, getEffectiveDuration());
+      const trackDur = Number.isFinite(currentTrack?.duration) && currentTrack.duration > 0 ? currentTrack.duration : 0;
+      lastfmRef.current?.sample(listening, currentTrack?.id, Math.max(getEffectiveDuration(), trackDur));
     };
     const onPause = () => { onTime(); listeningRef.current.sample = null; setIsPlaying(false); };
     const onSeeking = () => { listeningRef.current.sample = null; };
@@ -659,7 +665,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
     el.addEventListener('pause', onPause);
     el.addEventListener('error', onError);
     if (el.readyState >= 1) onMeta();
-    if (!el.paused) onSeeked();
+    if (!el.paused && !listeningRef.current.sample) onSeeked();
 
     return () => {
       el.removeEventListener('seeking', onSeeking);

@@ -57,10 +57,20 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
       if (!attempt) throw fail('Authorization expired or belongs to another account. Connect again.');
       const result = await request('auth.getSession', { token });
       if (!result.session?.key || !result.session?.name) throw fail('Invalid Last.fm session response', 502);
-      // Replacing an account discards its queue. Never deliver it to a different user.
-      await client.query('DELETE FROM lastfm_accounts WHERE user_id=$1', [req.user.id]);
-      await client.query(`INSERT INTO lastfm_accounts(user_id,connection_id,username,session_secret) VALUES($1,$2,$3,$4)`,
-        [req.user.id, crypto.randomUUID(), result.session.name, encryptSession(result.session.key)]);
+      const existing = await accountForUpdate(client, req.user.id);
+      const secret = encryptSession(result.session.key);
+      if (existing && existing.username.toLowerCase() === result.session.name.toLowerCase()) {
+        await client.query('UPDATE lastfm_accounts SET username=$2,session_secret=$3,needs_reauth=false WHERE user_id=$1',
+          [req.user.id, result.session.name, secret]);
+        await client.query(`UPDATE lastfm_outbox SET next_attempt_at=now() WHERE user_id=$1 AND status='pending'`, [req.user.id]);
+      } else {
+        // Replacing an account discards its queue. Never deliver it to a different user.
+        const kept = settings(existing);
+        await client.query('DELETE FROM lastfm_accounts WHERE user_id=$1', [req.user.id]);
+        await client.query(`INSERT INTO lastfm_accounts(user_id,connection_id,username,session_secret,enabled,now_playing,percent,seconds,min_duration,first_artist)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [req.user.id, crypto.randomUUID(), result.session.name, secret, ...fields.map(k => kept[k])]);
+      }
       return { success: true };
     });
   });
@@ -97,6 +107,7 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
       if (!data.payload.artist || !data.payload.track) return { accepted: false, reason: 'missing_metadata' };
       if (kind === 'now-playing') {
         if (!account.now_playing) return { accepted: false, reason: 'disabled' };
+        if (!Number.isFinite(data.track.duration) || data.track.duration <= account.min_duration) return { accepted: false, reason: 'below_threshold' };
         try { await request('track.updateNowPlaying', data.payload, decryptSession(account.session_secret)); }
         catch (error) {
           if (error.code === 9) await client.query('UPDATE lastfm_accounts SET needs_reauth=true WHERE user_id=$1', [req.user.id]);
@@ -122,7 +133,7 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
     return { success: true };
   });
   app.get('/api/lastfm/rules', auth, async req => {
-    const tracks = (await query(`SELECT r.*,t.title FROM lastfm_track_rules r JOIN tracks t ON t.id=r.track_id WHERE r.user_id=$1 ORDER BY t.title`, [req.user.id])).rows;
+    const tracks = (await query(`SELECT r.*,t.title,COALESCE(t.track_artist_credit,a.name) AS artist FROM lastfm_track_rules r JOIN tracks t ON t.id=r.track_id LEFT JOIN artists a ON a.id=t.artist_id WHERE r.user_id=$1 ORDER BY t.title`, [req.user.id])).rows;
     const artists = (await query(`SELECT b.artist_id,a.name FROM lastfm_artist_blocks b JOIN artists a ON a.id=b.artist_id WHERE b.user_id=$1 ORDER BY a.name`, [req.user.id])).rows;
     return { tracks, artists };
   });
@@ -140,6 +151,10 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
       if (!['artist', 'track', 'album', 'albumArtist'].includes(key) || typeof value !== 'string' || value.length > 1000 || (['artist', 'track'].includes(key) && !value.trim())) throw fail('Invalid metadata override');
     }
     if (!(await query('SELECT id FROM tracks WHERE id=$1', [req.params.id])).rowCount) throw fail('Track not found', 404);
+    if (!blocked && !Object.keys(overrides).length) {
+      await query('DELETE FROM lastfm_track_rules WHERE user_id=$1 AND track_id=$2', [req.user.id, req.params.id]);
+      return { success: true };
+    }
     await query(`INSERT INTO lastfm_track_rules(user_id,track_id,overrides,blocked) VALUES($1,$2,$3,$4)
       ON CONFLICT(user_id,track_id) DO UPDATE SET overrides=$3,blocked=$4`, [req.user.id, req.params.id, overrides, blocked]);
     return { success: true };

@@ -55,7 +55,7 @@ export default async function browseRoutes(fastify) {
         `SELECT t.id, t.title, t.duration, t.file_size, t.format, t.track_number,
                 t.file_path,
                 (t.missing_since IS NULL) AS available,
-                COALESCE(t.track_artist_credit, a.name) as artist,
+                COALESCE(t.track_artist_credit, a.name) as artist, a.id as artist_id,
                 al.title as album, al.id as album_id,
                 COALESCE(t.cover_path, al.cover_path) as cover_path
          FROM tracks t

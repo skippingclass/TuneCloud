@@ -49,7 +49,7 @@ export async function lastfmRequest(method, values = {}, session, fetcher = glob
     });
     if (response.status === 429 || response.status >= 500) throw new LastfmError(response.status, true);
     const data = await response.json();
-    if (data.error) throw new LastfmError(Number(data.error), [11, 16, 29].includes(Number(data.error)));
+    if (data.error) throw new LastfmError(Number(data.error), [8, 11, 16, 29].includes(Number(data.error)));
     if (!response.ok) throw new LastfmError(response.status);
     return data;
   } catch (error) {
@@ -64,10 +64,12 @@ export function eligible(duration, listened, settings = DEFAULT_SETTINGS) {
   return Number.isFinite(duration) && duration > settings.min_duration && Number.isFinite(listened) && listened >= threshold(duration, settings);
 }
 export function metadataPayload(track, settings, overrides = {}) {
+  const allArtists = track.metadata?.artists?.length > 1 ? track.metadata.artists.map(a => a.name).filter(Boolean).join(', ') : '';
   const value = {
-    artist: (settings.first_artist ? track.metadata?.artists?.[0]?.name || track.artist : null) || track.track_artist_credit || track.artist || '',
+    artist: (settings.first_artist ? track.metadata?.artists?.[0]?.name || track.artist : null) ||
+      (allArtists && (!track.track_artist_credit || track.track_artist_credit === track.artist) ? allArtists : track.track_artist_credit) || track.artist || '',
     track: track.title || '', album: track.album || '',
-    albumArtist: track.album_artist_credit || track.album_artist || '',
+    albumArtist: (settings.first_artist ? track.metadata?.albumArtists?.[0]?.name || track.album_artist : null) || track.album_artist_credit || track.album_artist || '',
     duration: String(Math.floor(track.duration || 0)),
   };
   for (const key of ['artist', 'track', 'album', 'albumArtist']) if (overrides[key] !== undefined) value[key] = overrides[key];
@@ -119,10 +121,10 @@ export async function processAccount(userId, request = lastfmRequest) {
     } catch (error) {
       if (!(error instanceof LastfmError)) throw error;
       if (error.code === 9) await client.query('UPDATE lastfm_accounts SET needs_reauth=true WHERE user_id=$1', [userId]);
-      const wait = error.code === 29 ? 300 : Math.min(3600, 10 * 2 ** Math.min(entries[0].attempts, 9));
       await client.query(`UPDATE lastfm_outbox SET status=$2, attempts=attempts+1, last_error=$3,
-        next_attempt_at=now()+$4*interval '1 second',updated_at=now() WHERE id=ANY($1::bigint[])`,
-      [entries.map(e => e.id), error.retryable || error.code === 9 ? 'pending' : 'failed', error.message, wait]);
+        next_attempt_at=now()+CASE WHEN $4::int IS NOT NULL THEN $4 ELSE LEAST(3600,10*(1<<LEAST(attempts,9))) END*interval '1 second',
+        updated_at=now() WHERE id=ANY($1::bigint[])`,
+      [entries.map(e => e.id), error.retryable || error.code === 9 ? 'pending' : 'failed', error.message, error.code === 29 ? 300 : null]);
     }
   });
 }
@@ -133,7 +135,10 @@ export function startWorker(logger) {
     running = (async () => {
       const { rows } = await query(`SELECT DISTINCT a.user_id FROM lastfm_accounts a JOIN lastfm_outbox o ON o.user_id=a.user_id
         WHERE a.enabled AND NOT a.needs_reauth AND o.status='pending' AND o.next_attempt_at<=now() LIMIT 100`);
-      for (const row of rows) { if (stopped) break; await processAccount(row.user_id); }
+      for (const row of rows) {
+        if (stopped) break;
+        try { await processAccount(row.user_id); } catch { logger.error('Last.fm account delivery failed; will retry'); }
+      }
       await query('DELETE FROM lastfm_auth_attempts WHERE expires_at<now()');
     })().catch(() => logger.error('Last.fm worker failed; will retry')).finally(() => { running = null; });
   };

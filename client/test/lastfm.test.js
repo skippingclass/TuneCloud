@@ -22,10 +22,13 @@ test('browser threshold respects short tracks and standard rules', () => {
   assert.equal(lastfmEligible(300, 150, settings), true);
   assert.equal(lastfmEligible(1000, 240, settings), true);
 });
-test('Now Playing and scrobble use separate once-per-play states', async () => {
+test('Now Playing and scrobble use separate once-per-play states and ignore short tracks for Now Playing', async () => {
   const client = fakeClient(); const tracker = createLastfmTracker('alice', { client });
   try {
-    await flushAsync(); const play = listening();
+    await flushAsync();
+    tracker.sample(listening({ eventId: 'short-play', seconds: 10 }), 1, 20);
+    assert.equal(client.now.length, 0, 'Short tracks must not send Now Playing');
+    const play = listening();
     tracker.sample(play, 1, 300); tracker.sample(play, 1, 300);
     assert.equal(client.now.length, 1); assert.equal(client.sent.length, 0);
     play.seconds = 150; tracker.sample(play, 1, 300); await flushAsync();
@@ -33,6 +36,33 @@ test('Now Playing and scrobble use separate once-per-play states', async () => {
     assert.equal(client.sent[0].startedAt, 100);
     tracker.sample(listening({ eventId: 'event-b', seconds: 150 }), 1, 300); await flushAsync();
     assert.equal(client.sent.length, 2);
+  } finally { tracker.stop(); }
+});
+test('disabled response during stale status window preserves queued scrobble until re-enabled', async () => {
+  const client = fakeClient();
+  let serverEnabled = false;
+  client.lastfm = async () => ({ ...connected, settings: { ...settings, enabled: true } });
+  client.lastfmScrobble = async body => {
+    if (!serverEnabled) {
+      client.lastfm = async () => ({ ...connected, settings: { ...settings, enabled: false } });
+      return { accepted: false, reason: 'disabled' };
+    }
+    client.sent.push(body);
+    return { accepted: true };
+  };
+  const tracker = createLastfmTracker('alice', { client });
+  try {
+    await flushAsync();
+    tracker.sample(listening({ seconds: 150 }), 1, 300);
+    await flushAsync();
+    assert.equal(client.sent.length, 0);
+    const pending = JSON.parse(localStorage.getItem('tunecloud-lastfm-pending:alice'));
+    assert.equal(pending.length, 1, 'Scrobble must stay queued when server reports disabled');
+    serverEnabled = true;
+    client.lastfm = async () => ({ ...connected, settings: { ...settings, enabled: true } });
+    lastfmChanged();
+    await flushAsync();
+    assert.equal(client.sent.length, 1);
   } finally { tracker.stop(); }
 });
 test('unacknowledged events survive tracker restart, stay user scoped and never transfer accounts', async () => {

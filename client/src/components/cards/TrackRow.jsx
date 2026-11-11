@@ -325,17 +325,6 @@ export function TrackRow({
               {selectionActions.playlist && <button onClick={runSelectionAction(selectionActions.playlist)} className="track-context-action"><FolderPlus size={15} /> Add to Playlist</button>}
               <button disabled={selectionActions.busy} onClick={runSelectionAction(selectionActions.favorite)} className="track-context-action"><Heart size={15} /> Add to favorites</button>
             </> : <>
-            <button className="track-context-action" onClick={() => { setMenuOpen(false); setLastfmOpen(true); }}><Edit3 size={15} />Correct for Last.fm</button>
-            <button className="track-context-action" onClick={async () => {
-              setMenuOpen(false);
-              try { const rule = await api.lastfmTrack(track.id); await api.lastfmSaveTrack(track.id, { overrides: rule.overrides, blocked: true }); lastfmChanged(); toast('Track excluded from Last.fm', 'success'); }
-              catch (e) { toast(e.message, 'error'); }
-            }}><Trash2 size={15} />Do not scrobble this track</button>
-            {track.artist_id && <button className="track-context-action" onClick={async () => {
-              setMenuOpen(false);
-              try { await api.lastfmBlockArtist(track.artist_id, true); lastfmChanged(); toast('Artist excluded from Last.fm', 'success'); }
-              catch (e) { toast(e.message, 'error'); }
-            }}><User size={15} />Do not scrobble this artist</button>}
             {canPlay && <button onClick={(e) => { e.stopPropagation(); setMenuOpen(false); playNext(track); }} className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-surface-200 hover:bg-white/[0.08] hover:text-white"><ListStart className="w-3.5 h-3.5 text-accent" /><span>Play Next</span></button>}
             {canPlay && (
               <button
@@ -410,6 +399,19 @@ export function TrackRow({
                 <span>Go to Artist</span>
               </button>
             )}
+
+            <div className="h-px bg-white/[0.06] my-1" />
+            <button className="track-context-action" onClick={() => { setMenuOpen(false); setLastfmOpen(true); }}><Edit3 size={15} />Correct for Last.fm</button>
+            <button className="track-context-action" onClick={async () => {
+              setMenuOpen(false);
+              try { const rule = await api.lastfmTrack(track.id); await api.lastfmSaveTrack(track.id, { overrides: rule.overrides, blocked: true }); lastfmChanged(); toast('Track excluded from Last.fm', 'success'); }
+              catch (e) { toast(e.message, 'error'); }
+            }}><Trash2 size={15} />Do not scrobble this track</button>
+            {track.artist_id && <button className="track-context-action" onClick={async () => {
+              setMenuOpen(false);
+              try { await api.lastfmBlockArtist(track.artist_id, true); lastfmChanged(); toast('Artist excluded from Last.fm', 'success'); }
+              catch (e) { toast(e.message, 'error'); }
+            }}><User size={15} />Do not scrobble this artist</button>}
 
             {isAdmin && canEditTags && (
               <>

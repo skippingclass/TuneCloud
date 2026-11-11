@@ -180,8 +180,15 @@ test('Last.fm account isolation, playback acceptance and persistent concurrent d
       const retry = (await query("SELECT * FROM lastfm_outbox ORDER BY id DESC LIMIT 1")).rows[0];
       assert.equal(retry.status, 'pending'); assert.ok(new Date(retry.next_attempt_at).getTime() > Date.now() + 290000);
     });
-    await t.test('pause keeps queue; disconnect/reconnect prevents old account events', async () => {
-      await query('UPDATE lastfm_accounts SET needs_reauth=false WHERE user_id=$1', [users[0].id]);
+    await t.test('pause keeps queue; reconnecting same user preserves queue and settings; disconnect clears queue', async () => {
+      await query('UPDATE lastfm_accounts SET needs_reauth=true WHERE user_id=$1', [users[0].id]);
+      await request('PATCH', '/settings', { percent: 75 });
+      const prevConnectionId = connectionId;
+      const reconnectedId = await connect(users[0]);
+      assert.equal(reconnectedId, prevConnectionId, 'Re-authenticating the same Last.fm user preserves connectionId and pending queue');
+      assert.equal((await request('GET', '')).json().needsReauth, false);
+      assert.equal((await request('GET', '')).json().settings.percent, 75);
+      assert.ok((await query("SELECT count(*)::int n FROM lastfm_outbox WHERE user_id=$1 AND status='pending'", [users[0].id])).rows[0].n > 0);
       await request('PATCH', '/settings', { enabled: false });
       let sent = false; await processAccount(users[0].id, async () => { sent = true; }); assert.equal(sent, false);
       assert.equal((await request('POST', '/scrobble', event())).json().reason, 'disabled');

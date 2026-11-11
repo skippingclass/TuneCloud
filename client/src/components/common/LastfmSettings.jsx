@@ -49,7 +49,7 @@ export function LastfmSettings() {
   async function action(fn, { page = offset, syncDraft = false, message = '' } = {}) {
     setBusy(true); setError(''); setNotice('');
     try { await fn(); lastfmChanged(); await load(page, syncDraft); setNotice(message); }
-    catch (e) { setError(e.message); }
+    catch (e) { setError(e.message); if (!status) await load(0, true).catch(() => {}); }
     finally { setBusy(false); }
   }
   useEffect(() => {
@@ -87,7 +87,7 @@ export function LastfmSettings() {
         </div>
         {status.connected ? <details className="lastfm-account-menu"><summary>Account<ChevronDown size={13} /></summary><div>
           <button type="button" disabled={busy || !status.configured} onClick={() => action(async () => { const result = await api.lastfmConnect(); window.location.assign(result.url); })}>Reconnect Last.fm</button>
-          <button type="button" disabled={busy} onClick={() => action(() => api.lastfmDisconnect(), { syncDraft: true })}>Disconnect and clear queue</button>
+          <button type="button" disabled={busy} onClick={() => action(() => api.lastfmDisconnect(), { page: 0, syncDraft: true })}>Disconnect and clear queue</button>
           <p>Reconnecting or disconnecting clears pending scrobbles.</p>
         </div></details> : <button type="button" className="settings-button is-primary" disabled={busy || !status.configured} onClick={() => action(async () => { const result = await api.lastfmConnect(); window.location.assign(result.url); })}>Connect Last.fm</button>}
       </div>
@@ -123,7 +123,7 @@ export function LastfmSettings() {
         </div>
       </div>}
       {ruleCount > 0 && <details className="lastfm-rules"><summary>Corrections & exclusions<span>{ruleCount}<ChevronDown size={14} /></span></summary><div>
-        {rules.tracks.map(rule => <div key={rule.track_id} className="lastfm-rule"><span>{rule.title || 'Untitled'}<small>{rule.blocked ? 'Track excluded' : 'Personal correction'}</small></span><button className="settings-text-button" disabled={busy} onClick={() => action(() => api.lastfmResetTrack(rule.track_id))}>Reset</button></div>)}
+        {rules.tracks.map(rule => <div key={rule.track_id} className="lastfm-rule"><span>{rule.artist ? `${rule.artist} — ${rule.title || 'Untitled'}` : (rule.title || 'Untitled')}<small>{rule.blocked ? 'Track excluded' : 'Personal correction'}</small></span><button className="settings-text-button" disabled={busy} onClick={() => action(() => api.lastfmResetTrack(rule.track_id))}>Reset</button></div>)}
         {rules.artists.map(rule => <div key={rule.artist_id} className="lastfm-rule"><span>{rule.name}<small>Artist excluded</small></span><button className="settings-text-button" disabled={busy} onClick={() => action(() => api.lastfmBlockArtist(rule.artist_id, false))}>Unblock</button></div>)}
       </div></details>}
     </>}

@@ -58,6 +58,7 @@ export function readPlaybackSession(key) {
       startedAt: Number.isInteger(saved.startedAt) && saved.startedAt > 0 ? saved.startedAt : null,
       lastfmConnection: saved.lastfmConnection === null || typeof saved.lastfmConnection === 'string' ? saved.lastfmConnection : undefined,
       lastfmQueued: saved.lastfmQueued === true,
+      nowPlayingSent: saved.nowPlayingSent === true,
       listenedSeconds: Number.isFinite(saved.listenedSeconds) ? Math.max(0, saved.listenedSeconds) : 0,
       eventId: typeof saved.eventId === 'string' && /^[0-9a-f-]{36}$/i.test(saved.eventId) ? saved.eventId : undefined,
     };

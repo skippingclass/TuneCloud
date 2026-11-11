@@ -30,19 +30,29 @@ export function createLastfmTracker(userId, { client = api, storage = localStora
     if (!active() || busy || !status?.configured || !status.connected || !status.settings.enabled || status.needsReauth) return;
     busy = true;
     try {
-      for (const event of [...queue]) {
-        if (!active()) break;
-        if (event.retryAt > Date.now()) continue;
-        try {
-          const { retryAt, attempts, ...body } = event;
-          await client.lastfmScrobble(body);
-          queue = queue.filter(e => e.eventId !== event.eventId);
-        } catch (error) {
-          if (error.status === 401) break;
-          if (error.status >= 400 && error.status < 500 && error.status !== 429) queue = queue.filter(e => e.eventId !== event.eventId);
-          else { event.attempts = (event.attempts || 0) + 1; event.retryAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(event.attempts, 6)); }
+      while (active() && status?.configured && status.connected && status.settings.enabled && !status.needsReauth) {
+        const ready = queue.filter(e => !(e.retryAt > Date.now()));
+        if (!ready.length) break;
+        let stoppedEarly = false;
+        for (const event of ready) {
+          if (!active()) { stoppedEarly = true; break; }
+          try {
+            const { retryAt, attempts, ...body } = event;
+            const res = await client.lastfmScrobble(body);
+            if (res?.accepted === false && res.reason === 'disabled') {
+              await refresh();
+              stoppedEarly = true;
+              break;
+            }
+            queue = queue.filter(e => e.eventId !== event.eventId);
+          } catch (error) {
+            if (error.status === 401) { stoppedEarly = true; break; }
+            if (error.status >= 400 && error.status < 500 && error.status !== 429) queue = queue.filter(e => e.eventId !== event.eventId);
+            else { event.attempts = (event.attempts || 0) + 1; event.retryAt = Date.now() + Math.min(300000, 5000 * 2 ** Math.min(event.attempts, 6)); }
+          }
+          persist();
         }
-        persist();
+        if (stoppedEarly) break;
       }
     } finally { busy = false; }
   }
@@ -56,10 +66,10 @@ export function createLastfmTracker(userId, { client = api, storage = localStora
     get status() { return status; },
     sample(listening, trackId, duration) {
       if (!active() || !listening.startedAt || !status) return;
-      if (listening.lastfmConnection === undefined) listening.lastfmConnection = status.configured && status.settings.enabled ? status.connectionId : null;
+      if (!listening.lastfmConnection) listening.lastfmConnection = status.configured && status.connected && status.settings.enabled ? status.connectionId : null;
       if (!listening.lastfmConnection || listening.lastfmConnection !== status.connectionId || !status.settings.enabled || status.needsReauth) return;
       const event = { trackId: Number(trackId), eventId: listening.eventId, connectionId: listening.lastfmConnection, startedAt: listening.startedAt };
-      if (!listening.nowPlayingSent) {
+      if (!listening.nowPlayingSent && Number.isFinite(duration) && duration > status.settings.min_duration) {
         listening.nowPlayingSent = true;
         if (status.settings.now_playing) client.lastfmNowPlaying(event).catch(() => {});
       }

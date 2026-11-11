@@ -38,9 +38,11 @@ test('metadata corrections take precedence and structured credits identify the f
   assert.equal(metadataPayload({ file_name: 'Artist - Song.mp3' }, DEFAULT_SETTINGS).track, '');
 });
 test('first-artist scrobbling uses the library primary artist when structured credits are missing', () => {
-  const track = { title: 'Song', artist: 'OG Buda', track_artist_credit: 'OG Buda, 163ONMYNECK, Yanix', metadata: {}, duration: 180 };
+  const track = { title: 'Song', artist: 'OG Buda', track_artist_credit: 'OG Buda, 163ONMYNECK, Yanix', album_artist: 'OG Buda', album_artist_credit: 'OG Buda, MAYOT', metadata: { albumArtists: [{ name: 'OG Buda' }, { name: 'MAYOT' }] }, duration: 180 };
   assert.equal(metadataPayload(track, { ...DEFAULT_SETTINGS, first_artist: true }).artist, 'OG Buda');
+  assert.equal(metadataPayload(track, { ...DEFAULT_SETTINGS, first_artist: true }).albumArtist, 'OG Buda');
   assert.equal(metadataPayload(track, { ...DEFAULT_SETTINGS, first_artist: false }).artist, 'OG Buda, 163ONMYNECK, Yanix');
+  assert.equal(metadataPayload(track, { ...DEFAULT_SETTINGS, first_artist: false }).albumArtist, 'OG Buda, MAYOT');
   assert.equal(metadataPayload({ ...track, artist: 'Earth, Wind & Fire', track_artist_credit: 'Earth, Wind & Fire' }, { ...DEFAULT_SETTINGS, first_artist: true }).artist, 'Earth, Wind & Fire');
 });
 test('requests are signed form POSTs; errors never expose Last.fm response secrets', async () => {
@@ -51,7 +53,7 @@ test('requests are signed form POSTs; errors never expose Last.fm response secre
     assert.equal(params.api_sig, signature(params, 'secret'));
     return { ok: true, status: 200, json: async () => ({ scrobbles: {} }) };
   });
-  for (const [code, retryable] of [[9, false], [11, true], [16, true], [29, true], [6, false]]) {
+  for (const [code, retryable] of [[8, true], [9, false], [11, true], [16, true], [29, true], [6, false]]) {
     await assert.rejects(lastfmRequest('x', {}, null, async () => ({ ok: true, status: 200, json: async () => ({ error: code, message: 'SECRET' }) })), e => e instanceof LastfmError && e.retryable === retryable && !e.message.includes('SECRET'));
   }
   await assert.rejects(lastfmRequest('x', {}, null, async () => { throw new Error('SECRET'); }), e => e.retryable && !e.message.includes('SECRET'));
