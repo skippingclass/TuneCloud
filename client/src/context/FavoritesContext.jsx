@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { api, getAuthToken } from '../api.js';
+import { toast } from '../components/layout/Toast.jsx';
 
 const FavoritesContext = createContext(null);
 
@@ -8,12 +9,28 @@ export function FavoritesProvider({ children }) {
   const [starredAlbumIds, setStarredAlbumIds] = useState(new Set());
   const [starredArtistIds, setStarredArtistIds] = useState(new Set());
   const [loading, setLoading] = useState(false);
+  const mountedRef = useRef(true);
+  const loadAbortRef = useRef(null);
+  const loadReqIdRef = useRef(0);
+  const toggleSeqRef = useRef(new Map());
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    loadAbortRef.current?.abort();
+  }, []);
 
   const loadFavorites = useCallback(async () => {
     if (!getAuthToken()) return;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const reqId = ++loadReqIdRef.current;
+
     try {
       setLoading(true);
-      const data = await (api.favoriteIds ? api.favoriteIds() : api.favorites({ ids_only: true }));
+      const opts = { signal: controller.signal };
+      const data = await (api.favoriteIds ? api.favoriteIds(opts) : api.favorites({ ids_only: true }, opts));
+      if (!mountedRef.current || controller.signal.aborted || reqId !== loadReqIdRef.current) return;
       const trackIds = new Set(
         data.track_ids || (data.tracks || []).map((t) => (typeof t === 'number' ? t : t.id))
       );
@@ -26,10 +43,12 @@ export function FavoritesProvider({ children }) {
       setStarredTrackIds(trackIds);
       setStarredAlbumIds(albumIds);
       setStarredArtistIds(artistIds);
-    } catch {
-      // Ignore if unauthenticated
+    } catch (err) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) return;
     } finally {
-      setLoading(false);
+      if (mountedRef.current && reqId === loadReqIdRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -37,84 +56,58 @@ export function FavoritesProvider({ children }) {
     loadFavorites();
   }, [loadFavorites]);
 
-  const toggleFavoriteTrack = useCallback(async (trackId) => {
-    if (!trackId) return;
-    setStarredTrackIds((prev) => {
+  const toggleFavorite = useCallback(async (kind, id, setter, apiToggle) => {
+    if (!id) return;
+    const key = `${kind}:${id}`;
+    const seq = (toggleSeqRef.current.get(key) || 0) + 1;
+    toggleSeqRef.current.set(key, seq);
+
+    let prevValue = false;
+    setter((prev) => {
       const next = new Set(prev);
-      if (next.has(trackId)) next.delete(trackId);
-      else next.add(trackId);
+      prevValue = next.has(id);
+      if (prevValue) next.delete(id);
+      else next.add(id);
       return next;
     });
+
     try {
-      const res = await api.toggleFavoriteTrack(trackId);
-      setStarredTrackIds((prev) => {
+      const res = await apiToggle(id);
+      if (!mountedRef.current || toggleSeqRef.current.get(key) !== seq) return;
+      setter((prev) => {
         const next = new Set(prev);
-        if (res.starred) next.add(trackId);
-        else next.delete(trackId);
+        if (res?.starred) next.add(id);
+        else next.delete(id);
         return next;
       });
-    } catch {
-      // Revert on error
-      setStarredTrackIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(trackId)) next.delete(trackId);
-        else next.add(trackId);
-        return next;
-      });
+    } catch (err) {
+      if (!mountedRef.current) return;
+      if (toggleSeqRef.current.get(key) === seq) {
+        setter((prev) => {
+          const next = new Set(prev);
+          if (prevValue) next.add(id);
+          else next.delete(id);
+          return next;
+        });
+      }
+      toast(`Failed to update favorite: ${err?.message || 'Unknown error'}`, 'error');
     }
   }, []);
 
-  const toggleFavoriteAlbum = useCallback(async (albumId) => {
-    if (!albumId) return;
-    setStarredAlbumIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(albumId)) next.delete(albumId);
-      else next.add(albumId);
-      return next;
-    });
-    try {
-      const res = await api.toggleFavoriteAlbum(albumId);
-      setStarredAlbumIds((prev) => {
-        const next = new Set(prev);
-        if (res.starred) next.add(albumId);
-        else next.delete(albumId);
-        return next;
-      });
-    } catch {
-      setStarredAlbumIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(albumId)) next.delete(albumId);
-        else next.add(albumId);
-        return next;
-      });
-    }
-  }, []);
+  const toggleFavoriteTrack = useCallback(
+    (trackId) => toggleFavorite('track', trackId, setStarredTrackIds, api.toggleFavoriteTrack),
+    [toggleFavorite]
+  );
 
-  const toggleFavoriteArtist = useCallback(async (artistId) => {
-    if (!artistId) return;
-    setStarredArtistIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(artistId)) next.delete(artistId);
-      else next.add(artistId);
-      return next;
-    });
-    try {
-      const res = await api.toggleFavoriteArtist(artistId);
-      setStarredArtistIds((prev) => {
-        const next = new Set(prev);
-        if (res.starred) next.add(artistId);
-        else next.delete(artistId);
-        return next;
-      });
-    } catch {
-      setStarredArtistIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(artistId)) next.delete(artistId);
-        else next.add(artistId);
-        return next;
-      });
-    }
-  }, []);
+  const toggleFavoriteAlbum = useCallback(
+    (albumId) => toggleFavorite('album', albumId, setStarredAlbumIds, api.toggleFavoriteAlbum),
+    [toggleFavorite]
+  );
+
+  const toggleFavoriteArtist = useCallback(
+    (artistId) => toggleFavorite('artist', artistId, setStarredArtistIds, api.toggleFavoriteArtist),
+    [toggleFavorite]
+  );
 
   const isTrackStarred = useCallback((id) => starredTrackIds.has(id), [starredTrackIds]);
   const isAlbumStarred = useCallback((id) => starredAlbumIds.has(id), [starredAlbumIds]);

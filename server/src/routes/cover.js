@@ -6,9 +6,17 @@ import { resolveCoverFile, sendCoverFile } from '../cover.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COVERS_DIR = path.resolve(process.env.COVERS_DIR || path.join(__dirname, '../../covers'));
 
-async function serveCover(req, reply, filename) {
-  const safe = path.basename(filename.split('?')[0]);
-  const filepath = await resolveCoverFile(path.isAbsolute(filename) && !filename.startsWith('/api/') ? filename : path.join(COVERS_DIR, safe), { allowMusic: true });
+const ALLOWED_COVER_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.bmp']);
+
+async function serveCover(req, reply, filename, { allowMusic = true } = {}) {
+  const clean = String(filename || '').split('?')[0];
+  if (!ALLOWED_COVER_EXTS.has(path.extname(clean).toLowerCase())) {
+    return reply.status(404).send({ error: 'Not found' });
+  }
+  const target = allowMusic && path.isAbsolute(clean) && !clean.startsWith('/api/')
+    ? clean
+    : path.join(COVERS_DIR, path.basename(clean));
+  const filepath = await resolveCoverFile(target, { allowMusic });
   if (!filepath) return reply.status(404).send({ error: 'Not found' });
   return sendCoverFile(req, reply, filepath, req.query.size);
 }
@@ -45,6 +53,10 @@ export default async function coverRoutes(fastify) {
   });
 
   fastify.get('/api/cover/:filename', async (req, reply) => {
-    return serveCover(req, reply, req.params.filename);
+    const raw = String(req.params.filename || '').split('?')[0];
+    if (!raw || raw === '.' || raw === '..' || raw.includes('/') || raw.includes('\\') || path.basename(raw) !== raw) {
+      return reply.status(404).send({ error: 'Not found' });
+    }
+    return serveCover(req, reply, raw, { allowMusic: false });
   });
 }

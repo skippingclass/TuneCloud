@@ -1,4 +1,5 @@
 import fs from 'fs';
+import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,6 +16,8 @@ export const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10 MB maximum image size
 
 let accessToken = null;
 let tokenExpiresAt = 0;
+let tokenPromise = null;
+const imageInFlight = new Map();
 
 export class BoundedTtlCache {
   constructor({ maxSize = MAX_CACHE_SIZE, defaultTtlMs = CACHE_TTL_MS } = {}) {
@@ -114,29 +117,37 @@ async function getSpotifyAccessToken() {
 
   if (!clientId || !clientSecret) return null;
 
-  try {
-    const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    const res = await fetchWithTimeout(TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${basic}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: 'grant_type=client_credentials',
-    });
+  if (tokenPromise) return tokenPromise;
 
-    if (!res.ok) {
-      const isTransient = res.status >= 500 || res.status === 429;
-      return { error: true, transient: isTransient };
+  tokenPromise = (async () => {
+    try {
+      const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      const res = await fetchWithTimeout(TOKEN_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${basic}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'grant_type=client_credentials',
+      });
+
+      if (!res.ok) {
+        const isTransient = res.status >= 500 || res.status === 429;
+        return { error: true, transient: isTransient };
+      }
+
+      const data = await res.json();
+      accessToken = data.access_token;
+      tokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
+      return accessToken;
+    } catch {
+      return { error: true, transient: true };
+    } finally {
+      tokenPromise = null;
     }
+  })();
 
-    const data = await res.json();
-    accessToken = data.access_token;
-    tokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
-    return accessToken;
-  } catch {
-    return { error: true, transient: true };
-  }
+  return tokenPromise;
 }
 
 async function searchSpotifyArtist(name) {
@@ -308,40 +319,63 @@ export async function searchArtist(name) {
 }
 
 export async function getArtistImage(name, artistDbId) {
-  const cached = path.join(CACHE_DIR, `artist_${artistDbId}.jpg`);
-  if (fs.existsSync(cached)) return `/api/cover/artist_${artistDbId}.jpg`;
+  const safeId = Number.isInteger(Number(artistDbId)) && Number(artistDbId) > 0 ? Number(artistDbId) : null;
+  if (!safeId) return null;
 
-  const info = await searchArtist(name);
-  if (!info?.image) return null;
-
+  const publicUrl = `/api/cover/artist_${safeId}.jpg`;
+  const cached = path.join(CACHE_DIR, `artist_${safeId}.jpg`);
   try {
-    const imgRes = await fetchWithTimeout(info.image, {}, REQUEST_TIMEOUT_MS);
-    if (!imgRes.ok) return null;
+    await fs.promises.access(cached);
+    return publicUrl;
+  } catch {}
 
-    const contentLength = parseInt(imgRes.headers.get('content-length'), 10);
-    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_SIZE) {
-      return null;
-    }
+  if (imageInFlight.has(safeId)) {
+    return imageInFlight.get(safeId);
+  }
 
-    if (!imgRes.body) return null;
+  const promise = (async () => {
+    const info = await searchArtist(name);
+    if (!info?.image) return null;
 
-    const chunks = [];
-    let totalBytes = 0;
-    for await (const chunk of imgRes.body) {
-      totalBytes += chunk.length;
-      if (totalBytes > MAX_IMAGE_SIZE) {
+    let tmpPath = null;
+    try {
+      const imgRes = await fetchWithTimeout(info.image, {}, REQUEST_TIMEOUT_MS);
+      if (!imgRes.ok) return null;
+
+      const contentLength = parseInt(imgRes.headers.get('content-length'), 10);
+      if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_SIZE) {
         return null;
       }
-      chunks.push(chunk);
+
+      if (!imgRes.body) return null;
+
+      const chunks = [];
+      let totalBytes = 0;
+      for await (const chunk of imgRes.body) {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_IMAGE_SIZE) {
+          return null;
+        }
+        chunks.push(chunk);
+      }
+
+      if (totalBytes === 0) return null;
+
+      const buf = Buffer.concat(chunks);
+      await fs.promises.mkdir(CACHE_DIR, { recursive: true });
+      tmpPath = path.join(CACHE_DIR, `.artist_${safeId}.${crypto.randomUUID()}.tmp`);
+      await fs.promises.writeFile(tmpPath, buf);
+      await fs.promises.rename(tmpPath, cached);
+      tmpPath = null;
+      return publicUrl;
+    } catch {
+      return null;
+    } finally {
+      if (tmpPath) await fs.promises.unlink(tmpPath).catch(() => {});
+      imageInFlight.delete(safeId);
     }
+  })();
 
-    if (totalBytes === 0) return null;
-
-    const buf = Buffer.concat(chunks);
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.writeFileSync(cached, buf);
-    return `/api/cover/artist_${artistDbId}.jpg`;
-  } catch {
-    return null;
-  }
+  imageInFlight.set(safeId, promise);
+  return promise;
 }

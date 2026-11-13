@@ -1,5 +1,5 @@
 import { useConfirmation } from '../hooks/useConfirmation.jsx';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   ListMusic,
   Plus,
@@ -80,20 +80,36 @@ export function PlaylistsView({ onPlaylistClick, user }) {
 
   const { playTrack } = usePlayer();
 
-  const loadPlaylists = async () => {
+  const mountedRef = useRef(true);
+  const loadAbortRef = useRef(null);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    loadAbortRef.current?.abort();
+  }, []);
+
+  const loadPlaylists = useCallback(async () => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     try {
-      const res = await api.playlists();
+      const res = await api.playlists({ signal: controller.signal });
+      if (!mountedRef.current || controller.signal.aborted) return;
       setPlaylists(res.playlists || []);
     } catch (err) {
+      if (err?.name === 'AbortError' || controller.signal.aborted || !mountedRef.current) return;
       toast(`Failed to load playlists: ${err.message}`, 'error');
     } finally {
-      setLoading(false);
+      if (mountedRef.current && !controller.signal.aborted) {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadPlaylists();
-  }, []);
+    return () => loadAbortRef.current?.abort();
+  }, [loadPlaylists]);
 
   const handlePlayPlaylist = async (e, playlist) => {
     e.stopPropagation();

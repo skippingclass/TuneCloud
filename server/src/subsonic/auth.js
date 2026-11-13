@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { query } from '../db.js';
 import { verifyPassword, decryptSubsonicSecret, encryptSubsonicSecret } from '../auth.js';
-import { accountLoginAllowed, recordLoginFailure } from '../security.js';
+import { accountLoginAllowed, recordLoginFailure, ipAuthAllowed, recordIpAuthFailure } from '../security.js';
 import { ErrorCode } from './response.js';
 
 const WRONG = { code: ErrorCode.WRONG_CREDENTIALS, message: 'Wrong username or password.' };
@@ -23,17 +23,19 @@ function decodePassword(p) {
  * Validates Subsonic credentials (u + p, or u + t + s).
  * Returns { user } on success or { error: { code, message } } on failure.
  */
-export async function authenticate(params) {
+export async function authenticate(params, clientIp = null) {
   const { u, p, t, s } = params;
   if (!u || (!p && !(t && s))) {
     return { error: { code: ErrorCode.MISSING_PARAM, message: 'Required parameter is missing.' } };
   }
 
   const throttled = () => ({ error: { code: ErrorCode.GENERIC, message: 'Too many authentication attempts. Retry shortly.' } });
-  // Token authentication uses a cheap digest, so valid streams remain available
-  // even when somebody else is submitting bad passwords for this account.
-  if (!(t && s) && !accountLoginAllowed(u)) return throttled();
-  const fail = () => { recordLoginFailure(u); return { error: WRONG }; };
+  if (!accountLoginAllowed(u) || !ipAuthAllowed(clientIp)) return throttled();
+  const fail = () => {
+    recordLoginFailure(u);
+    recordIpAuthFailure(clientIp);
+    return { error: WRONG };
+  };
 
   const { rows } = await query(
     'SELECT id, username, password_hash, is_admin, subsonic_secret FROM users WHERE username = $1',

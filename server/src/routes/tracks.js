@@ -1,14 +1,31 @@
 import { query, transaction } from '../db.js';
 import { requireAuth } from '../auth.js';
+import { escapeLike } from '../paths.js';
 import { fetchLrcRedLyrics } from '../lrc-red.js';
 import fs from 'fs';
 import path from 'path';
 import {
   cleanTrackTitle,
-  readLocalLyrics,
+  readLocalLyricsAsync,
   readEmbeddedLyrics,
   fetchLrclibLyrics,
 } from '../lyrics.js';
+
+const MAX_INT32 = 2147483647;
+const TRACK_PUBLIC_COLUMNS = `t.id, t.file_name, t.file_size, t.duration, t.title, t.track_number,
+  t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.album_id,
+  t.metadata, t.track_artist_credit, t.album_artist_credit, t.composer,
+  t.missing_since, t.mtime, t.created_at, t.updated_at`;
+const ALBUM_PUBLIC_COLUMNS = `al.id, al.title, al.artist_id, al.year, al.genre, al.cover_path,
+  al.disc_count, al.compilation, al.release_key, al.musicbrainz_id, al.created_at`;
+
+function parseIntParam(value, { allowZero = true } = {}) {
+  const str = String(value ?? '').trim();
+  const re = allowZero ? /^\d+$/ : /^[1-9]\d*$/;
+  if (!re.test(str)) return null;
+  const num = Number(str);
+  return num <= MAX_INT32 ? num : null;
+}
 
 // Credit-only guests must be discoverable even without a solo track or album.
 const artistTrackMatch = `(t.artist_id = a.id OR EXISTS (
@@ -48,26 +65,34 @@ export default async function trackRoutes(fastify) {
     }
     const params = [];
 
-    if (artist_id) {
-      params.push(parseInt(artist_id, 10));
+    if (artist_id !== undefined) {
+      const parsedArtistId = parseIntParam(artist_id, { allowZero: false });
+      if (parsedArtistId === null) {
+        return reply.status(400).send({ error: 'Invalid artist_id' });
+      }
+      params.push(parsedArtistId);
       conditions.push(`t.artist_id = $${params.length}`);
     } else if (artist) {
-      params.push(artist);
+      params.push(escapeLike(artist));
       conditions.push(`a.name ILIKE $${params.length}`);
     }
 
-    if (album_id) {
-      params.push(parseInt(album_id, 10));
+    if (album_id !== undefined) {
+      const parsedAlbumId = parseIntParam(album_id, { allowZero: false });
+      if (parsedAlbumId === null) {
+        return reply.status(400).send({ error: 'Invalid album_id' });
+      }
+      params.push(parsedAlbumId);
       conditions.push(`t.album_id = $${params.length}`);
     }
 
     if (genre) {
-      params.push(`%${genre}%`);
+      params.push(`%${escapeLike(genre)}%`);
       conditions.push(`(t.genre ILIKE $${params.length} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(t.metadata->'genres','[]'::jsonb)) g WHERE g ILIKE $${params.length}))`);
     }
 
     if (typeof q === 'string' && q.trim()) {
-      params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      params.push(`%${escapeLike(q.trim())}%`);
       const n = params.length;
       conditions.push(`(t.title ILIKE $${n} OR COALESCE(t.track_artist_credit, a.name) ILIKE $${n} OR al.title ILIKE $${n})`);
     }
@@ -79,7 +104,7 @@ export default async function trackRoutes(fastify) {
     params.push(safeLimit, safeOffset, userId);
 
     const { rows } = await query(
-      `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+      `SELECT t.id, t.file_name, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata, t.album_artist_credit,
               (t.missing_since IS NULL) AS available,
               COALESCE(uph.user_play_count, 0)::int as play_count,
@@ -139,10 +164,13 @@ export default async function trackRoutes(fastify) {
   });
 
   fastify.get('/api/tracks/:id', { preHandler: requireAuth }, async (req, reply) => {
-    const { id } = req.params;
+    const trackId = parseIntParam(req.params.id);
+    if (trackId === null) {
+      return reply.status(400).send({ error: 'Invalid track ID' });
+    }
     const userId = req.user?.id || 0;
     const { rows } = await query(
-      `SELECT t.*,
+      `SELECT ${TRACK_PUBLIC_COLUMNS},
               (t.missing_since IS NULL) AS available,
               COALESCE(uph.user_play_count, 0)::int as play_count,
               uph.user_last_played_at as last_played_at,
@@ -158,7 +186,7 @@ export default async function trackRoutes(fastify) {
          FROM play_history WHERE user_id = $2 GROUP BY track_id
        ) uph ON uph.track_id = t.id
        WHERE t.id = $1`,
-      [id, userId]
+      [trackId, userId]
     );
 
     if (rows.length === 0) {
@@ -193,13 +221,13 @@ export default async function trackRoutes(fastify) {
     }
 
     if (typeof q === 'string' && q.trim()) {
-      params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      params.push(`%${escapeLike(q.trim())}%`);
       const n = params.length;
       conditions.push(`(al.title ILIKE $${n} OR a.name ILIKE $${n})`);
     }
 
     if (typeof genre === 'string' && genre.trim() && genre !== 'all') {
-      params.push(`%${genre.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      params.push(`%${escapeLike(genre.trim())}%`);
       conditions.push(`al.genre ILIKE $${params.length}`);
     }
 
@@ -237,7 +265,7 @@ export default async function trackRoutes(fastify) {
     params.push(userId, safeLimit, safeOffset);
 
     const { rows } = await query(
-      `SELECT al.*, a.name as artist, a.id as artist_id,
+      `SELECT ${ALBUM_PUBLIC_COLUMNS}, a.name as artist, a.id as artist_id,
               COALESCE(ts.track_count, 0)::int as track_count,
               COALESCE(ts.duration, 0)::real as duration,
               ups.last_played_at,
@@ -283,9 +311,12 @@ export default async function trackRoutes(fastify) {
   });
 
   fastify.get('/api/albums/:id', { preHandler: requireAuth }, async (req, reply) => {
-    const { id } = req.params;
+    const albumId = parseIntParam(req.params.id);
+    if (albumId === null) {
+      return reply.status(400).send({ error: 'Invalid album ID' });
+    }
     const { rows } = await query(
-      `SELECT t.*,
+      `SELECT ${TRACK_PUBLIC_COLUMNS},
               (t.missing_since IS NULL) AS available,
               COALESCE(t.track_artist_credit, a.name) as artist,
               a.name as primary_artist,
@@ -300,7 +331,7 @@ export default async function trackRoutes(fastify) {
        LEFT JOIN artists al_a ON al.artist_id = al_a.id
        WHERE t.album_id = $1 AND t.missing_since IS NULL
        ORDER BY t.disc_number, COALESCE(t.track_number, 999), t.file_name`,
-      [id]
+      [albumId]
     );
     return rows;
   });
@@ -321,7 +352,7 @@ export default async function trackRoutes(fastify) {
     const params = [];
 
     if (typeof q === 'string' && q.trim()) {
-      params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      params.push(`%${escapeLike(q.trim())}%`);
       conditions.push(`a.name ILIKE $${params.length}`);
     }
 
@@ -337,9 +368,30 @@ export default async function trackRoutes(fastify) {
 
     const { rows } = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL) as track_count,
-              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
+              COALESCE(ts.track_count, 0)::int as track_count,
+              COALESCE(ac.album_count, 0)::int as album_count
        FROM artists a
+       LEFT JOIN (
+         SELECT artist_id, COUNT(DISTINCT track_id) AS track_count
+         FROM (
+           SELECT t.artist_id, t.id AS track_id
+           FROM tracks t
+           WHERE t.artist_id IS NOT NULL AND t.missing_since IS NULL
+           UNION ALL
+           SELECT c.artist_id, c.track_id
+           FROM track_credits c
+           JOIN tracks t ON t.id = c.track_id
+           WHERE c.role IN ('artist', 'albumartist') AND t.missing_since IS NULL
+         ) tc
+         GROUP BY artist_id
+       ) ts ON ts.artist_id = a.id
+       LEFT JOIN (
+         SELECT al.artist_id, COUNT(*) AS album_count
+         FROM albums al
+         WHERE al.artist_id IS NOT NULL
+           AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
+         GROUP BY al.artist_id
+       ) ac ON ac.artist_id = a.id
        ${whereClause}
        ORDER BY ${sortCol} ${sortDir}, a.id ASC
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -375,7 +427,7 @@ export default async function trackRoutes(fastify) {
     let artist = artistRes.rows[0];
 
     const tracksRes = await query(
-      `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+      `SELECT t.id, t.file_name, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata, t.album_artist_credit,
               (t.missing_since IS NULL) AS available,
               COALESCE(t.play_count, 0) as play_count, t.last_played_at,
@@ -399,13 +451,20 @@ export default async function trackRoutes(fastify) {
     }
 
     if (!artist) {
-      const ins = await query(
-        `INSERT INTO artists (name) VALUES ($1) ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name RETURNING id, name`,
-        [trimmed]
-      );
+      // Extract canonical capitalization from existing credits without mutating DB on GET.
+      let canonicalName = trimmed;
+      const lowerTrimmed = trimmed.toLowerCase();
+      for (const row of tracksRes.rows) {
+        const creditParts = String(row.artist || '').split(/[,;]|\s+(?:feat\.?|ft\.?|featuring|vs\.?)\s+/i);
+        const match = creditParts.map((p) => p.trim()).find((p) => p.toLowerCase() === lowerTrimmed);
+        if (match) {
+          canonicalName = match;
+          break;
+        }
+      }
       artist = {
-        id: ins.rows[0].id,
-        name: ins.rows[0].name,
+        id: null,
+        name: canonicalName,
         track_count: tracksRes.rows.length,
         album_count: new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean)).size,
       };
@@ -413,15 +472,24 @@ export default async function trackRoutes(fastify) {
 
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
     const albumsRes = await query(
-      `SELECT al.*, a.name as artist, a.id as artist_id,
-              (al.artist_id = $1 OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE member.album_id=al.id AND c.artist_id=$1 AND c.role='albumartist' AND member.missing_since IS NULL)) as is_primary_album,
-              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
-              (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration
+      `SELECT ${ALBUM_PUBLIC_COLUMNS}, a.name as artist, a.id as artist_id,
+              ($1::int IS NOT NULL AND (al.artist_id = $1::int OR EXISTS (
+                SELECT 1 FROM track_credits c JOIN tracks member ON member.id = c.track_id
+                WHERE member.album_id = al.id AND c.artist_id = $1::int AND c.role = 'albumartist' AND member.missing_since IS NULL
+              ))) as is_primary_album,
+              COALESCE(ts.track_count, 0)::int as track_count,
+              COALESCE(ts.duration, 0)::real as duration
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
-       WHERE (al.artist_id = $1 OR al.id = ANY($2::int[]))
-         AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
-       ORDER BY (al.artist_id = $1) DESC, al.year DESC NULLS LAST, al.title ASC`,
+       LEFT JOIN (
+         SELECT album_id, COUNT(*) as track_count, COALESCE(SUM(duration), 0) as duration
+         FROM tracks
+         WHERE missing_since IS NULL AND album_id IS NOT NULL
+         GROUP BY album_id
+       ) ts ON ts.album_id = al.id
+       WHERE (($1::int IS NOT NULL AND al.artist_id = $1::int) OR al.id = ANY($2::int[]))
+         AND COALESCE(ts.track_count, 0) > 0
+       ORDER BY ($1::int IS NOT NULL AND al.artist_id = $1::int) DESC, al.year DESC NULLS LAST, al.title ASC`,
       [artist.id, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
     );
 
@@ -433,9 +501,8 @@ export default async function trackRoutes(fastify) {
   });
 
   fastify.get('/api/artists/:id', { preHandler: requireAuth }, async (req, reply) => {
-    const { id } = req.params;
-    const artistId = parseInt(id, 10);
-    if (isNaN(artistId)) {
+    const artistId = parseIntParam(req.params.id);
+    if (artistId === null) {
       return reply.status(400).send({ error: 'Invalid artist ID' });
     }
 
@@ -454,7 +521,7 @@ export default async function trackRoutes(fastify) {
     }
 
     const tracksRes = await query(
-      `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+      `SELECT t.id, t.file_name, t.duration, t.title, t.track_number,
               t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format, t.file_size, t.metadata, t.album_artist_credit,
               (t.missing_since IS NULL) AS available,
               COALESCE(t.play_count, 0) as play_count, t.last_played_at,
@@ -475,14 +542,20 @@ export default async function trackRoutes(fastify) {
 
     const trackAlbumIds = [...new Set(tracksRes.rows.map((r) => r.album_id).filter(Boolean))];
     const albumsRes = await query(
-      `SELECT al.*, a.name as artist, a.id as artist_id,
+      `SELECT ${ALBUM_PUBLIC_COLUMNS}, a.name as artist, a.id as artist_id,
               (al.artist_id = $1 OR EXISTS (SELECT 1 FROM track_credits c JOIN tracks member ON member.id=c.track_id WHERE member.album_id=al.id AND c.artist_id=$1 AND c.role='albumartist' AND member.missing_since IS NULL)) as is_primary_album,
-              (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
-              (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration
+              COALESCE(ts.track_count, 0)::int as track_count,
+              COALESCE(ts.duration, 0)::real as duration
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
+       LEFT JOIN (
+         SELECT album_id, COUNT(*) as track_count, COALESCE(SUM(duration), 0) as duration
+         FROM tracks
+         WHERE missing_since IS NULL AND album_id IS NOT NULL
+         GROUP BY album_id
+       ) ts ON ts.album_id = al.id
        WHERE (al.artist_id = $1 OR al.id = ANY($2::int[]))
-         AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
+         AND COALESCE(ts.track_count, 0) > 0
        ORDER BY (al.artist_id = $1) DESC, al.year DESC NULLS LAST, al.title ASC`,
       [artistId, trackAlbumIds.length > 0 ? trackAlbumIds : [-1]]
     );
@@ -500,7 +573,7 @@ export default async function trackRoutes(fastify) {
     if (!cleanQ) return { tracks: [], albums: [], artists: [] };
 
     const safeLimit = Math.min(Math.max(1, parseInt(limit, 10) || 30), 100);
-    const searchTerm = `%${cleanQ}%`;
+    const searchTerm = `%${escapeLike(cleanQ)}%`;
 
     const tracks = await query(
       `SELECT t.id, t.title, t.file_name, t.duration, t.track_number, t.format,
@@ -517,7 +590,7 @@ export default async function trackRoutes(fastify) {
     );
 
     const albums = await query(
-      `SELECT al.*, a.name as artist, al.artist_id
+      `SELECT ${ALBUM_PUBLIC_COLUMNS}, a.name as artist, al.artist_id
        FROM albums al
        LEFT JOIN artists a ON al.artist_id = a.id
        WHERE al.title ILIKE $1
@@ -528,15 +601,33 @@ export default async function trackRoutes(fastify) {
 
     const artists = await query(
       `SELECT a.*,
-              (SELECT COUNT(*) FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL) as track_count,
-              (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count
+              COALESCE(ts.track_count, 0)::int as track_count,
+              COALESCE(ac.album_count, 0)::int as album_count
        FROM artists a
+       LEFT JOIN (
+         SELECT artist_id, COUNT(DISTINCT track_id) AS track_count
+         FROM (
+           SELECT t.artist_id, t.id AS track_id
+           FROM tracks t
+           WHERE t.artist_id IS NOT NULL AND t.missing_since IS NULL
+           UNION ALL
+           SELECT c.artist_id, c.track_id
+           FROM track_credits c
+           JOIN tracks t ON t.id = c.track_id
+           WHERE c.role IN ('artist', 'albumartist') AND t.missing_since IS NULL
+         ) tc
+         GROUP BY artist_id
+       ) ts ON ts.artist_id = a.id
+       LEFT JOIN (
+         SELECT al.artist_id, COUNT(*) AS album_count
+         FROM albums al
+         WHERE al.artist_id IS NOT NULL
+           AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
+         GROUP BY al.artist_id
+       ) ac ON ac.artist_id = a.id
        WHERE a.name ILIKE $1
          AND a.name NOT LIKE '%,%'
-         AND (
-           EXISTS (SELECT 1 FROM tracks t WHERE ${artistTrackMatch} AND t.missing_since IS NULL)
-           OR EXISTS (SELECT 1 FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL))
-         )
+         AND (COALESCE(ts.track_count, 0) > 0 OR COALESCE(ac.album_count, 0) > 0)
        LIMIT $2`,
       [searchTerm, safeLimit]
     );
@@ -591,7 +682,7 @@ export default async function trackRoutes(fastify) {
       const conditions = ['st.user_id = $1'];
       const params = [userId];
       if (typeof q === 'string' && q.trim()) {
-        params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+        params.push(`%${escapeLike(q.trim())}%`);
         const n = params.length;
         conditions.push(`(t.title ILIKE $${n} OR COALESCE(t.track_artist_credit, a.name) ILIKE $${n} OR al.title ILIKE $${n})`);
       }
@@ -603,7 +694,7 @@ export default async function trackRoutes(fastify) {
       const offsetIdx = params.length;
 
       const { rows } = await query(
-        `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+        `SELECT t.id, t.file_name, t.duration, t.title, t.track_number,
                 t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format,
                 (t.missing_since IS NULL) AS available,
                 COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
@@ -637,7 +728,7 @@ export default async function trackRoutes(fastify) {
       const conditions = ['sa.user_id = $1'];
       const params = [userId];
       if (typeof q === 'string' && q.trim()) {
-        params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+        params.push(`%${escapeLike(q.trim())}%`);
         const n = params.length;
         conditions.push(`(al.title ILIKE $${n} OR a.name ILIKE $${n})`);
       }
@@ -649,13 +740,19 @@ export default async function trackRoutes(fastify) {
       const offsetIdx = params.length;
 
       const { rows } = await query(
-        `SELECT al.*, a.name as artist, al.artist_id,
-                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
-                (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration,
+        `SELECT ${ALBUM_PUBLIC_COLUMNS}, a.name as artist, al.artist_id,
+                COALESCE(ts.track_count, 0)::int as track_count,
+                COALESCE(ts.duration, 0)::real as duration,
                 true as is_favorite
          FROM user_starred_albums sa
          JOIN albums al ON sa.album_id = al.id
          LEFT JOIN artists a ON al.artist_id = a.id
+         LEFT JOIN (
+           SELECT album_id, COUNT(*) as track_count, COALESCE(SUM(duration), 0) as duration
+           FROM tracks
+           WHERE missing_since IS NULL AND album_id IS NOT NULL
+           GROUP BY album_id
+         ) ts ON ts.album_id = al.id
          ${whereClause}
          ORDER BY ${sortCol}
          LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -678,7 +775,7 @@ export default async function trackRoutes(fastify) {
       const conditions = ['sa.user_id = $1'];
       const params = [userId];
       if (typeof q === 'string' && q.trim()) {
-        params.push(`%${q.trim().replace(/[\\%_]/g, '\\$&')}%`);
+        params.push(`%${escapeLike(q.trim())}%`);
         conditions.push(`a.name ILIKE $${params.length}`);
       }
       const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -690,11 +787,24 @@ export default async function trackRoutes(fastify) {
 
       const { rows } = await query(
         `SELECT a.*,
-                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
-                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count,
+                COALESCE(ts.track_count, 0)::int as track_count,
+                COALESCE(ac.album_count, 0)::int as album_count,
                 true as is_favorite
          FROM user_starred_artists sa
          JOIN artists a ON sa.artist_id = a.id
+         LEFT JOIN (
+           SELECT artist_id, COUNT(*) as track_count
+           FROM tracks
+           WHERE artist_id IS NOT NULL AND missing_since IS NULL
+           GROUP BY artist_id
+         ) ts ON ts.artist_id = a.id
+         LEFT JOIN (
+           SELECT al.artist_id, COUNT(*) as album_count
+           FROM albums al
+           WHERE al.artist_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
+           GROUP BY al.artist_id
+         ) ac ON ac.artist_id = a.id
          ${whereClause}
          ORDER BY ${sortCol}
          LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -727,7 +837,7 @@ export default async function trackRoutes(fastify) {
 
     const [tracksRes, albumsRes, artistsRes] = await Promise.all([
       query(
-        `SELECT t.id, t.file_name, t.file_path, t.duration, t.title, t.track_number,
+        `SELECT t.id, t.file_name, t.duration, t.title, t.track_number,
                 t.disc_number, t.genre, t.year, t.bitrate, t.sample_rate, t.format,
                 (t.missing_since IS NULL) AS available,
                 COALESCE(t.track_artist_credit, a.name) as artist, a.name as primary_artist, a.id as artist_id,
@@ -744,13 +854,19 @@ export default async function trackRoutes(fastify) {
         [userId]
       ),
       query(
-        `SELECT al.*, a.name as artist, al.artist_id,
-                (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as track_count,
-                (SELECT COALESCE(SUM(t.duration), 0) FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL) as duration,
+        `SELECT ${ALBUM_PUBLIC_COLUMNS}, a.name as artist, al.artist_id,
+                COALESCE(ts.track_count, 0)::int as track_count,
+                COALESCE(ts.duration, 0)::real as duration,
                 true as is_favorite
          FROM user_starred_albums sa
          JOIN albums al ON sa.album_id = al.id
          LEFT JOIN artists a ON al.artist_id = a.id
+         LEFT JOIN (
+           SELECT album_id, COUNT(*) as track_count, COALESCE(SUM(duration), 0) as duration
+           FROM tracks
+           WHERE missing_since IS NULL AND album_id IS NOT NULL
+           GROUP BY album_id
+         ) ts ON ts.album_id = al.id
          WHERE sa.user_id = $1
          ORDER BY sa.created_at DESC, al.id ASC
          ${albumsLimitClause}`,
@@ -758,11 +874,24 @@ export default async function trackRoutes(fastify) {
       ),
       query(
         `SELECT a.*,
-                (SELECT COUNT(*) FROM tracks t WHERE t.artist_id = a.id AND t.missing_since IS NULL) as track_count,
-                (SELECT COUNT(*) FROM albums al WHERE al.artist_id = a.id AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)) as album_count,
+                COALESCE(ts.track_count, 0)::int as track_count,
+                COALESCE(ac.album_count, 0)::int as album_count,
                 true as is_favorite
          FROM user_starred_artists sa
          JOIN artists a ON sa.artist_id = a.id
+         LEFT JOIN (
+           SELECT artist_id, COUNT(*) as track_count
+           FROM tracks
+           WHERE artist_id IS NOT NULL AND missing_since IS NULL
+           GROUP BY artist_id
+         ) ts ON ts.artist_id = a.id
+         LEFT JOIN (
+           SELECT al.artist_id, COUNT(*) as album_count
+           FROM albums al
+           WHERE al.artist_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND t.missing_since IS NULL)
+           GROUP BY al.artist_id
+         ) ac ON ac.artist_id = a.id
          WHERE sa.user_id = $1
          ORDER BY sa.created_at DESC, a.id ASC
          ${artistsLimitClause}`,
@@ -782,65 +911,49 @@ export default async function trackRoutes(fastify) {
     };
   });
 
-  fastify.post('/api/favorites/track/:id', { preHandler: requireAuth }, async (req) => {
+  async function toggleFavorite(req, reply, { table, column, responseKey }) {
     const userId = req.user.id;
-    const trackId = parseInt(req.params.id, 10);
-    const { rows } = await query(
-      'SELECT 1 FROM user_starred_tracks WHERE user_id = $1 AND track_id = $2',
-      [userId, trackId]
-    );
-    let starred = false;
-    if (rows.length > 0) {
-      await query('DELETE FROM user_starred_tracks WHERE user_id = $1 AND track_id = $2', [userId, trackId]);
-    } else {
-      await query(
-        'INSERT INTO user_starred_tracks (user_id, track_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [userId, trackId]
-      );
-      starred = true;
+    const entityId = parseIntParam(req.params.id, { allowZero: false });
+    if (entityId === null) {
+      return reply.status(400).send({ error: `Invalid ${responseKey}` });
     }
-    return { starred, trackId };
-  });
+    try {
+      const starred = await transaction(async (client) => {
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2::text || ':' || $3::text, 0))`,
+          [table, userId, entityId]
+        );
+        const del = await client.query(
+          `DELETE FROM ${table} WHERE user_id = $1 AND ${column} = $2`,
+          [userId, entityId]
+        );
+        if (del.rowCount > 0) return false;
+        await client.query(
+          `INSERT INTO ${table} (user_id, ${column}) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [userId, entityId]
+        );
+        return true;
+      });
+      return { starred, [responseKey]: entityId };
+    } catch (err) {
+      if (err?.code === '23503') {
+        return reply.status(404).send({ error: 'Not found' });
+      }
+      throw err;
+    }
+  }
 
-  fastify.post('/api/favorites/album/:id', { preHandler: requireAuth }, async (req) => {
-    const userId = req.user.id;
-    const albumId = parseInt(req.params.id, 10);
-    const { rows } = await query(
-      'SELECT 1 FROM user_starred_albums WHERE user_id = $1 AND album_id = $2',
-      [userId, albumId]
-    );
-    let starred = false;
-    if (rows.length > 0) {
-      await query('DELETE FROM user_starred_albums WHERE user_id = $1 AND album_id = $2', [userId, albumId]);
-    } else {
-      await query(
-        'INSERT INTO user_starred_albums (user_id, album_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [userId, albumId]
-      );
-      starred = true;
-    }
-    return { starred, albumId };
-  });
+  fastify.post('/api/favorites/track/:id', { preHandler: requireAuth }, (req, reply) =>
+    toggleFavorite(req, reply, { table: 'user_starred_tracks', column: 'track_id', responseKey: 'trackId' })
+  );
 
-  fastify.post('/api/favorites/artist/:id', { preHandler: requireAuth }, async (req) => {
-    const userId = req.user.id;
-    const artistId = parseInt(req.params.id, 10);
-    const { rows } = await query(
-      'SELECT 1 FROM user_starred_artists WHERE user_id = $1 AND artist_id = $2',
-      [userId, artistId]
-    );
-    let starred = false;
-    if (rows.length > 0) {
-      await query('DELETE FROM user_starred_artists WHERE user_id = $1 AND artist_id = $2', [userId, artistId]);
-    } else {
-      await query(
-        'INSERT INTO user_starred_artists (user_id, artist_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [userId, artistId]
-      );
-      starred = true;
-    }
-    return { starred, artistId };
-  });
+  fastify.post('/api/favorites/album/:id', { preHandler: requireAuth }, (req, reply) =>
+    toggleFavorite(req, reply, { table: 'user_starred_albums', column: 'album_id', responseKey: 'albumId' })
+  );
+
+  fastify.post('/api/favorites/artist/:id', { preHandler: requireAuth }, (req, reply) =>
+    toggleFavorite(req, reply, { table: 'user_starred_artists', column: 'artist_id', responseKey: 'artistId' })
+  );
 
   // ---- Genres ----
   fastify.get('/api/genres', { preHandler: requireAuth }, async () => {
@@ -925,10 +1038,15 @@ export default async function trackRoutes(fastify) {
       trackAlbum = rows[0].album || null;
       trackLyricsKey = rows[0].lyrics_key;
       const cached = await query(
-        'SELECT synced, type, lyrics, source FROM track_lyrics WHERE track_id = $1 AND metadata_key = $2',
+        'SELECT synced, type, lyrics, source, updated_at FROM track_lyrics WHERE track_id = $1 AND metadata_key = $2',
         [trackId, trackLyricsKey]);
-      if (cached.rows[0]?.synced) return cached.rows[0];
-      cachedPlain = cached.rows[0] || null;
+      if (cached.rows[0]?.synced) {
+        const { synced, type, lyrics, source } = cached.rows[0];
+        return { synced, type, lyrics, source };
+      }
+      if (cached.rows[0]?.lyrics?.trim()) {
+        cachedPlain = cached.rows[0];
+      }
     }
 
     const cleanTitle = cleanTrackTitle(trackTitle);
@@ -936,7 +1054,7 @@ export default async function trackRoutes(fastify) {
     // 2. Try local .lrc or .txt file next to trackPath
     let localResult = null;
     if (trackPath) {
-      localResult = readLocalLyrics(trackPath, cleanTitle);
+      localResult = await readLocalLyricsAsync(trackPath, cleanTitle);
       if (localResult && localResult.synced) {
         if (trackId) {
           await saveLyricsToDb(trackId, localResult, trackLyricsKey);
@@ -957,8 +1075,14 @@ export default async function trackRoutes(fastify) {
       }
     }
 
+    // Avoid re-querying external providers when cached plain lyrics were already fetched recently.
+    const recentExternalPlain = cachedPlain
+      && (cachedPlain.source === 'lrclib' || cachedPlain.source === 'lrc.red')
+      && cachedPlain.updated_at
+      && (Date.now() - new Date(cachedPlain.updated_at).getTime() < 7 * 24 * 60 * 60 * 1000);
+
     // 4. Prefer lrc.red line timings before the LRCLIB fallback.
-    if (trackTitle) {
+    if (trackTitle && !recentExternalPlain) {
       const redResult = await fetchLrcRedLyrics({
         title: trackTitle, artist: trackArtist, album: trackAlbum, duration: trackDuration,
       });
@@ -970,7 +1094,7 @@ export default async function trackRoutes(fastify) {
 
     // 5. LRCLIB synced lyrics take precedence over plain embedded/local text.
     let lrclibResult = null;
-    if (trackTitle) {
+    if (trackTitle && !recentExternalPlain) {
       lrclibResult = await fetchLrclibLyrics({
         title: trackTitle,
         artist: trackArtist,
@@ -989,10 +1113,15 @@ export default async function trackRoutes(fastify) {
     // 6. Fall back to plain lyrics: embedded, local, LRCLIB, cached.
     const bestPlain = embeddedResult || localResult || lrclibResult || cachedPlain;
     if (bestPlain) {
-      if (trackId) {
+      if (trackId && bestPlain !== cachedPlain) {
         await saveLyricsToDb(trackId, bestPlain, trackLyricsKey);
       }
-      return bestPlain;
+      return {
+        synced: Boolean(bestPlain.synced),
+        type: bestPlain.type || 'plain',
+        lyrics: bestPlain.lyrics,
+        source: bestPlain.source,
+      };
     }
 
     return reply.status(404).send({ error: 'Lyrics not found' });

@@ -218,17 +218,20 @@ test('OpenSubsonic sync, artwork, edition identity and complete tag metadata', {
       const byName = await app.inject({ url: '/api/artists/by-name?name=163ONMYNECK', headers });
       assert.equal(byName.statusCode, 200, byName.body);
       const guest = byName.json(); assert.equal(guest.artist.name, '163ONMYNECK');
+      assert.equal(guest.artist.id, null, 'GET /api/artists/by-name must remain read-only without inserting an artist row');
+      assert.equal((await query("SELECT 1 FROM artists WHERE LOWER(name) = '163onmyneck'")).rows.length, 0);
       assert.deepEqual(guest.tracks.map(t => t.id), [rows[0].id]);
       assert.equal(guest.artist.track_count, 1); assert.equal(guest.albums[0].is_primary_album, false);
-      const byId = (await app.inject({ url: `/api/artists/${guest.artist.id}`, headers })).json();
-      assert.deepEqual(byId.tracks.map(t => t.id), [rows[0].id]);
       assert.equal((await app.inject({ url: '/api/artists/by-name?name=163ON', headers })).statusCode, 404);
       // Ampersands remain part of a band name, never an inferred guest.
       assert.equal((await app.inject({ url: '/api/artists/by-name?name=Garfunkel', headers })).statusCode, 404);
       const tagged = await make('Features/song', { title: 'Tagged feature', album: 'Features', artist: 'Scally Milano, 163ONMYNECK, FEARMUCH', performerInfo: 'Scally Milano' });
       const refs = (await sub('getSong', { id: String(tagged.id) })).song.artists;
       assert.deepEqual(refs.map(a => a.name), ['Scally Milano','163ONMYNECK','FEARMUCH']);
-      assert.equal(refs[1].id, String(guest.artist.id));
+      const byId = (await app.inject({ url: `/api/artists/${refs[1].id}`, headers })).json();
+      assert.deepEqual(byId.tracks.map(t => t.id).sort((x, y) => x - y), [rows[0].id, tagged.id].sort((x, y) => x - y));
+      const byNameAfterScan = (await app.inject({ url: '/api/artists/by-name?name=163ONMYNECK', headers })).json();
+      assert.equal(String(byNameAfterScan.artist.id), refs[1].id);
     });
     await t.test('GIF content types, radio response names and editing capabilities are accurate', async () => {
       const gif = await sharp(front).gif().toBuffer(); await fs.writeFile(path.join(process.env.COVERS_DIR, 'test.gif'), gif);

@@ -8,16 +8,14 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-RUN npm prune --production
+FROM nginxinc/nginx-unprivileged:alpine
 
-FROM nginx:alpine
+COPY --chown=101:101 nginx.conf /etc/nginx/conf.d/default.conf
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --chown=101:101 --from=builder /app/dist /usr/share/nginx/html
 
 ENV NODE_ENV=production
 
-EXPOSE 80
+EXPOSE 8080
 
 CMD ["nginx", "-g", "daemon off;"]

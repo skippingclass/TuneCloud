@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Shield,
   ShieldCheck,
@@ -36,20 +36,36 @@ export function AdminView({ user: currentUser }) {
   const [deleteModalUser, setDeleteModalUser] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
 
-  const loadUsers = async () => {
+  const mountedRef = useRef(true);
+  const loadAbortRef = useRef(null);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    loadAbortRef.current?.abort();
+  }, []);
+
+  const loadUsers = useCallback(async () => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
     try {
-      const data = await api.adminUsers();
+      const data = await api.adminUsers({ signal: controller.signal });
+      if (!mountedRef.current || controller.signal.aborted) return;
       setUsers(Array.isArray(data) ? data : []);
     } catch (err) {
+      if (err?.name === 'AbortError' || controller.signal.aborted || !mountedRef.current) return;
       toast(`Failed to load users: ${err.message}`, 'error');
     } finally {
-      setLoading(false);
+      if (mountedRef.current && !controller.signal.aborted) {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadUsers();
-  }, []);
+    return () => loadAbortRef.current?.abort();
+  }, [loadUsers]);
 
   const handleCreateUser = async (e) => {
     e.preventDefault();

@@ -73,15 +73,18 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
   const { playTrack } = usePlayer();
 
   useEffect(() => {
+    const controller = new AbortController();
+    const opts = { signal: controller.signal };
     setLoading(true);
     Promise.all([
-      api.albums({ limit: 100 }).catch(() => []),
-      api.genres().catch(() => []),
+      api.albums({ limit: 100 }, opts).catch(() => []),
+      api.genres(opts).catch(() => []),
       api
-        .tracks({ sort: "play_count", order: "desc", limit: 8 })
+        .tracks({ sort: "play_count", order: "desc", limit: 8 }, opts)
         .catch(() => ({ tracks: [] })),
     ])
       .then(([allAlbums, allGenres, tracksRes]) => {
+        if (controller.signal.aborted) return;
         setAlbums(
           Array.isArray(allAlbums) ? allAlbums : allAlbums?.albums || [],
         );
@@ -89,7 +92,11 @@ export function HomeView({ onAlbumClick, onArtistClick, onNavigate }) {
         const tracks = tracksRes?.tracks || [];
         setTopTracks(tracks);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => controller.abort();
   }, []);
 
   const handlePlayAlbum = useCallback(

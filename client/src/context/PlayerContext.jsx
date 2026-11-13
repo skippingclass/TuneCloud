@@ -54,10 +54,38 @@ export function PlayerProvider({ children, userId = 'local' }) {
     listeningRef.current = { startedAt: null, nowPlayingSent: false, seconds: 0, eventId: playbackEventId(), pending: false, retryAfter: 0, sample: null };
   }, []);
   const playRequestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    playRequestIdRef.current += 1;
+  }, []);
 
-  useEffect(() => onTrackUpdated(id => {
-    api.track(id).then(updated => setQueue(previous => previous.map(track => String(track.id) === String(id) ? { ...track, ...updated } : track))).catch(() => {});
-  }), []);
+  useEffect(() => {
+    let active = true;
+    const controllers = new Set();
+    const unsubscribe = onTrackUpdated((id) => {
+      const controller = new AbortController();
+      controllers.add(controller);
+      api
+        .track(id, { signal: controller.signal })
+        .then((updated) => {
+          if (!active || controller.signal.aborted) return;
+          setQueue((previous) =>
+            previous.map((track) => (String(track.id) === String(id) ? { ...track, ...updated } : track))
+          );
+        })
+        .catch(() => {})
+        .finally(() => {
+          controllers.delete(controller);
+        });
+    });
+    return () => {
+      active = false;
+      if (typeof unsubscribe === 'function') unsubscribe();
+      for (const controller of controllers) controller.abort();
+      controllers.clear();
+    };
+  }, []);
 
   const currentTrack = queueIndex >= 0 && queueIndex < queue.length ? queue[queueIndex] : null;
 
@@ -68,16 +96,19 @@ export function PlayerProvider({ children, userId = 'local' }) {
     restoringRef.current = false;
     const reqId = ++playRequestIdRef.current;
     try {
+      if (el.error && typeof el.load === 'function') {
+        el.load();
+      }
       const playPromise = el.play();
       if (playPromise && typeof playPromise.then === 'function') {
         playPromise
           .then(() => {
-            if (reqId === playRequestIdRef.current) {
+            if (mountedRef.current && reqId === playRequestIdRef.current) {
               setIsPlaying(true);
             }
           })
           .catch(() => {
-            if (reqId === playRequestIdRef.current) {
+            if (mountedRef.current && reqId === playRequestIdRef.current) {
               setIsPlaying(false);
             }
           });
@@ -85,7 +116,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
         setIsPlaying(true);
       }
     } catch {
-      if (reqId === playRequestIdRef.current) {
+      if (mountedRef.current && reqId === playRequestIdRef.current) {
         setIsPlaying(false);
       }
     }
@@ -363,7 +394,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
       setDuration(Number.isFinite(activeTrack.duration) && activeTrack.duration > 0 ? activeTrack.duration : 0);
       setPlaybackKey((k) => k + 1);
     },
-    [queue, currentTrack?.id, safePlay]
+    [queue, currentTrack, safePlay]
   );
 
   const togglePlay = useCallback(() => {
@@ -586,7 +617,7 @@ export function PlayerProvider({ children, userId = 'local' }) {
           listening.seconds >= Math.min(effDur * 0.5, 30) && Date.now() >= listening.retryAfter) {
         listening.pending = true;
         api.scrobble(currentTrack.id, listening.eventId).then(() => {
-          if (listeningRef.current !== listening) return;
+          if (!mountedRef.current || listeningRef.current !== listening) return;
           scrobbledRef.current = true;
           listening.pending = false;
           persist();
@@ -648,9 +679,10 @@ export function PlayerProvider({ children, userId = 'local' }) {
     const onSeeking = () => { listeningRef.current.sample = null; };
     const onSeeked = () => { listeningRef.current.sample = { position: el.currentTime || 0, wall: performance.now() }; };
     const onError = () => {
+      if (el.error?.code === 1 || !currentTrack) return;
       playRequestIdRef.current += 1;
       setIsPlaying(false);
-      const title = currentTrack?.title || currentTrack?.file_name || 'track';
+      const title = currentTrack.title || currentTrack.file_name || 'track';
       toast(`Playback error: unable to play "${title}"`, 'error');
     };
 

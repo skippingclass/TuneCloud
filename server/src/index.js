@@ -63,12 +63,19 @@ export async function buildApp() {
   });
 
   await app.register(helmet, {
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        imgSrc: ["'self'"],
+        mediaSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+      },
+    },
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   });
 
   const corsOrigin = process.env.CORS_ORIGIN
-    ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim())
+    ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean)
     : false;
 
   await app.register(cors, {
@@ -161,10 +168,30 @@ async function main() {
   const app = await buildApp();
   const port = parseInt(process.env.PORT || '4000', 10);
   const host = process.env.HOST || '0.0.0.0';
-  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, async () => {
-    await app.close();
-    await pool.end();
-  });
+  let shuttingDown = false;
+  async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log?.info?.(`Received ${signal}, shutting down`);
+    const forceTimer = setTimeout(() => {
+      app.log?.error?.('Graceful shutdown timed out, forcing exit');
+      process.exit(1);
+    }, 10000);
+    forceTimer.unref();
+    try {
+      await app.close();
+      await pool.end();
+      clearTimeout(forceTimer);
+      process.exit(0);
+    } catch (err) {
+      clearTimeout(forceTimer);
+      app.log?.error?.(err, 'Error during graceful shutdown');
+      process.exit(1);
+    }
+  }
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => { shutdown(signal); });
+  }
   await app.listen({ port, host });
 }
 

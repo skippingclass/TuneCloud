@@ -2,13 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { pwaBuild } from './scripts/pwa-build.js';
 
+const proxyTarget = process.env.API_PROXY_TARGET || 'http://localhost:4000';
+
 export default defineConfig({
   plugins: [react(), pwaBuild()],
   server: {
     port: 5173,
     proxy: {
       '/api': {
-        target: process.env.API_PROXY_TARGET || 'http://localhost:4000',
+        target: proxyTarget,
         changeOrigin: true,
         cookieDomainRewrite: '',
         configure(proxy) {
@@ -20,6 +22,10 @@ export default defineConfig({
             if (cookies) response.headers['set-cookie'] = cookies.map(cookie => cookie.replace(/;\s*Secure(?=;|$)/gi, ''));
           });
         },
+      },
+      '/rest': {
+        target: proxyTarget,
+        changeOrigin: true,
       },
     },
   },

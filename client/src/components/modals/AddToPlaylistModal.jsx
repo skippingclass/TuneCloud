@@ -18,28 +18,29 @@ export function AddToPlaylistModal({ track, onClose, onPlaylistCreated }) {
   const createInputRef = useRef(null);
 
   useEffect(() => {
-    let mounted = true;
+    const controller = new AbortController();
     setLoading(true);
     api
-      .playlists()
+      .playlists({ signal: controller.signal })
       .then((res) => {
-        if (mounted) {
+        if (!controller.signal.aborted) {
           // Show user's own playlists
           const own = (res.playlists || []).filter((p) => p.is_owner);
           setPlaylists(own);
         }
       })
       .catch((err) => {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
         toast(`Failed to load playlists: ${err.message}`, 'error');
       })
       .finally(() => {
-        if (mounted) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       });
 
     return () => {
-      mounted = false;
+      controller.abort();
     };
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     if (showCreateInput) {

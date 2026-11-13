@@ -4,7 +4,8 @@ import { fileURLToPath } from 'url';
 import { query, transaction } from '../db.js';
 import { appendTracks, checkTracks, lockPlaylist, ids, badRequest } from '../services/playlists.js';
 import { authenticate } from '../subsonic/auth.js';
-import { sendOk, sendError, ErrorCode } from '../subsonic/response.js';
+import { isWithinRoot, escapeLike } from '../paths.js';
+import { sendOk, sendError, ErrorCode, escapeXml } from '../subsonic/response.js';
 import {
   formatArtist,
   formatAlbum,
@@ -63,13 +64,40 @@ function resolveMusicDirPath(relPath) {
   if (!musicDir) return null;
   const resolvedRoot = path.resolve(musicDir);
   const target = path.resolve(resolvedRoot, relPath || '');
-  const rel = path.relative(resolvedRoot, target);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (!isWithinRoot(resolvedRoot, target)) return null;
   try {
-    const physicalRel = path.relative(fs.realpathSync(resolvedRoot), fs.realpathSync(target));
-    if (physicalRel.startsWith('..') || path.isAbsolute(physicalRel)) return null;
+    const physicalRoot = fs.realpathSync(resolvedRoot);
+    const physicalTarget = fs.realpathSync(target);
+    if (!isWithinRoot(physicalRoot, physicalTarget)) return null;
   } catch { return null; }
   return target;
+}
+
+function isSafeHttpUrl(value) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+const MAX_NOW_PLAYING_ENTRIES = 1000;
+const NOW_PLAYING_TTL_MS = 30 * 60 * 1000;
+const nowPlayingState = new Map();
+
+function setNowPlaying(userId, username, trackId) {
+  const now = Date.now();
+  for (const [k, entry] of nowPlayingState) {
+    if (now - entry.startedAt >= NOW_PLAYING_TTL_MS) nowPlayingState.delete(k);
+  }
+  if (nowPlayingState.size >= MAX_NOW_PLAYING_ENTRIES && !nowPlayingState.has(userId)) {
+    nowPlayingState.delete(nowPlayingState.keys().next().value);
+  }
+  nowPlayingState.set(userId, { trackId, username, startedAt: now });
 }
 
 function parseId(v) {
@@ -80,13 +108,10 @@ function parseId(v) {
 
 function parseIdList(v) {
   if (v === undefined || v === null || v === '') return [];
-  if (Array.isArray(v)) {
-    return v.map(Number).filter((n) => Number.isFinite(n) && n > 0);
-  }
-  return String(v)
-    .split(',')
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0);
+  const items = Array.isArray(v) ? v : String(v).split(',');
+  return items
+    .map((s) => Number(String(s).trim()))
+    .filter((n) => Number.isSafeInteger(n) && n > 0 && n <= 2147483647);
 }
 
 function playlistSongIds(value) {
@@ -140,12 +165,10 @@ function getSafeLyricsCandidate(filePath, ext) {
     const realCandidate = fs.realpathSync(candidatePath);
     if (process.env.MUSIC_DIR) {
       const realMusicDir = fs.realpathSync(process.env.MUSIC_DIR);
-      const rel = path.relative(realMusicDir, realCandidate);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      if (!isWithinRoot(realMusicDir, realCandidate)) return null;
     } else {
       const realTrackDir = fs.realpathSync(dir);
-      const rel = path.relative(realTrackDir, realCandidate);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      if (!isWithinRoot(realTrackDir, realCandidate)) return null;
     }
     const stat = fs.statSync(realCandidate);
     if (!stat.isFile() || stat.size > 128 * 1024) return null;
@@ -234,7 +257,13 @@ async function resolveCoverPath(rawId) {
     const rel = decodeDirId(id);
     if (rel !== null) {
       const fullDir = resolveMusicDirPath(rel);
-      if (fullDir && fs.existsSync(fullDir)) {
+      let dirExists = false;
+      if (fullDir) {
+        try {
+          dirExists = (await fs.promises.stat(fullDir)).isDirectory();
+        } catch {}
+      }
+      if (dirExists) {
         const alb = await query(
           'SELECT cover_path FROM albums WHERE folder_path = $1 AND cover_path IS NOT NULL LIMIT 1',
           [fullDir]
@@ -365,7 +394,7 @@ export default async function subsonicRoutes(fastify) {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
       const params = mergeSubsonicParams(req.query, body);
       try {
-        const auth = await authenticate(params);
+        const auth = await authenticate(params, req.ip);
         if (auth.error) return sendError(reply, req, auth.error.code, auth.error.message);
         req.subsonicUser = auth.user;
         return await handler(req, reply, params);
@@ -733,11 +762,16 @@ export default async function subsonicRoutes(fastify) {
       whereClauses.push('sa.created_at IS NOT NULL');
     }
 
-    if (params.genre || normType === 'bygenre') {
-      const genre = params.genre || '';
+    if (params.genre !== undefined || normType === 'bygenre') {
+      const genre = String(params.genre || '').trim();
+      if (normType === 'bygenre' && !genre) {
+        return missing(reply, req, 'genre');
+      }
       if (genre) {
-        whereClauses.push(`(al.genre ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM tracks gt WHERE gt.album_id = al.id AND gt.missing_since IS NULL AND gt.genre ILIKE $${pIdx}))`);
-        queryParams.push(genre);
+        whereClauses.push(
+          `(al.genre ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM tracks gt WHERE gt.album_id = al.id AND gt.missing_since IS NULL AND (gt.genre ILIKE $${pIdx} OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(gt.metadata->'genres','[]'::jsonb)) gg WHERE gg ILIKE $${pIdx}))))`
+        );
+        queryParams.push(escapeLike(genre));
         pIdx++;
       }
     }
@@ -832,7 +866,7 @@ export default async function subsonicRoutes(fastify) {
       LIMIT $2 OFFSET $3
     `;
 
-    const { rows } = await query(sql, [genre, count, offset]);
+    const { rows } = await query(sql, [escapeLike(genre), count, offset]);
     return sendOk(reply, req, {
       songsByGenre: {
         song: rows.map(formatSong),
@@ -848,22 +882,28 @@ export default async function subsonicRoutes(fastify) {
     const albumIds = parseIdList(params.albumId);
     const artistIds = parseIdList(params.artistId);
 
-    for (const id of trackIds) {
+    if (trackIds.length > 0) {
       await query(
-        'INSERT INTO user_starred_tracks (user_id, track_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [userId, id]
+        `INSERT INTO user_starred_tracks (user_id, track_id)
+         SELECT $1, t.id FROM tracks t WHERE t.id = ANY($2::int[])
+         ON CONFLICT DO NOTHING`,
+        [userId, trackIds]
       );
     }
-    for (const id of albumIds) {
+    if (albumIds.length > 0) {
       await query(
-        'INSERT INTO user_starred_albums (user_id, album_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [userId, id]
+        `INSERT INTO user_starred_albums (user_id, album_id)
+         SELECT $1, al.id FROM albums al WHERE al.id = ANY($2::int[])
+         ON CONFLICT DO NOTHING`,
+        [userId, albumIds]
       );
     }
-    for (const id of artistIds) {
+    if (artistIds.length > 0) {
       await query(
-        'INSERT INTO user_starred_artists (user_id, artist_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [userId, id]
+        `INSERT INTO user_starred_artists (user_id, artist_id)
+         SELECT $1, a.id FROM artists a WHERE a.id = ANY($2::int[])
+         ON CONFLICT DO NOTHING`,
+        [userId, artistIds]
       );
     }
 
@@ -1081,19 +1121,41 @@ export default async function subsonicRoutes(fastify) {
   });
 
   endpoint('createPlaylist', async (req, reply, params) => {
-    const name = String(params.name || '').trim();
-    if (!name) return missing(reply, req, 'name');
+    const playlistId = params.playlistId != null && params.playlistId !== '' ? parseId(params.playlistId) : null;
+    if (Number.isNaN(playlistId)) return notFound(reply, req, 'Playlist');
+
+    const name = params.name != null ? String(params.name).trim() : '';
+    if (!playlistId && !name) return missing(reply, req, 'name');
+    if (name.length > 200) return sendError(reply, req, ErrorCode.GENERIC, 'Playlist name too long');
 
     const userId = req.subsonicUser.id;
     const songIds = playlistSongIds(params.songId);
 
-    if (name.length > 200) return sendError(reply, req, ErrorCode.GENERIC, 'Playlist name too long');
     const pl = await transaction(async client => {
-      ids(songIds);
       await checkTracks(client, songIds);
+      if (playlistId !== null) {
+        await lockPlaylist(client, playlistId, req.subsonicUser);
+        if (name) {
+          await client.query('UPDATE playlists SET name = $1 WHERE id = $2', [name, playlistId]);
+        }
+        if (params.public !== undefined) {
+          await client.query('UPDATE playlists SET is_public = $1 WHERE id = $2', [
+            params.public === true || params.public === 'true',
+            playlistId,
+          ]);
+        }
+        await client.query('DELETE FROM playlist_tracks WHERE playlist_id = $1', [playlistId]);
+        await appendTracks(client, playlistId, songIds);
+        const { rows } = await client.query(
+          'UPDATE playlists SET updated_at = NOW() WHERE id = $1 RETURNING *',
+          [playlistId]
+        );
+        return rows[0];
+      }
       const { rows } = await client.query(
         'INSERT INTO playlists (name, owner_id, is_public) VALUES ($1, $2, $3) RETURNING *',
-        [name, userId, params.public === true || params.public === 'true']);
+        [name, userId, params.public === true || params.public === 'true']
+      );
       await appendTracks(client, rows[0].id, songIds);
       return rows[0];
     });
@@ -1168,28 +1230,74 @@ export default async function subsonicRoutes(fastify) {
   // ---- Scrobbles & Ratings ----
 
   endpoint('scrobble', async (req, reply, params) => {
-    const id = requireId(reply, req, params, 'Song');
-    if (id === null) return;
+    const rawIds = params.id;
+    if (rawIds === undefined || rawIds === null || rawIds === '') {
+      return missing(reply, req, 'id');
+    }
+    const idTokens = (Array.isArray(rawIds) ? rawIds : String(rawIds).split(','))
+      .map((item) => String(item).trim())
+      .filter(Boolean);
+    if (idTokens.length === 0) return missing(reply, req, 'id');
 
-    const submission = params.submission !== 'false' && params.submission !== false;
-    if (submission) {
-      await transaction(async (client) => {
-        const res = await client.query(
-          'UPDATE tracks SET play_count = play_count + 1, last_played_at = NOW() WHERE id = $1 RETURNING id',
-          [id]
-        );
-        if (res.rowCount === 0) {
-          const err = new Error('Song not found');
-          err.statusCode = 404;
-          throw err;
-        }
-        await client.query(
-          'INSERT INTO play_history (user_id, track_id, played_at) VALUES ($1, $2, NOW())',
-          [req.subsonicUser.id, id]
-        );
-      });
+    const songIds = idTokens.map(parseId);
+    if (songIds.some((id) => id === null || Number.isNaN(id))) {
+      return notFound(reply, req, 'Song');
     }
 
+    const rawTimes = params.time == null ? [] : (Array.isArray(params.time) ? params.time : String(params.time).split(','));
+    const maxAllowedMs = Date.now() + 5 * 60 * 1000;
+    const playedDates = songIds.map((_, idx) => {
+      const val = Number(rawTimes[idx]);
+      return Number.isFinite(val) && val > 0 && val <= maxAllowedMs ? new Date(val) : new Date();
+    });
+
+    const submission = params.submission !== 'false' && params.submission !== false;
+    if (!submission) {
+      const currentSongId = songIds[songIds.length - 1];
+      const { rows } = await query('SELECT id FROM tracks WHERE id = $1 AND missing_since IS NULL', [currentSongId]);
+      if (!rows[0]) return notFound(reply, req, 'Song');
+      setNowPlaying(req.subsonicUser.id, req.subsonicUser.username, currentSongId);
+      return sendOk(reply, req);
+    }
+
+    await transaction(async (client) => {
+      const uniqueIds = [...new Set(songIds)];
+      const existing = await client.query('SELECT id FROM tracks WHERE id = ANY($1::int[]) FOR UPDATE', [uniqueIds]);
+      if (existing.rowCount !== uniqueIds.length) {
+        const err = new Error('Song not found');
+        err.statusCode = 404;
+        throw err;
+      }
+
+      const counts = new Map();
+      const latestAt = new Map();
+      songIds.forEach((songId, i) => {
+        counts.set(songId, (counts.get(songId) || 0) + 1);
+        const dt = playedDates[i];
+        if (!latestAt.has(songId) || dt > latestAt.get(songId)) latestAt.set(songId, dt);
+      });
+
+      const updIds = [...counts.keys()];
+      const updCounts = updIds.map((id) => counts.get(id));
+      const updDates = updIds.map((id) => latestAt.get(id));
+      await client.query(
+        `UPDATE tracks t
+         SET play_count = t.play_count + c.cnt,
+             last_played_at = GREATEST(COALESCE(t.last_played_at, '-infinity'::timestamptz), c.ts)
+         FROM unnest($1::int[], $2::int[], $3::timestamptz[]) AS c(id, cnt, ts)
+         WHERE t.id = c.id`,
+        [updIds, updCounts, updDates]
+      );
+
+      await client.query(
+        `INSERT INTO play_history (user_id, track_id, played_at)
+         SELECT $1, entry.id, entry.ts
+         FROM unnest($2::int[], $3::timestamptz[]) AS entry(id, ts)`,
+        [req.subsonicUser.id, songIds, playedDates]
+      );
+    });
+
+    nowPlayingState.delete(req.subsonicUser.id);
     return sendOk(reply, req);
   });
 
@@ -1232,8 +1340,13 @@ export default async function subsonicRoutes(fastify) {
     if (id === null) return;
 
     const { rows } = await query('SELECT file_path, format, missing_since FROM tracks WHERE id = $1', [id]);
-    if (!rows[0] || rows[0].missing_since || !fs.existsSync(rows[0].file_path)) {
-      return reply.status(404).send('Not found');
+    if (!rows[0] || rows[0].missing_since || !rows[0].file_path) {
+      return notFound(reply, req, 'Song');
+    }
+    try {
+      await fs.promises.access(rows[0].file_path);
+    } catch {
+      return notFound(reply, req, 'Song');
     }
     return sendAudioFile(req, reply, rows[0].file_path, rows[0].format);
   };
@@ -1258,8 +1371,22 @@ export default async function subsonicRoutes(fastify) {
     if (trackIds.length === 0) return missing(reply, req, 'id');
 
     const currentTrackId = parseId(params.current);
-    const position = params.position != null ? parseInt(params.position, 10) : 0;
-    const client = params.c || req.subsonicUser.username || '';
+    if (params.current != null && params.current !== '' && Number.isNaN(currentTrackId)) {
+      return notFound(reply, req, 'Song');
+    }
+    const rawPosition = params.position != null && params.position !== '' ? Number(params.position) : 0;
+    const position = Number.isFinite(rawPosition)
+      ? Math.min(Math.max(0, Math.trunc(rawPosition)), Number.MAX_SAFE_INTEGER)
+      : 0;
+    const clientName = params.c || req.subsonicUser.username || '';
+
+    const checkIds = currentTrackId != null ? [...new Set([...trackIds, currentTrackId])] : [...new Set(trackIds)];
+    const { rows: validTracks } = await query('SELECT id FROM tracks WHERE id = ANY($1::int[])', [checkIds]);
+    const validSet = new Set(validTracks.map((r) => r.id));
+    const filteredTrackIds = trackIds.filter((tid) => validSet.has(tid));
+    if (filteredTrackIds.length === 0 || (currentTrackId != null && !validSet.has(currentTrackId))) {
+      return notFound(reply, req, 'Song');
+    }
 
     await query(
       `INSERT INTO play_queues (user_id, current_track_id, position_ms, track_ids, changed_by, updated_at)
@@ -1270,7 +1397,7 @@ export default async function subsonicRoutes(fastify) {
          track_ids = EXCLUDED.track_ids,
          changed_by = EXCLUDED.changed_by,
          updated_at = NOW()`,
-      [req.subsonicUser.id, Number.isFinite(currentTrackId) ? currentTrackId : null, Math.max(0, position), trackIds, client]
+      [req.subsonicUser.id, currentTrackId, position, filteredTrackIds, clientName]
     );
 
     return sendOk(reply, req);
@@ -1343,7 +1470,10 @@ export default async function subsonicRoutes(fastify) {
     const id = requireId(reply, req, params, 'Track');
     if (id === null) return;
 
-    const position = params.position != null ? parseInt(params.position, 10) : 0;
+    const rawPos = params.position != null && params.position !== '' ? Number(params.position) : 0;
+    const position = Number.isFinite(rawPos)
+      ? Math.min(Math.max(0, Math.trunc(rawPos)), Number.MAX_SAFE_INTEGER)
+      : 0;
     const comment = params.comment ? String(params.comment) : null;
 
     const { rows: trackRows } = await query('SELECT id FROM tracks WHERE id = $1 AND missing_since IS NULL', [id]);
@@ -1356,7 +1486,7 @@ export default async function subsonicRoutes(fastify) {
          position_ms = EXCLUDED.position_ms,
          comment = EXCLUDED.comment,
          updated_at = NOW()`,
-      [req.subsonicUser.id, id, Math.max(0, position), comment]
+      [req.subsonicUser.id, id, position, comment]
     );
 
     return sendOk(reply, req);
@@ -1465,21 +1595,27 @@ export default async function subsonicRoutes(fastify) {
       if (aRows[0]) targetArtistId = aRows[0].id;
     }
 
-    const conds = [`t.id != ${id}`, 't.missing_since IS NULL'];
+    const conds = ['t.id != $1', 't.missing_since IS NULL'];
+    const queryParams = [id, count];
     if (targetGenre) {
-      conds.push(`(LOWER(t.genre) = LOWER('${targetGenre.replace(/'/g, "''")}') OR t.artist_id = ${targetArtistId || 0})`);
+      queryParams.push(targetGenre);
+      queryParams.push(targetArtistId || 0);
+      const genreIdx = queryParams.length - 1;
+      const artistIdx = queryParams.length;
+      conds.push(`(LOWER(t.genre) = LOWER($${genreIdx}) OR t.artist_id = $${artistIdx})`);
     } else if (targetArtistId) {
-      conds.push(`t.artist_id = ${targetArtistId}`);
+      queryParams.push(targetArtistId);
+      conds.push(`t.artist_id = $${queryParams.length}`);
     }
 
     const sql = `
       ${songSelectSql(req.subsonicUser.id)}
       WHERE ${conds.join(' AND ')}
       ORDER BY RANDOM()
-      LIMIT $1
+      LIMIT $2
     `;
 
-    const { rows } = await query(sql, [count]);
+    const { rows } = await query(sql, queryParams);
     return sendOk(reply, req, {
       [key]: {
         song: rows.map(formatSong),
@@ -1491,6 +1627,7 @@ export default async function subsonicRoutes(fastify) {
   endpoint('getSimilarSongs2', (req, reply, params) => handleSimilarSongs(req, reply, params, 'similarSongs2'));
 
   endpoint('getNowPlaying', async (req, reply) => {
+    const userId = req.subsonicUser.id;
     const { rows } = await query(
       `SELECT ph.played_at, u.username, u.id AS player_id,
               t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
@@ -1507,27 +1644,57 @@ export default async function subsonicRoutes(fastify) {
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN user_starred_tracks st ON st.track_id = t.id AND st.user_id = $1
        LEFT JOIN user_ratings ur ON ur.entity_type = 'track' AND ur.entity_id = t.id AND ur.user_id = $1
-       WHERE ph.played_at > NOW() - INTERVAL '1 hour'
+       WHERE ph.user_id = $1 AND ph.played_at > NOW() - INTERVAL '1 hour'
        ORDER BY ph.played_at DESC
        LIMIT 50`,
-      [req.subsonicUser.id]
+      [userId]
     );
 
-    const entries = rows.map((r) => {
-      const minutesAgo = Math.max(0, Math.round((Date.now() - new Date(r.played_at).getTime()) / 60000));
-      return {
-        ...formatSong(r),
-        username: r.username,
-        minutesAgo,
-        playerId: r.player_id,
-      };
-    });
+    const active = nowPlayingState.get(userId);
+    const activeEntries = [];
+    if (active && Date.now() - active.startedAt < NOW_PLAYING_TTL_MS) {
+      const activeRes = await query(
+        `SELECT t.id, t.title, t.file_name, t.file_path, t.file_size, t.duration,
+                t.track_number, t.disc_number, t.year, t.genre, t.bitrate, t.sample_rate,
+                t.format, t.cover_path, t.created_at, t.album_id, t.artist_id, t.play_count,
+                t.track_artist_credit, t.metadata,
+                al.title AS album_title, al.year AS album_year, al.genre AS album_genre,
+                al.cover_path AS album_cover, a.name AS artist_name,
+                st.created_at AS starred_at, ur.rating AS user_rating
+         FROM tracks t
+         LEFT JOIN albums al ON t.album_id = al.id
+         LEFT JOIN artists a ON t.artist_id = a.id
+         LEFT JOIN user_starred_tracks st ON st.track_id = t.id AND st.user_id = $1
+         LEFT JOIN user_ratings ur ON ur.entity_type = 'track' AND ur.entity_id = t.id AND ur.user_id = $1
+         WHERE t.id = $2 AND t.missing_since IS NULL`,
+        [userId, active.trackId]
+      );
+      if (activeRes.rows[0]) {
+        activeEntries.push({
+          ...formatSong(activeRes.rows[0]),
+          username: active.username,
+          minutesAgo: Math.max(0, Math.round((Date.now() - active.startedAt) / 60000)),
+          playerId: userId,
+        });
+      }
+    }
 
-    return sendOk(reply, req, {
-      nowPlaying: {
-        entry: entries,
-      },
-    });
+    const entries = [
+      ...activeEntries,
+      ...rows
+        .filter((r) => !activeEntries.length || r.id !== activeEntries[0].id)
+        .map((r) => {
+          const minutesAgo = Math.max(0, Math.round((Date.now() - new Date(r.played_at).getTime()) / 60000));
+          return {
+            ...formatSong(r),
+            username: r.username,
+            minutesAgo,
+            playerId: r.player_id,
+          };
+        }),
+    ];
+
+    return sendOk(reply, req, { nowPlaying: { entry: entries } });
   });
 
   // ---- Lyrics ----
@@ -1546,7 +1713,7 @@ export default async function subsonicRoutes(fastify) {
          AND ($1 = '' OR LOWER(t.title) LIKE LOWER($1))
          AND ($2 = '' OR LOWER(a.name) LIKE LOWER($2) OR LOWER(t.track_artist_credit) LIKE LOWER($2))
        LIMIT 1`,
-      [title ? `%${title}%` : '', artist ? `%${artist}%` : '']
+      [title ? `%${escapeLike(title)}%` : '', artist ? `%${escapeLike(artist)}%` : '']
     );
 
     const track = rows[0];
@@ -1706,13 +1873,13 @@ export default async function subsonicRoutes(fastify) {
   });
 
   endpoint('getAvatar', async (req, reply, params) => {
-    const username = params.username;
+    const username = typeof params.username === 'string' ? params.username.trim() : '';
     if (!username) return missing(reply, req, 'username');
     const { rows } = await query('SELECT username FROM users WHERE username = $1', [username]);
     if (!rows[0]) return notFound(reply, req, 'User');
-    const initial = (rows[0].username || 'U')[0].toUpperCase();
+    const initial = escapeXml((rows[0].username || 'U').charAt(0).toUpperCase());
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><circle cx="64" cy="64" r="64" fill="#3b82f6"/><text x="50%" y="54%" text-anchor="middle" dy=".3em" fill="#fff" font-family="sans-serif" font-weight="bold" font-size="64">${initial}</text></svg>`;
-    reply.type('image/svg+xml').send(svg);
+    reply.header('Content-Security-Policy', 'sandbox').type('image/svg+xml').send(svg);
   });
 
   // ---- Internet Radio ----
@@ -1735,10 +1902,13 @@ export default async function subsonicRoutes(fastify) {
     const homepageUrl = params.homepageUrl || null;
     if (!streamUrl) return missing(reply, req, 'streamUrl');
     if (!name) return missing(reply, req, 'name');
+    if (!isSafeHttpUrl(streamUrl) || (homepageUrl && !isSafeHttpUrl(homepageUrl))) {
+      return sendError(reply, req, ErrorCode.GENERIC, 'URL must use http:// or https://');
+    }
 
     await query(
       'INSERT INTO internet_radio_stations (name, stream_url, homepage_url) VALUES ($1, $2, $3)',
-      [name, streamUrl, homepageUrl]
+      [name, String(streamUrl).trim(), homepageUrl ? String(homepageUrl).trim() : null]
     );
     return sendOk(reply, req);
   });
@@ -1754,10 +1924,13 @@ export default async function subsonicRoutes(fastify) {
     const homepageUrl = params.homepageUrl || null;
     if (!streamUrl) return missing(reply, req, 'streamUrl');
     if (!name) return missing(reply, req, 'name');
+    if (!isSafeHttpUrl(streamUrl) || (homepageUrl && !isSafeHttpUrl(homepageUrl))) {
+      return sendError(reply, req, ErrorCode.GENERIC, 'URL must use http:// or https://');
+    }
 
     const res = await query(
       'UPDATE internet_radio_stations SET name = $1, stream_url = $2, homepage_url = $3, updated_at = NOW() WHERE id = $4',
-      [name, streamUrl, homepageUrl, id]
+      [name, String(streamUrl).trim(), homepageUrl ? String(homepageUrl).trim() : null, id]
     );
     if (res.rowCount === 0) return notFound(reply, req, 'Station');
     return sendOk(reply, req);
@@ -1836,12 +2009,15 @@ export default async function subsonicRoutes(fastify) {
     }
     const url = params.url;
     if (!url) return missing(reply, req, 'url');
+    if (!isSafeHttpUrl(url)) {
+      return sendError(reply, req, ErrorCode.GENERIC, 'URL must use http:// or https://');
+    }
 
     await query(
       `INSERT INTO podcasts (url, title, description, cover_url)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (url) DO NOTHING`,
-      [url, url, 'Podcast feed', null]
+      [String(url).trim(), String(url).trim(), 'Podcast feed', null]
     );
     return sendOk(reply, req);
   });

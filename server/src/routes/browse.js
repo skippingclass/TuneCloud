@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { requireAuth } from '../auth.js';
+import { isWithinRoot } from '../paths.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -17,8 +18,7 @@ export default async function browseRoutes(fastify) {
 
     if (dir) {
       targetDir = path.resolve(resolvedMusicDir, dir);
-      const rel = path.relative(resolvedMusicDir, targetDir);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      if (!isWithinRoot(resolvedMusicDir, targetDir)) {
         return reply.status(403).send({ error: 'Access denied' });
       }
     }
@@ -27,8 +27,7 @@ export default async function browseRoutes(fastify) {
     try {
       const root = await fs.promises.realpath(resolvedMusicDir);
       const physical = await fs.promises.realpath(targetDir);
-      const rel = path.relative(root, physical);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) return reply.status(403).send({ error: 'Access denied' });
+      if (!isWithinRoot(root, physical)) return reply.status(403).send({ error: 'Access denied' });
     } catch { return reply.status(404).send({ error: 'Directory not found' }); }
 
     let entries;
@@ -105,15 +104,21 @@ export default async function browseRoutes(fastify) {
   });
 
   fastify.get('/api/browse/tree', { preHandler: requireAuth }, async (req, reply) => {
-    const musicDir = process.env.MUSIC_DIR;
+    const rawLimit = req.query.limit !== undefined ? parseInt(req.query.limit, 10) : 500;
+    const rawOffset = req.query.offset !== undefined ? parseInt(req.query.offset, 10) : 0;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 2000) : 500;
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+
     const { rows } = await query(
-      `SELECT t.id, t.file_path, t.file_name, t.duration, t.title, t.track_number,
+      `SELECT t.id, t.file_name, t.duration, t.title, t.track_number,
               a.name as artist, al.title as album, al.id as album_id
        FROM tracks t
        LEFT JOIN artists a ON t.artist_id = a.id
        LEFT JOIN albums al ON t.album_id = al.id
        WHERE t.missing_since IS NULL
-       ORDER BY al.title, t.disc_number, COALESCE(t.track_number, 999), t.file_name`
+       ORDER BY al.title NULLS LAST, al.id, t.disc_number, COALESCE(t.track_number, 999), t.file_name, t.id
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
     );
 
     const albums = Object.create(null);
@@ -130,7 +135,6 @@ export default async function browseRoutes(fastify) {
         id: track.id,
         title: track.title || track.file_name,
         fileName: track.file_name,
-        filePath: track.file_path,
         duration: track.duration,
         trackNumber: track.track_number,
         artist: track.artist,

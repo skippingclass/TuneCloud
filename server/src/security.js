@@ -16,6 +16,9 @@ export function validateSecurityConfig(env = process.env) {
       ['admin_secure_password', 'your-admin-password'].includes(env.ADMIN_PASSWORD))) {
     throw new Error('ADMIN_PASSWORD must be a unique password of at least 12 bytes in production');
   }
+  if (env.CORS_ORIGIN && env.CORS_ORIGIN.split(',').some(origin => origin.trim() === '*')) {
+    throw new Error('Wildcard CORS_ORIGIN is not allowed in production');
+  }
 }
 
 export function trustedProxies(env = process.env) {
@@ -30,17 +33,38 @@ export function safeRequestSerializer(req) {
 
 const attempts = new Map();
 const WINDOW = 60_000;
+
+function pruneAndCheckBucket(bucketKey, limit, now = Date.now()) {
+  for (const [k, entry] of attempts) if (now >= entry.until) attempts.delete(k);
+  const entry = attempts.get(bucketKey);
+  return !entry || now >= entry.until || entry.count < limit;
+}
+
+function recordBucketFailure(bucketKey, now = Date.now()) {
+  const existing = attempts.get(bucketKey);
+  const entry = existing && now < existing.until ? existing : { count: 0, until: now + WINDOW };
+  if (attempts.size >= 10_000 && !attempts.has(bucketKey)) attempts.delete(attempts.keys().next().value);
+  entry.count++;
+  attempts.set(bucketKey, entry);
+}
+
+function hashBucket(prefix, raw) {
+  return `${prefix}:${crypto.createHash('sha256').update(String(raw).trim().toLowerCase()).digest('hex')}`;
+}
+
 export function accountLoginAllowed(username, now = Date.now()) {
   if (typeof username !== 'string') return false;
-  const key = crypto.createHash('sha256').update(username.trim().toLowerCase()).digest('hex');
-  for (const [k, entry] of attempts) if (now >= entry.until) attempts.delete(k);
-  return !attempts.has(key) || attempts.get(key).count < 10;
+  return pruneAndCheckBucket(hashBucket('user', username), 10, now);
 }
 export function recordLoginFailure(username, now = Date.now()) {
   if (typeof username !== 'string') return;
-  const key = crypto.createHash('sha256').update(username.trim().toLowerCase()).digest('hex');
-  const entry = attempts.get(key) || { count: 0, until: now + WINDOW };
-  if (attempts.size >= 10_000 && !attempts.has(key)) attempts.delete(attempts.keys().next().value);
-  entry.count++;
-  attempts.set(key, entry);
+  recordBucketFailure(hashBucket('user', username), now);
+}
+export function ipAuthAllowed(ip, now = Date.now()) {
+  if (typeof ip !== 'string' || !ip.trim()) return true;
+  return pruneAndCheckBucket(hashBucket('ip', ip), 20, now);
+}
+export function recordIpAuthFailure(ip, now = Date.now()) {
+  if (typeof ip !== 'string' || !ip.trim()) return;
+  recordBucketFailure(hashBucket('ip', ip), now);
 }

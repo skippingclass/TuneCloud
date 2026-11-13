@@ -6,6 +6,7 @@ import { glob } from 'glob';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from './db.js';
 import { extractAllMissingCovers, deleteTrackCover, findAlbumsWithChangedFolderCovers } from './cover.js';
+import { isWithinRoot } from './paths.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
 const BATCH_SIZE = 300;
@@ -307,7 +308,8 @@ async function flushTrackBatch(client, items) {
             ARRAY(SELECT t.file_path FROM tracks t WHERE t.album_id = albums.id AND t.missing_since IS NULL) AS member_paths
      FROM albums
      WHERE LOWER(folder_path) = ANY($1::text[])
-        OR (LOWER(title) = ANY($2::text[]) AND artist_id = ANY($3::int[]))`,
+        OR (LOWER(title) = ANY($2::text[]) AND artist_id = ANY($3::int[]))
+        OR (LOWER(title) = ANY($2::text[]) AND artist_id IS NULL)`,
     [folders, titles, artistIds]
   );
 
@@ -329,55 +331,65 @@ async function flushTrackBatch(client, items) {
             albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))
       );
     }
-    // If not found, match on title + artist_id (case-insensitive, album was moved to another folder)
-    if (!match && a.artistId != null) {
+    // If not found, match on title + artist_id (including NULL artist_id compilations/untagged albums moved across folders)
+    if (!match) {
       match = existingAlbumRows.find(
         (r) => r.title.toLowerCase() === titleLower && r.artist_id === a.artistId &&
-          (r.release_key === a.releaseKey || (!r.folder_path && !r.release_key) ||
+          ((r.release_key ?? '') === (a.releaseKey ?? '') || (!r.folder_path && !r.release_key) ||
            (r.member_paths.length > 0 && r.member_paths.every(file => albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))))
       );
     }
 
     if (match) {
-      if (match.folder_path !== a.normFolder || match.title !== a.title) {
-        await client.query('UPDATE albums SET folder_path = $1, title = $2, release_key = $4 WHERE id = $3', [a.normFolder, a.title, match.id, a.releaseKey]);
+      if (match.folder_path !== a.normFolder || match.title !== a.title || (match.release_key ?? '') !== (a.releaseKey ?? '')) {
+        await client.query('UPDATE albums SET folder_path = $1, title = $2, release_key = $4 WHERE id = $3', [a.normFolder, a.title, match.id, a.releaseKey ?? '']);
         match.folder_path = a.normFolder;
         match.title = a.title;
-        match.release_key = a.releaseKey;
+        match.release_key = a.releaseKey ?? '';
       }
       albumMap.set(a.groupKey, match.id);
     }
   }
 
-  // Albums that need to be inserted or upserted
+  // Albums that need to be inserted or upserted (PG uses separate unique indexes for non-NULL vs NULL artist_id)
   const albumsToUpsert = albumMetaList.filter((a) => !albumMap.has(a.groupKey));
-
   if (albumsToUpsert.length > 0) {
-    const { rows: upsertedRows } = await client.query(
-      `INSERT INTO albums (title, artist_id, year, genre, folder_path, compilation, release_key)
-       SELECT * FROM unnest(
-         $1::text[], $2::int[], $3::int[], $4::text[], $5::text[], $6::boolean[], $7::text[]
-       )
-       ON CONFLICT (LOWER(title), artist_id, release_key) DO UPDATE SET
-         year = COALESCE(EXCLUDED.year, albums.year),
-         genre = COALESCE(EXCLUDED.genre, albums.genre),
-         folder_path = COALESCE(EXCLUDED.folder_path, albums.folder_path),
-         compilation = COALESCE(EXCLUDED.compilation, albums.compilation)
-       RETURNING id, title, folder_path, artist_id, release_key`,
-      [
-        albumsToUpsert.map((a) => a.title),
-        albumsToUpsert.map((a) => a.artistId),
-        albumsToUpsert.map((a) => a.year),
-        albumsToUpsert.map((a) => a.genre),
-        albumsToUpsert.map((a) => a.normFolder),
-        albumsToUpsert.map((a) => a.compilation),
-        albumsToUpsert.map((a) => a.releaseKey),
-      ]
-    );
+    const withArtist = albumsToUpsert.filter((a) => a.artistId !== null);
+    const withoutArtist = albumsToUpsert.filter((a) => a.artistId === null);
+    const upsertedRows = [];
+
+    for (const [slice, conflictTarget] of [
+      [withArtist, '(LOWER(title), artist_id, release_key)'],
+      [withoutArtist, '(LOWER(title), release_key) WHERE artist_id IS NULL'],
+    ]) {
+      if (slice.length === 0) continue;
+      const { rows } = await client.query(
+        `INSERT INTO albums (title, artist_id, year, genre, folder_path, compilation, release_key)
+         SELECT * FROM unnest(
+           $1::text[], $2::int[], $3::int[], $4::text[], $5::text[], $6::boolean[], $7::text[]
+         )
+         ON CONFLICT ${conflictTarget} DO UPDATE SET
+           year = COALESCE(EXCLUDED.year, albums.year),
+           genre = COALESCE(EXCLUDED.genre, albums.genre),
+           folder_path = COALESCE(EXCLUDED.folder_path, albums.folder_path),
+           compilation = COALESCE(EXCLUDED.compilation, albums.compilation)
+         RETURNING id, title, folder_path, artist_id, release_key`,
+        [
+          slice.map((a) => a.title),
+          slice.map((a) => a.artistId),
+          slice.map((a) => a.year),
+          slice.map((a) => a.genre),
+          slice.map((a) => a.normFolder),
+          slice.map((a) => a.compilation),
+          slice.map((a) => a.releaseKey ?? ''),
+        ]
+      );
+      upsertedRows.push(...rows);
+    }
 
     for (const r of upsertedRows) {
       const meta = albumsToUpsert.find(
-        (a) => a.releaseKey === r.release_key && a.title.toLowerCase() === r.title.toLowerCase() && (a.artistId === r.artist_id || (a.normFolder && r.folder_path && a.normFolder.toLowerCase() === r.folder_path.toLowerCase()))
+        (a) => (a.releaseKey ?? '') === (r.release_key ?? '') && a.title.toLowerCase() === r.title.toLowerCase() && (a.artistId === r.artist_id || (a.normFolder && r.folder_path && a.normFolder.toLowerCase() === r.folder_path.toLowerCase()))
       );
       if (meta) {
         albumMap.set(meta.groupKey, r.id);
@@ -567,16 +579,15 @@ async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = n
 /** Lists audio files with size/mtime/inode identity in a single directory walk (stat follows symlinks). */
 async function listAudioFiles(musicDir) {
   const physicalRoot = await fs.realpath(musicDir);
-  const pattern = path.join(musicDir, '**/*').replace(/\\/g, '/');
-  const entries = await glob(pattern, { withFileTypes: true, stat: true, nodir: true, nocase: true });
+  // Pass cwd instead of interpolating musicDir into the glob pattern so brackets like [FLAC] are treated literally
+  const entries = await glob('**/*', { cwd: musicDir, withFileTypes: true, stat: true, nodir: true, nocase: true });
 
   const candidates = entries.filter(e => isAudioFile(e.name) && (e.isFile() || e.isSymbolicLink()));
   const files = await mapLimit(candidates, PARSE_CONCURRENCY, async e => {
     try {
       // Parents may themselves be symlinks even when the entry is a regular file.
       const physical = await fs.realpath(e.fullpath());
-      const rel = path.relative(physicalRoot, physical);
-      if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+      if (!isWithinRoot(physicalRoot, physical)) return null;
       const stat = await fs.stat(physical);
       if (!stat.isFile()) return null;
       return {
@@ -1395,16 +1406,18 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   const client = await getClient();
   try {
     if (pathUpdates.length > 0) {
-      for (const upd of pathUpdates) {
-        await client.query(
-          'UPDATE tracks SET file_path = $1, file_name = $2, missing_since = NULL WHERE id = $3',
-          [upd.newPath, upd.newFileName, upd.id]
-        );
-        if (upd.albumId && upd.oldFolder !== upd.newFolder) {
-          const normNewFolder = normalizeAlbumFolder(upd.newFolder);
-          await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [normNewFolder, upd.albumId]);
+      await inTransaction(client, async () => {
+        for (const upd of pathUpdates) {
+          await client.query(
+            'UPDATE tracks SET file_path = $1, file_name = $2, missing_since = NULL WHERE id = $3',
+            [upd.newPath, upd.newFileName, upd.id]
+          );
+          if (upd.albumId && upd.oldFolder !== upd.newFolder) {
+            const normNewFolder = normalizeAlbumFolder(upd.newFolder);
+            await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [normNewFolder, upd.albumId]);
+          }
         }
-      }
+      });
     }
 
     for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
@@ -1440,40 +1453,53 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
           audioHash,
         };
       });
-      for (const b of backfilled) {
+      await inTransaction(client, async () => {
         await client.query(
-          `UPDATE tracks
-           SET dev = $1,
-               ino = $2,
-               birthtime_ms = $3,
-               content_hash = $4,
-               audio_hash = $5
-           WHERE id = $6`,
-          [b.dev, b.ino, b.birthtimeMs, b.contentHash, b.audioHash, b.id]
+          `UPDATE tracks AS t
+           SET dev = u.dev,
+               ino = u.ino,
+               birthtime_ms = u.birthtime_ms,
+               content_hash = u.content_hash,
+               audio_hash = u.audio_hash
+           FROM unnest($1::int[], $2::bigint[], $3::bigint[], $4::bigint[], $5::text[], $6::text[])
+             AS u(id, dev, ino, birthtime_ms, content_hash, audio_hash)
+           WHERE t.id = u.id`,
+          [
+            backfilled.map((b) => b.id),
+            backfilled.map((b) => b.dev),
+            backfilled.map((b) => b.ino),
+            backfilled.map((b) => b.birthtimeMs),
+            backfilled.map((b) => b.contentHash),
+            backfilled.map((b) => b.audioHash),
+          ]
         );
-      }
+      });
     }
 
     onProgress?.({ phase: 'cleaning', total: files.length, processed, unchanged, errors: parseErrors });
 
-    // A disappearing mount is indistinguishable from deletion during one walk.
-    // Retain track IDs and dependent favorites/playlists/history indefinitely.
-    if (staleIds.length) {
-      await client.query('UPDATE tracks SET missing_since = COALESCE(missing_since, NOW()) WHERE id = ANY($1::int[])', [staleIds]);
-      console.warn(`Marked ${staleIds.length} missing tracks; no user data deleted`);
-    }
-    if (files.length) {
-      await client.query('UPDATE tracks SET missing_since = NULL WHERE file_path = ANY($1::text[]) AND missing_since IS NOT NULL', [files.map(f => f.path)]);
-    }
+    await inTransaction(client, async () => {
+      // A disappearing mount is indistinguishable from deletion during one walk.
+      // Retain track IDs and dependent favorites/playlists/history indefinitely.
+      if (staleIds.length) {
+        await client.query('UPDATE tracks SET missing_since = COALESCE(missing_since, NOW()) WHERE id = ANY($1::int[])', [staleIds]);
+        console.warn(`Marked ${staleIds.length} missing tracks; no user data deleted`);
+      }
+      if (files.length) {
+        await client.query('UPDATE tracks SET missing_since = NULL WHERE file_path = ANY($1::text[]) AND missing_since IS NOT NULL', [files.map(f => f.path)]);
+      }
+    });
 
     // Repair already-created live+missing duplicate pairs when BOTH have matching verified stored hashes
     mergedPairs = await reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds);
 
-    // Refresh album metadata across all member tracks in DB
-    await refreshAlbumsMetadata(client, touchedAlbumIds);
+    await inTransaction(client, async () => {
+      // Refresh album metadata across all member tracks in DB
+      await refreshAlbumsMetadata(client, touchedAlbumIds, { transactionActive: true });
 
-    // Album refresh can release an obsolete composite artist too.
-    await removeOrphans(client);
+      // Album refresh can release an obsolete composite artist too.
+      await removeOrphans(client);
+    });
   } finally {
     client.release();
   }
@@ -1483,14 +1509,14 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
 
   onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted: 0, coversTotal: 0 });
 
-  const coverProgressCallback = (extracted, total) => {
-    coversExtracted = extracted;
-    coversTotal = total;
+  const makeCoverProgressCallback = (baseExtracted = 0, baseTotal = 0) => (extracted, total) => {
+    coversExtracted = baseExtracted + extracted;
+    coversTotal = baseTotal + total;
     onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted, coversTotal });
   };
 
   if (full || reextractCovers) {
-    const covers = await extractAllMissingCovers({ force: true, onProgress: coverProgressCallback });
+    const covers = await extractAllMissingCovers({ force: true, onProgress: makeCoverProgressCallback() });
     coversExtracted = covers.extracted;
     coversTotal = covers.total;
   } else {
@@ -1500,15 +1526,20 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       const touchedCovers = await extractAllMissingCovers({
         albumIds: [...touchedAlbumIds],
         force: true,
-        onProgress: coverProgressCallback,
+        onProgress: makeCoverProgressCallback(0, 0),
       });
-      coversExtracted += touchedCovers.extracted;
-      coversTotal += touchedCovers.total;
+      coversExtracted = touchedCovers.extracted;
+      coversTotal = touchedCovers.total;
     }
     // 2. Extract for any other albums still missing covers
-    const missingCovers = await extractAllMissingCovers({ force: false, onProgress: coverProgressCallback });
-    coversExtracted += missingCovers.extracted;
-    coversTotal += missingCovers.total;
+    const baseExtracted = coversExtracted;
+    const baseTotal = coversTotal;
+    const missingCovers = await extractAllMissingCovers({
+      force: false,
+      onProgress: makeCoverProgressCallback(baseExtracted, baseTotal),
+    });
+    coversExtracted = baseExtracted + missingCovers.extracted;
+    coversTotal = baseTotal + missingCovers.total;
   }
 
   console.log(`Covers extracted: ${coversExtracted}/${coversTotal}`);
@@ -1540,12 +1571,16 @@ export async function scanSingleFile(filePath) {
     if (prev[0]?.album_id) touched.add(prev[0].album_id);
 
     const client = await getClient();
-    let written;
+    let written = 0;
     try {
-      written = await writeBatch(client, [item], touched);
-      if (written > 0 && touched.size > 0) {
-        await refreshAlbumsMetadata(client, touched);
-      }
+      await inTransaction(client, async () => {
+        const ids = await flushTrackBatch(client, [item]);
+        ids.forEach((id) => touched.add(id));
+        written = 1;
+        if (touched.size > 0) {
+          await refreshAlbumsMetadata(client, touched, { transactionActive: true });
+        }
+      });
     } finally {
       client.release();
     }

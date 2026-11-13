@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'node:path';
+import { isWithinRoot } from './paths.js';
 import { streamOpened, streamClosed } from './metrics.js';
 
 export const MIME_TYPES = {
@@ -35,10 +36,11 @@ export function pipeWithTracking(fileStream, res) {
   };
   res.on('finish', finish);
   res.on('close', finish);
+  res.on('error', finish);
   fileStream.on('error', () => {
     finish();
-    if (!res.writableEnded) {
-      res.end();
+    if (!res.destroyed) {
+      res.destroy();
     }
   });
   fileStream.pipe(res);
@@ -79,8 +81,7 @@ export async function sendAudioFile(req, reply, filePath, format) {
   try {
     const physical = await fs.promises.realpath(filePath);
     const root = await fs.promises.realpath(process.env.MUSIC_DIR);
-    const rel = path.relative(root, physical);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) return reply.status(403).send({ error: 'File outside music library' });
+    if (!isWithinRoot(root, physical)) return reply.status(403).send({ error: 'File outside music library' });
     stat = await fs.promises.stat(physical);
     if (!stat.isFile()) return reply.status(404).send({ error: 'Audio file not found' });
     filePath = physical;
@@ -88,6 +89,7 @@ export async function sendAudioFile(req, reply, filePath, format) {
   const fileSize = stat.size;
   const contentType = contentTypeFor(format);
   const range = parseRange(req.headers.range, fileSize);
+  const isHead = req.method === 'HEAD';
 
   reply.hijack();
 
@@ -106,6 +108,10 @@ export async function sendAudioFile(req, reply, filePath, format) {
       'Content-Type': contentType,
       'Cache-Control': 'private, no-store',
     });
+    if (isHead) {
+      reply.raw.end();
+      return;
+    }
     pipeWithTracking(fs.createReadStream(filePath, { start, end }), reply.raw);
     return;
   }
@@ -116,5 +122,9 @@ export async function sendAudioFile(req, reply, filePath, format) {
     'Cache-Control': 'private, no-store',
     'Accept-Ranges': 'bytes',
   });
+  if (isHead) {
+    reply.raw.end();
+    return;
+  }
   pipeWithTracking(fs.createReadStream(filePath), reply.raw);
 }

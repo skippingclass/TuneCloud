@@ -377,7 +377,7 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
       const queueRow = (await query('SELECT track_ids, current_track_id, position_ms FROM play_queues WHERE user_id=$1', [owner.id])).rows[0];
       assert.deepEqual(queueRow.track_ids, [track.id, second.id, track.id]);
       assert.equal(queueRow.current_track_id, track.id);
-      assert.equal(queueRow.position_ms, 5000);
+      assert.equal(Number(queueRow.position_ms), 5000);
 
       // 4. GET getOpenSubsonicExtensions omits transcodeOffset
       const extRes = await app.inject({

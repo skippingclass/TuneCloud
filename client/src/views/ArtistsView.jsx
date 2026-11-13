@@ -78,25 +78,29 @@ export function ArtistsView({ onArtistClick }) {
           (async () => {
             const BATCH_SIZE = 5;
             for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+              if (controller.signal.aborted || reqId !== reqIdRef.current) break;
               const chunk = missing.slice(i, i + BATCH_SIZE);
               let chunkChanged = false;
               await Promise.allSettled(
                 chunk.map(async (a) => {
+                  if (controller.signal.aborted) return;
                   try {
-                    const data = await api.spotifyArtist(a.name);
+                    const data = await api.spotifyArtist(a.name, { signal: controller.signal });
+                    if (controller.signal.aborted) return;
                     if (data?.found && data.artist?.image) {
                       cache[a.name] = data.artist.image;
                     } else {
                       cache[a.name] = 'none';
                     }
                     chunkChanged = true;
-                  } catch {
+                  } catch (err) {
+                    if (err?.name === 'AbortError' || controller.signal.aborted) return;
                     cache[a.name] = 'none';
                     chunkChanged = true;
                   }
                 })
               );
-              if (chunkChanged) {
+              if (!controller.signal.aborted && reqId === reqIdRef.current && chunkChanged) {
                 saveArtistImageCache(cache);
                 setArtistImages({ ...cache });
               }

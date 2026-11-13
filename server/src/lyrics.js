@@ -1,9 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import * as mm from 'music-metadata';
+import { isWithinRoot } from './paths.js';
 
 const USER_AGENT = 'TuneCloud/1.0 (https://github.com/skippingclass/TuneCloud)';
 const FETCH_TIMEOUT_MS = 4000;
+const MAX_JSON_RESPONSE_BYTES = 1024 * 1024;
 
 // Bracketed noise: (Official Video), [4K], (Lyrics), (MV), (Премьера), (текст песни), etc.
 const BRACKETED_NOISE = /[[(]\s*(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?(?:\s*video)?|visuali[sz]er|mv|m\/v|hd|hq|4k[^\])]*|1080p[^\])]*|live|clip(?:\s*officiel)?|videoclip|премьера[^\])]*|клип|текст(?:\s*песни)?|official)\s*[\])]/gi;
@@ -104,15 +106,10 @@ export function isSafeFilename(name) {
 }
 
 export function isWithinDirectory(parentDir, targetPath) {
-  if (!parentDir || !targetPath) return false;
-  const rel = path.relative(parentDir, targetPath);
-  return !rel.startsWith('..') && !path.isAbsolute(rel);
+  return isWithinRoot(parentDir, targetPath);
 }
 
-/**
- * Try reading local .lrc or .txt files near the audio file
- */
-export function readLocalLyrics(trackPath, cleanTitle) {
+function buildLocalLyricCandidates(trackPath, cleanTitle) {
   if (!trackPath || typeof trackPath !== 'string') return null;
   const dir = path.dirname(trackPath);
   const base = path.basename(trackPath, path.extname(trackPath));
@@ -124,6 +121,28 @@ export function readLocalLyrics(trackPath, cleanTitle) {
       candidateNames.push(`${trimmed}.lrc`, `${trimmed}.txt`);
     }
   }
+  return { dir, candidateNames };
+}
+
+function formatLocalLyrics(rawContent) {
+  const content = String(rawContent || '').trim();
+  if (!content) return null;
+  const synced = content.includes('[') && /\d{2}:\d{2}/.test(content);
+  return {
+    synced,
+    type: synced ? 'line' : 'plain',
+    lyrics: content,
+    source: 'local',
+  };
+}
+
+/**
+ * Try reading local .lrc or .txt files near the audio file (synchronous version kept for unit tests)
+ */
+export function readLocalLyrics(trackPath, cleanTitle) {
+  const built = buildLocalLyricCandidates(trackPath, cleanTitle);
+  if (!built) return null;
+  const { dir, candidateNames } = built;
 
   let realMusicDir = null;
   if (process.env.MUSIC_DIR) {
@@ -140,36 +159,52 @@ export function readLocalLyrics(trackPath, cleanTitle) {
       if (!fs.existsSync(candidatePath)) continue;
 
       const realCandidate = fs.realpathSync(candidatePath);
-
-      if (realMusicDir) {
-        if (!isWithinDirectory(realMusicDir, realCandidate)) {
-          continue;
-        }
-      } else {
-        try {
-          const realTrackDir = fs.realpathSync(dir);
-          if (!isWithinDirectory(realTrackDir, realCandidate)) {
-            continue;
-          }
-        } catch {
-          continue;
-        }
+      const allowedRoot = realMusicDir || fs.realpathSync(dir);
+      if (!isWithinDirectory(allowedRoot, realCandidate)) {
+        continue;
       }
 
       const stat = fs.statSync(realCandidate);
-      if (!stat.isFile()) continue;
-      if (stat.size > MAX_LYRICS_FILE_SIZE) continue;
+      if (!stat.isFile() || stat.size > MAX_LYRICS_FILE_SIZE) continue;
 
-      const content = fs.readFileSync(realCandidate, 'utf8').trim();
-      if (content) {
-        const synced = content.includes('[') && /\d{2}:\d{2}/.test(content);
-        return {
-          synced,
-          type: synced ? 'line' : 'plain',
-          lyrics: content,
-          source: 'local',
-        };
+      const parsed = formatLocalLyrics(fs.readFileSync(realCandidate, 'utf8'));
+      if (parsed) return parsed;
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Non-blocking async version of readLocalLyrics for HTTP route handlers
+ */
+export async function readLocalLyricsAsync(trackPath, cleanTitle) {
+  const built = buildLocalLyricCandidates(trackPath, cleanTitle);
+  if (!built) return null;
+  const { dir, candidateNames } = built;
+
+  let realMusicDir = null;
+  if (process.env.MUSIC_DIR) {
+    try {
+      realMusicDir = await fs.promises.realpath(process.env.MUSIC_DIR);
+    } catch {
+      return null;
+    }
+  }
+
+  for (const name of candidateNames) {
+    const candidatePath = path.join(dir, name);
+    try {
+      const realCandidate = await fs.promises.realpath(candidatePath);
+      const allowedRoot = realMusicDir || (await fs.promises.realpath(dir));
+      if (!isWithinDirectory(allowedRoot, realCandidate)) {
+        continue;
       }
+
+      const stat = await fs.promises.stat(realCandidate);
+      if (!stat.isFile() || stat.size > MAX_LYRICS_FILE_SIZE) continue;
+
+      const parsed = formatLocalLyrics(await fs.promises.readFile(realCandidate, 'utf8'));
+      if (parsed) return parsed;
     } catch {}
   }
   return null;
@@ -181,7 +216,8 @@ export function readLocalLyrics(trackPath, cleanTitle) {
 export async function readEmbeddedLyrics(trackPath) {
   if (!trackPath) return null;
   try {
-    if (!fs.existsSync(trackPath)) return null;
+    const st = await fs.promises.stat(trackPath);
+    if (!st.isFile()) return null;
     const metadata = await mm.parseFile(trackPath, { skipCovers: true });
     let text = null;
 
@@ -250,7 +286,26 @@ async function fetchJsonSafe(url) {
       },
     });
     if (!res.ok) return null;
-    return await res.json();
+    const contentLength = parseInt(res.headers.get('content-length'), 10);
+    if (Number.isFinite(contentLength) && contentLength > MAX_JSON_RESPONSE_BYTES) {
+      return null;
+    }
+    if (!res.body) {
+      const text = await res.text();
+      if (Buffer.byteLength(text, 'utf8') > MAX_JSON_RESPONSE_BYTES) return null;
+      return JSON.parse(text);
+    }
+    const chunks = [];
+    let totalBytes = 0;
+    for await (const chunk of res.body) {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_JSON_RESPONSE_BYTES) {
+        controller.abort();
+        return null;
+      }
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
     return null;
   } finally {

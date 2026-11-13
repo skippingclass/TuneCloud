@@ -1,5 +1,6 @@
 import path from 'path';
 import { contentTypeFor } from '../streaming.js';
+import { isWithinRoot } from '../paths.js';
 
 // Removes null/undefined values so they are omitted from JSON and XML output.
 function compact(obj) {
@@ -15,9 +16,9 @@ const iso = (d) => (d ? new Date(d).toISOString() : undefined);
 
 function relativePath(filePath, fileName) {
   const root = process.env.MUSIC_DIR;
-  if (root && filePath) {
-    const rel = path.relative(root, filePath);
-    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
+  if (root && filePath && isWithinRoot(root, filePath)) {
+    const rel = path.relative(path.resolve(root), path.resolve(filePath));
+    if (rel) return rel;
   }
   return fileName;
 }

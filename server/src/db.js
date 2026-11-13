@@ -10,6 +10,10 @@ const pool = new pg.Pool({
   idleTimeoutMillis: 30000,
 });
 
+pool.on('error', (err) => {
+  console.error('[DB] Unexpected idle client error:', err);
+});
+
 export async function initDb() {
   await runMigrations(pool);
   console.log('Database migrations up to date');
@@ -28,15 +32,21 @@ export default pool;
 // All statements in a transaction must use this same checked-out connection.
 export async function transaction(fn) {
   const client = await getClient();
+  let releaseErr;
   try {
     await client.query('BEGIN');
     const result = await fn(client);
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      releaseErr = rollbackErr;
+      console.error('[DB] Rollback failed:', rollbackErr);
+    }
     throw err;
   } finally {
-    client.release();
+    client.release(releaseErr);
   }
 }

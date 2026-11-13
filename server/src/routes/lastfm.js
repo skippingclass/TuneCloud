@@ -49,16 +49,19 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
     available();
     const { token, state } = req.body || {};
     if (typeof token !== 'string' || !token.trim() || token.length > 256 || typeof state !== 'string' || !/^[a-f0-9]{64}$/.test(state)) throw fail('Invalid authorization callback');
+    // Validate the authorization binding without holding a DB connection during Last.fm HTTP exchange.
+    const existingAttempt = (await query(`SELECT user_id FROM lastfm_auth_attempts WHERE user_id=$1 AND state_hash=$2 AND (token_hash IS NULL OR token_hash=$3) AND auth_version=$4 AND expires_at>now()`,
+      [req.user.id, hash(state), hash(token), req.user.auth_version])).rows[0];
+    if (!existingAttempt) throw fail('Authorization expired or belongs to another account. Connect again.');
+    const result = await request('auth.getSession', { token });
+    if (!result.session?.key || !result.session?.name) throw fail('Invalid Last.fm session response', 502);
+    const secret = encryptSession(result.session.key);
     return transaction(async client => {
-      // Keep the old token binding for attempts created before the web-flow
-      // migration; new attempts are bound by their one-time state instead.
+      // Atomically consume the one-time binding on completion so concurrent replays fail cleanly while transient 502s remain retryable.
       const attempt = (await client.query(`DELETE FROM lastfm_auth_attempts WHERE user_id=$1 AND state_hash=$2 AND (token_hash IS NULL OR token_hash=$3) AND auth_version=$4 AND expires_at>now() RETURNING user_id`,
         [req.user.id, hash(state), hash(token), req.user.auth_version])).rows[0];
       if (!attempt) throw fail('Authorization expired or belongs to another account. Connect again.');
-      const result = await request('auth.getSession', { token });
-      if (!result.session?.key || !result.session?.name) throw fail('Invalid Last.fm session response', 502);
       const existing = await accountForUpdate(client, req.user.id);
-      const secret = encryptSession(result.session.key);
       if (existing && existing.username.toLowerCase() === result.session.name.toLowerCase()) {
         await client.query('UPDATE lastfm_accounts SET username=$2,session_secret=$3,needs_reauth=false WHERE user_id=$1',
           [req.user.id, result.session.name, secret]);
@@ -98,6 +101,43 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
     if (!Number.isInteger(body.trackId) || body.trackId <= 0 || body.trackId > 2147483647 || !uuid.test(body.eventId || '') || !uuid.test(body.connectionId || '') ||
       !Number.isInteger(body.startedAt) || body.startedAt < 0 || body.startedAt > Math.floor(Date.now() / 1000) + 60 ||
       (kind === 'scrobble' && (!Number.isFinite(body.listenedSeconds) || body.listenedSeconds < 0))) throw fail('Invalid playback event');
+
+    if (kind === 'now-playing') {
+      const prep = await transaction(async client => {
+        const account = (await client.query('SELECT * FROM lastfm_accounts WHERE user_id=$1', [req.user.id])).rows[0];
+        if (!account || account.connection_id !== body.connectionId || !account.enabled || account.needs_reauth) {
+          return { accepted: false, reason: 'disabled' };
+        }
+        const data = await trackMetadata(client, body.trackId, req.user.id, account);
+        if (!data) throw fail('Track not found', 404);
+        if (data.blocked) return { accepted: false, reason: 'blocked' };
+        if (!data.payload.artist || !data.payload.track) return { accepted: false, reason: 'missing_metadata' };
+        if (!account.now_playing) return { accepted: false, reason: 'disabled' };
+        if (!Number.isFinite(data.track.duration) || data.track.duration <= account.min_duration) {
+          return { accepted: false, reason: 'below_threshold' };
+        }
+        return { ready: true, payload: data.payload, sessionSecret: account.session_secret };
+      });
+      if (!prep.ready) return prep;
+      // Execute upstream Last.fm HTTP request outside any DB transaction/pool connection.
+      let sessionKey;
+      try {
+        sessionKey = decryptSession(prep.sessionSecret);
+      } catch {
+        await query('UPDATE lastfm_accounts SET needs_reauth=true WHERE user_id=$1 AND connection_id=$2', [req.user.id, body.connectionId]);
+        return { accepted: false, reason: 'upstream_error' };
+      }
+      try {
+        await request('track.updateNowPlaying', prep.payload, sessionKey);
+        return { accepted: true };
+      } catch (error) {
+        if (error.code === 9) {
+          await query('UPDATE lastfm_accounts SET needs_reauth=true WHERE user_id=$1 AND connection_id=$2', [req.user.id, body.connectionId]);
+        }
+        return { accepted: false, reason: 'upstream_error' };
+      }
+    }
+
     return transaction(async client => {
       const account = await accountForUpdate(client, req.user.id);
       if (!account || account.connection_id !== body.connectionId || !account.enabled || account.needs_reauth) return { accepted: false, reason: 'disabled' };
@@ -105,20 +145,10 @@ export default async function lastfmRoutes(app, { request = lastfmRequest } = {}
       if (!data) throw fail('Track not found', 404);
       if (data.blocked) return { accepted: false, reason: 'blocked' };
       if (!data.payload.artist || !data.payload.track) return { accepted: false, reason: 'missing_metadata' };
-      if (kind === 'now-playing') {
-        if (!account.now_playing) return { accepted: false, reason: 'disabled' };
-        if (!Number.isFinite(data.track.duration) || data.track.duration <= account.min_duration) return { accepted: false, reason: 'below_threshold' };
-        try { await request('track.updateNowPlaying', data.payload, decryptSession(account.session_secret)); }
-        catch (error) {
-          if (error.code === 9) await client.query('UPDATE lastfm_accounts SET needs_reauth=true WHERE user_id=$1', [req.user.id]);
-          return { accepted: false, reason: 'upstream_error' };
-        }
-      } else {
-        if (!eligible(data.track.duration, body.listenedSeconds, account)) return { accepted: false, reason: 'below_threshold' };
-        const payload = { ...data.payload, timestamp: String(body.startedAt) };
-        await client.query(`INSERT INTO lastfm_outbox(user_id,connection_id,event_id,track_id,payload) VALUES($1,$2,$3,$4,$5)
-          ON CONFLICT(user_id,connection_id,event_id) DO NOTHING`, [req.user.id, account.connection_id, body.eventId, body.trackId, payload]);
-      }
+      if (!eligible(data.track.duration, body.listenedSeconds, account)) return { accepted: false, reason: 'below_threshold' };
+      const payload = { ...data.payload, timestamp: String(body.startedAt) };
+      await client.query(`INSERT INTO lastfm_outbox(user_id,connection_id,event_id,track_id,payload) VALUES($1,$2,$3,$4,$5)
+        ON CONFLICT(user_id,connection_id,event_id) DO NOTHING`, [req.user.id, account.connection_id, body.eventId, body.trackId, payload]);
       return { accepted: true };
     });
   });

@@ -611,7 +611,7 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <FavoritesProvider>
+      <FavoritesProvider key={user.id}>
         <PlayerProvider key={user.id} userId={user.id}>
           <MainLayout user={user} onLogout={handleLogout} />
         </PlayerProvider>

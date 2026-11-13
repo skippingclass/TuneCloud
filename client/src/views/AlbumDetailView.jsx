@@ -1,6 +1,6 @@
 import { useTrackSelection } from '../hooks/useTrackSelection.jsx';
 import { shuffled as shuffleTracks } from '../utils/playback.js';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Play, Pause, Shuffle, Heart, ArrowLeft, Disc, Clock, Loader2, Maximize2 } from 'lucide-react';
 import { api } from '../api.js';
 import { TrackRow } from '../components/cards/TrackRow.jsx';
@@ -8,6 +8,7 @@ import { CoverModal } from '../components/modals/CoverModal.jsx';
 import { MoreByArtist } from '../components/MoreByArtist.jsx';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { useFavorites } from '../context/FavoritesContext.jsx';
+import { toast } from '../components/layout/Toast.jsx';
 
 function formatDuration(sec) {
   if (!sec || sec <= 0) return '0:00';
@@ -61,16 +62,39 @@ export function AlbumDetailView({
       tracks.some((t) => t.id === currentTrack.id));
   const isThisAlbumPlaying = isThisAlbum && isPlaying;
 
-  const reloadTracks = () => {
-    setLoading(true);
-    api
-      .album(album.id)
-      .then(setTracks)
-      .finally(() => setLoading(false));
-  };
+  const abortRef = useRef(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    abortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
-    reloadTracks();
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoading(true);
+    api
+      .album(album.id, { signal: controller.signal })
+      .then((data) => {
+        if (!mountedRef.current || controller.signal.aborted) return;
+        setTracks(Array.isArray(data) ? data : []);
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError' || controller.signal.aborted || !mountedRef.current) return;
+        setTracks([]);
+        toast(`Failed to load album: ${err.message}`, 'error');
+      })
+      .finally(() => {
+        if (mountedRef.current && !controller.signal.aborted) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
   }, [album.id]);
 
   const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);

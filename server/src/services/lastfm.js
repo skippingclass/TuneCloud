@@ -13,9 +13,17 @@ export function configured() {
       (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) && !url.username && !url.password);
   } catch { return false; }
 }
+let cachedEncryptionSecret = null;
+let cachedEncryptionKey = null;
+
 function encryptionKey() {
-  if (!process.env.LASTFM_ENCRYPTION_KEY || process.env.LASTFM_ENCRYPTION_KEY.length < 32) throw new Error('Last.fm encryption key unavailable');
-  return crypto.scryptSync(process.env.LASTFM_ENCRYPTION_KEY, 'tunecloud-lastfm-v1', 32);
+  const secret = process.env.LASTFM_ENCRYPTION_KEY;
+  if (!secret || secret.length < 32) throw new Error('Last.fm encryption key unavailable');
+  if (secret !== cachedEncryptionSecret) {
+    cachedEncryptionKey = crypto.scryptSync(secret, 'tunecloud-lastfm-v1', 32);
+    cachedEncryptionSecret = secret;
+  }
+  return cachedEncryptionKey;
 }
 export function encryptSession(value) {
   const iv = crypto.randomBytes(12), cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv);

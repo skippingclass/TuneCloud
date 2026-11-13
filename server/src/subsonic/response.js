@@ -18,7 +18,7 @@ export const ErrorCode = {
   NOT_FOUND: 70,
 };
 
-function escapeXml(unsafe) {
+export function escapeXml(unsafe) {
   if (unsafe === null || unsafe === undefined) return '';
   return String(unsafe).replace(/[<>&'"]/g, (c) => {
     switch (c) {
@@ -47,9 +47,7 @@ function renderElement(name, obj) {
     if (v === null || v === undefined) continue;
     if (k === '_text' || k === '_content') {
       textContent = escapeXml(renderValue(v));
-    } else if (name === 'lyrics' && k === 'value') {
-      textContent = escapeXml(renderValue(v));
-    } else if (name === 'line' && k === 'value') {
+    } else if (k === 'value' && (name === 'lyrics' || name === 'line' || name === 'genre')) {
       textContent = escapeXml(renderValue(v));
     } else if ((k === 'artists' || k === 'albumArtists') && Array.isArray(v)) {
       let inner = '';
@@ -87,12 +85,27 @@ function getParam(req, name) {
   return req.body?.[name] ?? req.query?.[name];
 }
 
+const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
+
+function resolveImageBaseUrl(req) {
+  if (process.env.PUBLIC_URL) {
+    return process.env.PUBLIC_URL.replace(/\/$/, '');
+  }
+  const host = typeof req?.headers?.host === 'string' ? req.headers.host.trim() : '';
+  if (host && LOCAL_HOST_RE.test(host)) {
+    const proto = req.protocol === 'https' ? 'https' : 'http';
+    return `${proto}://${host}`;
+  }
+  return '';
+}
+
 function imageUrls(value, req) {
   if (Array.isArray(value)) return value.map(item => imageUrls(item, req));
   if (!value || typeof value !== 'object' || value instanceof Date) return value;
+  const baseUrl = resolveImageBaseUrl(req);
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-    /ImageUrl$/.test(key) && typeof item === 'string' && item.startsWith('/api/cover/') && req.headers?.host
-      ? `${process.env.PUBLIC_URL?.replace(/\/$/, '') || `${req.protocol || 'http'}://${req.headers.host}`}${item}` : imageUrls(item, req)]));
+    /ImageUrl$/.test(key) && typeof item === 'string' && item.startsWith('/api/cover/') && baseUrl
+      ? `${baseUrl}${item}` : imageUrls(item, req)]));
 }
 
 export function buildSubsonicResponse(reply, req, data, isError = false, errorCode = 0, errorMessage = '') {

@@ -3,14 +3,20 @@ import { extractAllMissingCovers } from '../cover.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { recordScan } from '../metrics.js';
 import { query } from '../db.js';
+import { isWithinRoot } from '../paths.js';
+import {
+  isFullJobActive,
+  tryStartFullJob,
+  endFullJob,
+  withLibraryAdvisoryLock,
+  withTrackLock,
+} from '../library-lock.js';
 import fs from 'fs';
-import path from 'path';
 
-// Single-process guard (server runs with replicas: 1).
-let isScanning = false;
+// Single-process guard (server runs with replicas: 1) plus PG advisory lock for DB safety.
 let lastResult = null;
 let lastScanAt = null;
-let scanProgress = {
+const INITIAL_PROGRESS = {
   phase: 'idle', // 'idle' | 'listing' | 'processing' | 'cleaning' | 'covers' | 'complete' | 'error'
   total: 0,
   processed: 0,
@@ -24,55 +30,73 @@ let scanProgress = {
   full: false,
   startedAt: null,
 };
+let scanProgress = { ...INITIAL_PROGRESS };
+
+function createListingProgress(full) {
+  return {
+    ...INITIAL_PROGRESS,
+    phase: 'listing',
+    full,
+    startedAt: new Date().toISOString(),
+  };
+}
+
+async function isReadableDirectory(dirPath) {
+  if (!dirPath) return false;
+  try {
+    return (await fs.promises.stat(dirPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function executeScan({ musicDir, full, reextractCovers }) {
+  const start = Date.now();
+  const result = await withLibraryAdvisoryLock(() =>
+    scanDirectory(musicDir, {
+      full,
+      reextractCovers,
+      onProgress: (p) => {
+        scanProgress = { ...scanProgress, ...p };
+      },
+    })
+  );
+  const durationSeconds = Math.round((Date.now() - start) / 1000);
+  recordScan(result, durationSeconds);
+  lastResult = result;
+  lastScanAt = new Date().toISOString();
+  scanProgress = {
+    ...scanProgress,
+    phase: 'complete',
+    ...result,
+    durationSeconds,
+    error: null,
+  };
+  return result;
+}
 
 export function getScanState() {
-  return { isScanning, lastResult, lastScanAt, progress: scanProgress };
+  return { isScanning: isFullJobActive(), lastResult, lastScanAt, progress: scanProgress };
 }
 
 export function startScanInBackground({ full = false, reextractCovers = false } = {}) {
   const musicDir = process.env.MUSIC_DIR;
-  if (!musicDir || !fs.existsSync(musicDir) || isScanning) return false;
-  isScanning = true;
-  scanProgress = {
-    phase: 'listing',
-    total: 0,
-    processed: 0,
-    toProcess: 0,
-    unchanged: 0,
-    removed: 0,
-    coversExtracted: 0,
-    coversTotal: 0,
-    durationSeconds: 0,
-    error: null,
-    full,
-    startedAt: new Date().toISOString(),
-  };
+  if (!musicDir || !tryStartFullJob('scan')) return false;
+
+  scanProgress = createListingProgress(full);
+  const covers = reextractCovers || full;
 
   (async () => {
     try {
-      const start = Date.now();
-      const covers = reextractCovers || full;
-      const result = await scanDirectory(musicDir, {
-        full,
-        reextractCovers: covers,
-        onProgress: (p) => {
-          scanProgress = { ...scanProgress, ...p };
-        },
-      });
-      recordScan(result, Math.round((Date.now() - start) / 1000));
-      lastResult = result;
-      lastScanAt = new Date().toISOString();
-      scanProgress = {
-        phase: 'complete',
-        ...result,
-        durationSeconds: Math.round((Date.now() - start) / 1000),
-        error: null,
-      };
+      if (!(await isReadableDirectory(musicDir))) {
+        throw new Error(`Music directory not found: ${musicDir}`);
+      }
+      await executeScan({ musicDir, full, reextractCovers: covers });
     } catch (err) {
       console.error('[Scanner] Scan failed:', err);
       scanProgress = { ...scanProgress, phase: 'error', error: err.message };
     } finally {
-      isScanning = false;
+      endFullJob('scan');
     }
   })();
   return true;
@@ -82,10 +106,10 @@ export default async function scanRoutes(fastify) {
   fastify.post('/api/scan', { preHandler: requireAdmin }, async (req, reply) => {
     const musicDir = process.env.MUSIC_DIR;
 
-    if (!musicDir || !fs.existsSync(musicDir)) {
+    if (!(await isReadableDirectory(musicDir))) {
       return reply.status(400).send({ error: `Music directory not found: ${musicDir}` });
     }
-    if (isScanning) {
+    if (isFullJobActive()) {
       return reply.status(409).send({
         error: 'Scan already in progress',
         isScanning: true,
@@ -102,34 +126,23 @@ export default async function scanRoutes(fastify) {
 
     // If synchronous mode is explicitly requested (e.g. CLI script or testing)
     if (req.query?.sync === 'true') {
-      isScanning = true;
-      scanProgress = {
-        phase: 'listing',
-        total: 0,
-        processed: 0,
-        full,
-        startedAt: new Date().toISOString(),
-      };
-      try {
-        const start = Date.now();
-        const result = await scanDirectory(musicDir, {
-          full,
-          reextractCovers,
-          onProgress: (p) => {
-            scanProgress = { ...scanProgress, ...p };
-          },
+      if (!tryStartFullJob('scan')) {
+        return reply.status(409).send({
+          error: 'Scan already in progress',
+          isScanning: true,
+          progress: scanProgress,
         });
-        recordScan(result, Math.round((Date.now() - start) / 1000));
-        lastResult = result;
-        lastScanAt = new Date().toISOString();
-        scanProgress = { phase: 'complete', ...result };
+      }
+      scanProgress = createListingProgress(full);
+      try {
+        const result = await executeScan({ musicDir, full, reextractCovers });
         return { message: 'Scan completed', result };
       } catch (err) {
         req.log.error(err);
         scanProgress = { ...scanProgress, phase: 'error', error: err.message };
-        return reply.status(500).send({ error: err.message });
+        return reply.status(err.statusCode === 409 ? 409 : 500).send({ error: err.message });
       } finally {
-        isScanning = false;
+        endFullJob('scan');
       }
     }
 
@@ -148,7 +161,7 @@ export default async function scanRoutes(fastify) {
   });
 
   fastify.post('/api/scan/covers', { preHandler: requireAdmin }, async (req, reply) => {
-    if (isScanning) {
+    if (!tryStartFullJob('covers')) {
       return reply.status(409).send({ error: 'Scan already in progress' });
     }
 
@@ -165,17 +178,16 @@ export default async function scanRoutes(fastify) {
     }
 
     const force = req.body?.force !== false && req.query?.force !== 'false';
-    isScanning = true;
     try {
       const start = Date.now();
-      const result = await extractAllMissingCovers({ albumIds, force });
+      const result = await withLibraryAdvisoryLock(() => extractAllMissingCovers({ albumIds, force }));
       const durationSeconds = Math.round((Date.now() - start) / 1000);
       return { message: 'Cover extraction completed', result, durationSeconds };
     } catch (err) {
       req.log.error(err);
-      return reply.status(500).send({ error: err.message });
+      return reply.status(err.statusCode === 409 ? 409 : 500).send({ error: err.message });
     } finally {
-      isScanning = false;
+      endFullJob('covers');
     }
   });
 
@@ -192,15 +204,25 @@ export default async function scanRoutes(fastify) {
       musicDir = await fs.promises.realpath(process.env.MUSIC_DIR);
     } catch { return reply.status(404).send({ error: 'File not found' }); }
 
-    if (resolvedPath !== musicDir && !resolvedPath.startsWith(musicDir + path.sep)) {
+    if (!isWithinRoot(musicDir, resolvedPath)) {
       return reply.status(403).send({ error: 'File must be within music directory' });
     }
-    if (!fs.existsSync(resolvedPath)) {
+    try {
+      const st = await fs.promises.stat(resolvedPath);
+      if (!st.isFile()) return reply.status(404).send({ error: 'File not found' });
+    } catch {
       return reply.status(404).send({ error: 'File not found' });
     }
 
-    const success = await scanSingleFile(resolvedPath);
-    return { success };
+    try {
+      const success = await withTrackLock(`path:${resolvedPath}`, () => scanSingleFile(resolvedPath));
+      return { success };
+    } catch (err) {
+      if (err.statusCode === 409) {
+        return reply.status(409).send({ error: err.message });
+      }
+      throw err;
+    }
   });
 
   // Cheap: no filesystem walk. File totals come from the last completed scan.
