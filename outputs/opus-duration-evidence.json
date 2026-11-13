@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "status": "FIX_PROVEN",
+  "reason": "The same reproducer changed from failing to passing and broader checks passed.",
+  "reproduction": "confirmed",
+  "full_suite": "passed",
+  "same_command": true,
+  "before": {
+    "schema_version": 1,
+    "label": "opus-duration-red",
+    "captured_at": "2026-11-13T18:09:14.101180+00:00",
+    "command": [
+      "bash",
+      "server/scripts/reproduce-opus-duration.sh"
+    ],
+    "cwd": "/home/pirkov/self",
+    "runtime": "Python 3.14.9 on Linux x86_64",
+    "duration_ms": 1717.479,
+    "exit_code": 1,
+    "timed_out": false,
+    "stdout": "waiting for server to start.... done\nserver started\nTAP version 13\n# [Migrations] Applying 001_initial.sql\n# [Migrations] Applying 002_track_mtime.sql\n# [Migrations] Applying 003_metadata_credits_and_genres.sql\n# [Migrations] Applying 004_album_dedup_and_subsonic_features.sql\n# [Migrations] Applying 005_gonic_parity_features.sql\n# [Migrations] Applying 006_track_lyrics.sql\n# [Migrations] Applying 007_session_revocation_and_missing_tracks.sql\n# [Migrations] Applying 008_album_metadata_and_availability.sql\n# [Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql\n# [Migrations] Applying 010_track_identity_and_rename_reconciliation.sql\n# [Migrations] Applying 011_playback_event_id.sql\n# [Migrations] Applying 012_release_metadata.sql\n# [Migrations] Applying 013_lastfm.sql\n# [Migrations] Applying 014_lastfm_web_auth.sql\n# [Migrations] Applying 015_lastfm_defaults.sql\n# Database migrations up to date\n# Found 3 audio files (full scan)\n# Unchanged: 0, to process: 3\n# Processed 3/3\n# Covers extracted: 1/2\n# Scan complete in 0s. Processed 3 files.\n# Subtest: Opus scan duration and repair of unchanged zero-duration tracks\n    # Subtest: full scan stores actual duration for both Opus extensions and short files\n    not ok 1 - full scan stores actual duration for both Opus extensions and short files\n      ---\n      duration_ms: 86.247978\n      type: 'test'\n      location: '/home/pirkov/self/server/test/opus-duration.test.js:42:13'\n      failureType: 'testCodeFailure'\n      error: 'expected 30 seconds, got 0'\n      code: 'ERR_ASSERTION'\n      name: 'AssertionError'\n      expected: true\n      actual: false\n      operator: '=='\n      stack: |-\n        near (file:///home/pirkov/self/server/test/opus-duration.test.js:10:43)\n        TestContext.<anonymous> (file:///home/pirkov/self/server/test/opus-duration.test.js:46:33)\n        process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n        async Test.run (node:internal/test_runner/test:1409:7)\n        async TestContext.<anonymous> (file:///home/pirkov/self/server/test/opus-duration.test.js:42:5)\n        async Test.run (node:internal/test_runner/test:1409:7)\n        async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)\n      ...\n    # Subtest: single-file rescan stores actual duration\n    not ok 2 - single-file rescan stores actual duration\n      ---\n      duration_ms: 33.574564\n      type: 'test'\n      location: '/home/pirkov/self/server/test/opus-duration.test.js:50:13'\n      failureType: 'testCodeFailure'\n      error: 'expected 30 seconds, got 0'\n      code: 'ERR_ASSERTION'\n      name: 'AssertionError'\n      expected: true\n      actual: false\n      operator: '=='\n      stack: |-\n        near (file:///home/pirkov/self/server/test/opus-duration.test.js:10:43)\n        TestContext.<anonymous> (file:///home/pirkov/self/server/test/opus-duration.test.js:52:7)\n        process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n        async Test.run (node:internal/test_runner/test:1409:7)\n        async TestContext.<anonymous> (file:///home/pirkov/self/server/test/opus-duration.test.js:50:5)\n        async Test.run (node:internal/test_runner/test:1409:7)\n        async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)\n      ...\n# Found 3 audio files (incremental scan)\n# Unchanged: 3, to process: 0\n# Covers extracted: 0/2\n# Scan complete in 0s. Processed 0 files.\n    # Subtest: incremental scan repairs legacy zeros without changing files, IDs or user references\n    not ok 3 - incremental scan repairs legacy zeros without changing files, IDs or user references\n      ---\n      duration_ms: 29.185287\n      type: 'test'\n      location: '/home/pirkov/self/server/test/opus-duration.test.js:55:13'\n      failureType: 'testCodeFailure'\n      error: |-\n        repair both unchanged long files, skip healthy short Opus\n        \n        0 !== 2\n        \n      code: 'ERR_ASSERTION'\n      name: 'AssertionError'\n      expected: 2\n      actual: 0\n      operator: 'strictEqual'\n      stack: |-\n        TestContext.<anonymous> (file:///home/pirkov/self/server/test/opus-duration.test.js:66:14)\n        process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n        async Test.run (node:internal/test_runner/test:1409:7)\n        async TestContext.<anonymous> (file:///home/pirkov/self/server/test/opus-duration.test.js:55:5)\n        async Test.run (node:internal/test_runner/test:1409:7)\n        async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)\n      ...\n# Found 3 audio files (incremental scan)\n# Unchanged: 3, to process: 0\n# Covers extracted: 0/2\n# Scan complete in 0s. Processed 0 files.\n    # Subtest: healthy files stay skipped by subsequent incremental scans\n    ok 4 - healthy files stay skipped by subsequent incremental scans\n      ---\n      duration_ms: 23.551737\n      type: 'test'\n      ...\n    1..4\nnot ok 1 - Opus scan duration and repair of unchanged zero-duration tracks\n  ---\n  duration_ms: 608.85308\n  type: 'test'\n  location: '/home/pirkov/self/server/test/opus-duration.test.js:15:1'\n  failureType: 'subtestsFailed'\n  error: '3 subtests failed'\n  code: 'ERR_TEST_FAILURE'\n  ...\n# parser duration: default=undefined, explicit=30\n1..1\n# tests 5\n# suites 0\n# pass 1\n# fail 4\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 840.640218\n",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "secrets_redacted": true
+  },
+  "after": {
+    "schema_version": 1,
+    "label": "opus-duration-green",
+    "captured_at": "2026-11-13T18:09:58.108959+00:00",
+    "command": [
+      "bash",
+      "server/scripts/reproduce-opus-duration.sh"
+    ],
+    "cwd": "/home/pirkov/self",
+    "runtime": "Python 3.14.9 on Linux x86_64",
+    "duration_ms": 1317.568,
+    "exit_code": 0,
+    "timed_out": false,
+    "stdout": "waiting for server to start.... done\nserver started\nTAP version 13\n# [Migrations] Applying 001_initial.sql\n# [Migrations] Applying 002_track_mtime.sql\n# [Migrations] Applying 003_metadata_credits_and_genres.sql\n# [Migrations] Applying 004_album_dedup_and_subsonic_features.sql\n# [Migrations] Applying 005_gonic_parity_features.sql\n# [Migrations] Applying 006_track_lyrics.sql\n# [Migrations] Applying 007_session_revocation_and_missing_tracks.sql\n# [Migrations] Applying 008_album_metadata_and_availability.sql\n# [Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql\n# [Migrations] Applying 010_track_identity_and_rename_reconciliation.sql\n# [Migrations] Applying 011_playback_event_id.sql\n# [Migrations] Applying 012_release_metadata.sql\n# [Migrations] Applying 013_lastfm.sql\n# [Migrations] Applying 014_lastfm_web_auth.sql\n# [Migrations] Applying 015_lastfm_defaults.sql\n# Database migrations up to date\n# Found 3 audio files (full scan)\n# Unchanged: 0, to process: 3\n# Processed 3/3\n# Covers extracted: 1/2\n# Scan complete in 0s. Processed 3 files.\n# Subtest: Opus scan duration and repair of unchanged zero-duration tracks\n    # Subtest: full scan stores actual duration for both Opus extensions and short files\n    ok 1 - full scan stores actual duration for both Opus extensions and short files\n      ---\n      duration_ms: 70.561536\n      type: 'test'\n      ...\n    # Subtest: single-file rescan stores actual duration\n    ok 2 - single-file rescan stores actual duration\n      ---\n      duration_ms: 25.039325\n      type: 'test'\n      ...\n# Found 3 audio files (incremental scan)\n# Unchanged: 1, to process: 2\n# Processed 2/2\n# Covers extracted: 0/2\n# Scan complete in 0s. Processed 2 files.\n    # Subtest: incremental scan repairs legacy zeros without changing files, IDs or user references\n    ok 3 - incremental scan repairs legacy zeros without changing files, IDs or user references\n      ---\n      duration_ms: 71.738199\n      type: 'test'\n      ...\n# Found 3 audio files (incremental scan)\n# Unchanged: 3, to process: 0\n# Covers extracted: 0/2\n# Scan complete in 0s. Processed 0 files.\n    # Subtest: healthy files stay skipped by subsequent incremental scans\n    ok 4 - healthy files stay skipped by subsequent incremental scans\n      ---\n      duration_ms: 24.082781\n      type: 'test'\n      ...\n    1..4\nok 1 - Opus scan duration and repair of unchanged zero-duration tracks\n  ---\n  duration_ms: 404.316789\n  type: 'test'\n  ...\n# parser duration: default=undefined, explicit=30\n1..1\n# tests 5\n# suites 0\n# pass 5\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 557.125359\n",
+    "stderr": "",
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "secrets_redacted": true
+  },
+  "broader_checks": {
+    "server-suite": {
+      "schema_version": 1,
+      "label": "opus-duration-server-suite",
+      "captured_at": "2026-11-13T18:10:51.936441+00:00",
+      "command": [
+        "env",
+        "-u",
+        "TEST_DATABASE_URL",
+        "bash",
+        "server/scripts/test-postgres.sh"
+      ],
+      "cwd": "/home/pirkov/self",
+      "runtime": "Python 3.14.9 on Linux x86_64",
+      "duration_ms": 37339.758,
+      "exit_code": 0,
+      "timed_out": false,
+      "stdout": "waiting for server to start.... done\nserver started\n✔ embedded lyrics retain text and millisecond SYLT timestamps (48.380617ms)\n✔ upstream timeout includes a body stalled after successful headers (111.218869ms)\n[Migrations] Applying 001_initial.sql\n[Migrations] Applying 002_track_mtime.sql\n[Migrations] Applying 003_metadata_credits_and_genres.sql\n[Migrations] Applying 004_album_dedup_and_subsonic_features.sql\n[Migrations] Applying 005_gonic_parity_features.sql\n[Migrations] Applying 006_track_lyrics.sql\n[Migrations] Applying 007_session_revocation_and_missing_tracks.sql\n[Migrations] Applying 008_album_metadata_and_availability.sql\n[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql\n[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql\n[Migrations] Applying 011_playback_event_id.sql\n[Migrations] Applying 012_release_metadata.sql\n[Migrations] Applying 013_lastfm.sql\n[Migrations] Applying 014_lastfm_web_auth.sql\n[Migrations] Applying 015_lastfm_defaults.sql\nDatabase migrations up to date\nFound 2 audio files (full scan)\nUnchanged: 0, to process: 2\nProcessed 2/2\nCovers extracted: 0/2\nScan complete in 0s. Processed 2 files.\n▶ library identity, tag consistency, exact artist matching, playback retries and personal Subsonic lists\n  ✔ same directory never supplies identity for an unrelated new album (106.818982ms)\nFound 2 audio files (incremental scan)\nUnchanged: 2, to process: 0\nCovers extracted: 0/4\nScan complete in 0s. Processed 0 files.\n  ✔ tag edit refreshes album year/genre, invalidates lyrics, and remains correct after an incremental scan (70.278399ms)\n  ✔ a late lookup for old metadata cannot poison the corrected lyrics cache (22.266854ms)\n  ✔ a failure during album refresh rolls back both tags on disk and metadata in PostgreSQL (12.16341ms)\n  ✔ artist names preserve band punctuation and only whole participant credits match (68.300644ms)\n  ✔ retrying an acknowledged or lost playback event cannot double-count it (7.375264ms)\n  ✔ Subsonic frequent and recent use personal listening history rather than import dates (107.741452ms)\n✔ library identity, tag consistency, exact artist matching, playback retries and personal Subsonic lists (1004.207266ms)\n[Migrations] Applying 001_initial.sql\n[Migrations] Applying 002_track_mtime.sql\n[Migrations] Applying 003_metadata_credits_and_genres.sql\n[Migrations] Applying 004_album_dedup_and_subsonic_features.sql\n[Migrations] Applying 005_gonic_parity_features.sql\n[Migrations] Applying 006_track_lyrics.sql\n[Migrations] Applying 007_session_revocation_and_missing_tracks.sql\n[Migrations] Applying 008_album_metadata_and_availability.sql\n[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql\n[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql\n[Migrations] Applying 011_playback_event_id.sql\n[Migrations] Applying 012_release_metadata.sql\n[Migrations] Applying 013_lastfm.sql\n[Migrations] Applying 014_lastfm_web_auth.sql\n[Migrations] Applying 015_lastfm_defaults.sql\nDat\n... [output truncated] ...\n4.136961ms)\n[Migrations] Applying 001_initial.sql\n[Migrations] Applying 002_track_mtime.sql\n[Migrations] Applying 003_metadata_credits_and_genres.sql\n[Migrations] Applying 004_album_dedup_and_subsonic_features.sql\n[Migrations] Applying 005_gonic_parity_features.sql\n[Migrations] Applying 006_track_lyrics.sql\n[Migrations] Applying 007_session_revocation_and_missing_tracks.sql\n[Migrations] Applying 008_album_metadata_and_availability.sql\n[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql\n[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql\n[Migrations] Applying 011_playback_event_id.sql\n[Migrations] Applying 012_release_metadata.sql\n[Migrations] Applying 013_lastfm.sql\n[Migrations] Applying 014_lastfm_web_auth.sql\n[Migrations] Applying 015_lastfm_defaults.sql\nDatabase migrations up to date\n✔ Subsonic removal indexes refer to visible playlist entries and preserve missing entries (373.311243ms)\n[Migrations] Applying 001_initial.sql\n[Migrations] Applying 002_track_mtime.sql\n[Migrations] Applying 003_metadata_credits_and_genres.sql\n[Migrations] Applying 004_album_dedup_and_subsonic_features.sql\n[Migrations] Applying 005_gonic_parity_features.sql\n[Migrations] Applying 006_track_lyrics.sql\n[Migrations] Applying 007_session_revocation_and_missing_tracks.sql\n[Migrations] Applying 008_album_metadata_and_availability.sql\n[Migrations] Applying 009_case_insensitive_dedup_and_cleanup.sql\n[Migrations] Applying 010_track_identity_and_rename_reconciliation.sql\n[Migrations] Applying 011_playback_event_id.sql\n[Migrations] Applying 012_release_metadata.sql\n[Migrations] Applying 013_lastfm.sql\n[Migrations] Applying 014_lastfm_web_auth.sql\n[Migrations] Applying 015_lastfm_defaults.sql\nDatabase migrations up to date\n✔ rename migration never merges clean/explicit recordings from similar metadata alone (112.792202ms)\n✔ production rejects shipped secrets and default administrator passwords (1.232839ms)\n✔ untrusted forwarded IP cannot evade rate limiting; credentials never reach request logs (76.951837ms)\n✔ failed authentication is bounded across source IPs, expires, and does not block successful Subsonic streams (0.995252ms)\n✔ range streaming handles suffixes, clipping and unsatisfiable requests (0.769438ms)\n✔ a full failure cache cannot globally lock out legitimate accounts (28.355414ms)\n✔ mp3: staged writes preserve encoded audio, artwork and unrelated tags, and clear artist aliases (51.472216ms)\n✔ flac: staged writes preserve encoded audio, artwork and unrelated tags, and clear artist aliases (18.265436ms)\n✔ opus: staged writes preserve encoded audio, artwork and unrelated tags, and clear artist aliases (22.047863ms)\n✔ ogg: staged writes preserve encoded audio, artwork and unrelated tags, and clear artist aliases (10.002485ms)\n✔ m4a: staged writes preserve encoded audio, artwork and unrelated tags, and clear artist aliases (35.315906ms)\nℹ tests 160\nℹ suites 0\nℹ pass 160\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 36436.91031\n",
+      "stderr": "npm notice run tunecloud-server@0.1.0 test\nnpm notice run node --test --test-concurrency=1 test/*.test.js\n",
+      "stdout_truncated": true,
+      "stderr_truncated": false,
+      "secrets_redacted": true
+    },
+    "syntax": {
+      "schema_version": 1,
+      "label": "opus-duration-syntax",
+      "captured_at": "2026-11-13T18:10:16.676840+00:00",
+      "command": [
+        "npm",
+        "run",
+        "check",
+        "--prefix",
+        "server"
+      ],
+      "cwd": "/home/pirkov/self",
+      "runtime": "Python 3.14.9 on Linux x86_64",
+      "duration_ms": 2085.514,
+      "exit_code": 0,
+      "timed_out": false,
+      "stdout": "",
+      "stderr": "npm notice run tunecloud-server@0.1.0 check\nnpm notice run node scripts/check-syntax.js\n",
+      "stdout_truncated": false,
+      "stderr_truncated": false,
+      "secrets_redacted": true
+    }
+  },
+  "approvals": {
+    "tests": "User: окей разрешаю; named fixture, test and runner approved.",
+    "fix": "User separately requested надо пофиксить and later выдал фулл ацесс, продолжай фиксить."
+  }
+}

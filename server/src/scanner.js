@@ -529,7 +529,8 @@ async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = n
   };
 
   try {
-    const meta = await parseFile(filePath, { skipCovers: true });
+    // Ogg/Opus duration requires the final page; the default parser may stop early.
+    const meta = await parseFile(filePath, { skipCovers: true, duration: true });
     const common = meta.common || {};
     const format = meta.format || {};
     const artistName = cleanStr(common.artist);
@@ -1173,7 +1174,9 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       unmatchedFiles.push(f);
     }
 
-    if (full || !k || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null || !k.metadata || Object.keys(k.metadata).length === 0) {
+    // Repair durations persisted by scans that stopped before the final Ogg page.
+    const needsDurationRepair = k && /\.(ogg|opus)$/i.test(f.path) && !(k.duration > 0);
+    if (full || !k || needsDurationRepair || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null || !k.metadata || Object.keys(k.metadata).length === 0) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
     } else if (k.dev == null || k.ino == null || k.content_hash == null || k.audio_hash == null) {
