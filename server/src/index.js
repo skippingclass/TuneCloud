@@ -13,6 +13,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { validateSecurityConfig, trustedProxies, safeRequestSerializer } from './security.js';
+import { closeNativeScanner } from './native-scanner.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -180,6 +181,7 @@ async function main() {
     forceTimer.unref();
     try {
       await app.close();
+      await closeNativeScanner();
       await pool.end();
       clearTimeout(forceTimer);
       process.exit(0);

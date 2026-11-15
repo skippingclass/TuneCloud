@@ -2,6 +2,7 @@ import { splitArtists, readMetadata, saveTrackMetadata, albumReleaseKey } from '
 import fs from 'fs/promises';
 import path from 'path';
 import { computeFileHashes } from './file-fingerprints.js';
+import { getNativeScanner } from './native-scanner.js';
 import { glob } from 'glob';
 import { parseFile } from 'music-metadata';
 import { query, getClient } from './db.js';
@@ -60,7 +61,7 @@ export function extractAudioPayload(buf) {
   return buf.subarray(start, end);
 }
 
-export { computeFileHashes } from './file-fingerprints.js';
+export { computeFileHashes, computeFileHashesJs } from './file-fingerprints.js';
 
 function stripExt(str) {
   if (!str) return '';
@@ -509,7 +510,7 @@ async function writeBatch(client, items, touchedAlbumIds) {
   return written;
 }
 
-/** Parses tags and hashes into a flat record. Never throws: unreadable tags fall back to a basic entry. */
+/** Parses tags and hashes into a flat record. Unreadable tags fall back; native worker failures abort. */
 async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = null, nlink = 1, birthtimeMs = null }) {
   const fileName = path.basename(filePath);
   const { contentHash, audioHash, audioPayloadSize } = await computeFileHashes(filePath);
@@ -576,11 +577,20 @@ async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = n
   }
 }
 
-/** Lists audio files with size/mtime/inode identity in a single directory walk (stat follows symlinks). */
-async function listAudioFiles(musicDir) {
+/** Lists audio files with size/mtime/inode identity; failed native walks always abort the scan. */
+export async function listAudioFiles(musicDir) {
+  const result = await getNativeScanner().listAudioFiles(musicDir);
+  return result ?? listAudioFilesJs(musicDir);
+}
+
+/** JS reference and rollback implementation (stat follows symlinks). */
+export async function listAudioFilesJs(musicDir) {
   const physicalRoot = await fs.realpath(musicDir);
-  // Pass cwd instead of interpolating musicDir into the glob pattern so brackets like [FLAC] are treated literally
-  const entries = await glob('**/*', { cwd: musicDir, withFileTypes: true, stat: true, nodir: true, nocase: true });
+  const lexicalRoot = path.resolve(musicDir);
+  if (!(await fs.stat(physicalRoot)).isDirectory()) throw new Error(`Music root is not a directory: ${musicDir}`);
+  // A physical cwd lets glob walk a symlinked root; return paths under the
+  // caller's lexical root so mount aliases keep their existing track identity.
+  const entries = await glob('**/*', { cwd: physicalRoot, withFileTypes: true, stat: true, nodir: true, nocase: true });
 
   const candidates = entries.filter(e => isAudioFile(e.name) && (e.isFile() || e.isSymbolicLink()));
   const files = await mapLimit(candidates, PARSE_CONCURRENCY, async e => {
@@ -591,7 +601,7 @@ async function listAudioFiles(musicDir) {
       const stat = await fs.stat(physical);
       if (!stat.isFile()) return null;
       return {
-        path: e.fullpath(),
+        path: path.join(lexicalRoot, path.relative(physicalRoot, e.fullpath())),
         size: stat.size,
         mtime: stat.mtime,
         dev: toBigIntStr(stat.dev),

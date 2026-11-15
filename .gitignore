@@ -4,6 +4,7 @@ dist/
 spotify-keys.txt
 
 server/covers/
+server/native/scanner/target/
 
 *.log
 npm-debug.log*

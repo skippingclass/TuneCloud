@@ -31,6 +31,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql://tunecloud_test:test_only@localhost:5432/tunecloud_test
+      SCANNER_ENGINE: rust
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,10 +41,35 @@ jobs:
           cache-dependency-path: |
             server/package-lock.json
             client/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server/native/scanner
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path server/native/scanner/Cargo.toml --check
+      - name: Check Rust scanner
+        run: cargo check --locked --manifest-path server/native/scanner/Cargo.toml
+      - name: Test Rust scanner
+        run: cargo test --locked --manifest-path server/native/scanner/Cargo.toml
+      - name: Build release scanner for server tests
+        run: cargo build --release --locked --manifest-path server/native/scanner/Cargo.toml
       - run: npm ci --prefix server
       - run: npm ci --prefix client
       - run: npm run check --prefix server
       - run: npm test --prefix server
+      - name: Test JavaScript scanner rollback
+        run: npm test --prefix server
+        env:
+          SCANNER_ENGINE: js
+      - name: Build Alpine server and verify packaged scanner
+        run: |
+          docker build --tag tunecloud-server:ci ./server
+          docker run --rm --read-only --tmpfs /tmp:rw,nosuid,size=16m \
+            --volume "$PWD/server/test/fixtures/tags:/fixtures:ro" \
+            --volume "$PWD/server/scripts/verify-packaged-scanner.js:/app/scripts/verify-packaged-scanner.js:ro" \
+            --entrypoint node tunecloud-server:ci scripts/verify-packaged-scanner.js
       - run: npm test --prefix client
       - run: npm run build --prefix client
 

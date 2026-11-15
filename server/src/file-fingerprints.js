@@ -1,11 +1,17 @@
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
+import { getNativeScanner } from './native-scanner.js';
 
 const empty = () => ({ contentHash: null, audioHash: null, audioPayloadSize: 0 });
 
 // Hash actual bytes, not an embedded checksum or tag similarity. Keep memory
 // bounded even when multiple multi-gigabyte lossless files are scanned together.
 export async function computeFileHashes(filePath) {
+  const result = await getNativeScanner().computeFileHashes(filePath);
+  return result ?? computeFileHashesJs(filePath);
+}
+
+export async function computeFileHashesJs(filePath) {
   let file;
   try {
     file = await fs.open(filePath, 'r');

@@ -201,7 +201,11 @@ test('PostgreSQL integration: session security, playlists, tags, scanner and pag
         assert.equal((await query("SELECT id FROM tracks WHERE file_path LIKE $1", [path.join(process.env.MUSIC_DIR, 'escape') + '%'])).rowCount, 0);
         const legacy = (await query("INSERT INTO tracks(file_path,file_name) VALUES($1,'outside.mp3') RETURNING id", [path.join(process.env.MUSIC_DIR, 'escape-dir/outside.mp3')])).rows[0].id;
         assert.equal((await call('GET', `/api/stream/${legacy}`, owner)).statusCode, 403);
-      } finally { await fs.rm(outside, { recursive: true, force: true }); }
+      } finally {
+        await fs.rm(path.join(process.env.MUSIC_DIR, 'escape.mp3'), { force: true });
+        await fs.rm(path.join(process.env.MUSIC_DIR, 'escape-dir'), { force: true });
+        await fs.rm(outside, { recursive: true, force: true });
+      }
     });
 
     await t.test('track sorting orders the entire result before pagination and keeps unknown values last', async () => {

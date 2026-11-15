@@ -28,6 +28,9 @@ services:
       PORT: 4000
       HOST: 0.0.0.0
       NODE_ENV: production
+      SCANNER_ENGINE: ${SCANNER_ENGINE:-rust}
+      RUST_SCANNER_BIN: ${RUST_SCANNER_BIN:-/app/bin/tunecloud-scanner}
+      RUST_SCANNER_WORKERS: ${RUST_SCANNER_WORKERS:-4}
       JWT_SECRET: ${JWT_SECRET:?Set a unique random JWT_SECRET}
       # Restrict trust to the private container network; nginx discards supplied X-Forwarded-For.
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-uniquelocal}

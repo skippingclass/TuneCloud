@@ -7,7 +7,11 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
-    "check": "node scripts/check-syntax.js"
+    "check": "node scripts/check-syntax.js",
+    "scanner:build": "cargo build --release --locked --manifest-path native/scanner/Cargo.toml",
+    "scanner:test": "cargo test --locked --manifest-path native/scanner/Cargo.toml",
+    "test:scanner": "node --test test/native-scanner-parity.test.js",
+    "benchmark:scanner": "node scripts/benchmark-scanner.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.1",

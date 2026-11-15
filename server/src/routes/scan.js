@@ -232,7 +232,7 @@ export default async function scanRoutes(fastify) {
     const totalFiles = lastResult ? lastResult.total : null;
 
     return {
-      isScanning,
+      isScanning: isFullJobActive(),
       lastScanAt,
       lastResult,
       progress: scanProgress,

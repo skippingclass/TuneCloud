@@ -159,6 +159,7 @@ The browser connects to Nginx, which serves the React app and proxies `/api/` an
 | --- | --- |
 | Web interface | React 18, Vite 7, Tailwind CSS 4, Lucide |
 | API and storage | Node.js 22+, Fastify 5, PostgreSQL 16 |
+| Library directory listing and fingerprints | Rust helper, with a JavaScript fallback |
 | Media integrations | Subsonic / OpenSubsonic, lrc.red, LRCLIB, Spotify / Deezer |
 | Containers and deployment | Docker Compose, Nginx, Kubernetes (k3s), Helm, Argo CD |
 | Delivery and monitoring | GitHub Actions, GHCR, Prometheus, Grafana |
@@ -184,7 +185,7 @@ The browser connects to Nginx, which serves the React app and proxies `/api/` an
 
 ### Delivery and operations
 
-Pull requests and pushes to `main` run syntax checks, server tests against PostgreSQL, client tests, and a production frontend build. Successful pushes build and publish client and server images to GHCR using `latest` and short-SHA tags. A follow-up job updates the image references in the GitOps repository; Argo CD applies those changes to the cluster.
+Pull requests and pushes to `main` run Rust formatting, checks and tests, build the release scanner, then run syntax checks, server tests against PostgreSQL with both Rust and JavaScript, an Alpine container parity check, client tests, and a production frontend build. Successful pushes build and publish client and server images to GHCR using `latest` and short-SHA tags. A follow-up job updates the image references in the GitOps repository; Argo CD applies those changes to the cluster.
 
 Helm charts and Kubernetes configuration live in [TuneCloud-GitOps](https://github.com/skippingclass/TuneCloud-GitOps). Keep deployment secrets in the target environment. For a manual Helm installation:
 
@@ -217,6 +218,31 @@ npm run build
 ```
 
 Database integration tests require `TEST_DATABASE_URL` pointing to a separate test database. Alternatively, with PostgreSQL tools installed, run `bash server/scripts/test-postgres.sh` to create a disposable cluster. Integration suites are skipped when `TEST_DATABASE_URL` is absent from a normal `npm test` run.
+
+### Native scanner (phase 1)
+
+Rust handles directory listing and SHA-256 file fingerprints. Metadata parsing, database writes, scan reconciliation, and the HTTP server remain in JavaScript. No API or database migration is required.
+
+Docker builds the helper with a locked Cargo dependency graph and includes it at `/app/bin/tunecloud-scanner`. Containers default to `SCANNER_ENGINE=rust`, so a missing or failing helper fails the scan. Set `SCANNER_ENGINE=js` and restart the server to roll back. In local development, the default `auto` mode uses Rust when its binary is available and falls back to JavaScript otherwise. Set `RUST_SCANNER_BIN` to override the binary path, and `RUST_SCANNER_WORKERS` to an integer from 1 to 32 (default 4).
+
+Build locally with Rust 1.91.1+:
+
+```bash
+npm run scanner:build --prefix server
+npm run scanner:test --prefix server
+SCANNER_ENGINE=rust npm run test:scanner --prefix server
+```
+
+The helper keeps lexical paths, excludes hidden directories, and confines symlinks to the physical library root. Native directory traversal fails on unreadable directories or broken audio symlinks rather than accepting an incomplete listing. This is stricter than the JavaScript rollback backend, which can omit inaccessible entries.
+
+Compare the two backends without changing your library:
+
+```bash
+npm run benchmark:scanner --prefix server
+npm run benchmark:scanner --prefix server -- --path /absolute/path/to/music --rounds 3
+```
+
+The benchmark uses generated temporary files by default; `--path` is read-only. It forces JavaScript and Rust separately, verifies listing and fingerprint parity before reporting, and measures directory listing plus fingerprinting with the same fingerprint concurrency. Results use warm filesystem caches, exclude metadata and database work, and do not imply a speedup for a full scan.
 
 ### Refreshing screenshots
 
