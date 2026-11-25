@@ -1,5 +1,5 @@
 import fs from 'fs';
-import path from 'node:path';
+import { Transform } from 'node:stream';
 import { isWithinRoot } from './paths.js';
 import { streamOpened, streamClosed } from './metrics.js';
 
@@ -14,9 +14,96 @@ export const MIME_TYPES = {
   opus: 'audio/ogg',
 };
 
+const FLAC_MAGIC = Buffer.from('fLaC', 'ascii');
+const FLAC_BLOCK_PICTURE = 6;
+const FLAC_BLOCK_PADDING = 1;
+const MAX_FLAC_METADATA_BLOCKS = 128;
+
 export function contentTypeFor(format) {
   const f = (format || 'mp3').toLowerCase();
   return MIME_TYPES[f] || 'audio/mpeg';
+}
+
+/**
+ * Finds byte offsets of FLAC METADATA_BLOCK_PICTURE headers whose MIME length is 0.
+ * Chromium/Electron/FFmpeg demuxers reject FLAC streams with empty PICTURE MIME types;
+ * rewriting the block type byte (6 -> 1 PADDING, preserving the is-last bit) on the fly
+ * keeps file size, Content-Length, and Range byte offsets identical to disk.
+ */
+export async function findEmptyMimeFlacPictureOffsets(filePath, fileSize) {
+  if (fileSize < 12) return [];
+  let handle;
+  try {
+    handle = await fs.promises.open(filePath, 'r');
+    const magic = Buffer.allocUnsafe(4);
+    const { bytesRead: mRead } = await handle.read(magic, 0, 4, 0);
+    if (mRead !== 4 || !magic.equals(FLAC_MAGIC)) return [];
+
+    const offsets = [];
+    const header = Buffer.allocUnsafe(4);
+    const picHeader = Buffer.allocUnsafe(8);
+    let cursor = 4;
+
+    for (let i = 0; i < MAX_FLAC_METADATA_BLOCKS && cursor + 4 <= fileSize; i++) {
+      const { bytesRead: hRead } = await handle.read(header, 0, 4, cursor);
+      if (hRead !== 4) break;
+
+      const isLast = (header[0] & 0x80) !== 0;
+      const blockType = header[0] & 0x7f;
+      const blockLen = (header[1] << 16) | (header[2] << 8) | header[3];
+      if (blockType === 127 || (i === 0 && (blockType !== 0 || blockLen !== 34)) || cursor + 4 + blockLen > fileSize) {
+        break;
+      }
+
+      if (blockType === FLAC_BLOCK_PICTURE && blockLen >= 8) {
+        const { bytesRead: pRead } = await handle.read(picHeader, 0, 8, cursor + 4);
+        if (pRead === 8 && picHeader.readUInt32BE(4) === 0) {
+          offsets.push(cursor);
+        }
+      }
+
+      cursor += 4 + blockLen;
+      if (isLast) break;
+    }
+    return offsets;
+  } catch {
+    return [];
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function createAudioReadStream(filePath, { start, end }, patchOffsets) {
+  const streamOpts = start !== undefined ? { start, end } : undefined;
+  const fileStream = fs.createReadStream(filePath, streamOpts);
+  const streamStart = start ?? 0;
+  const streamEnd = end ?? Infinity;
+  const relevant = patchOffsets.filter(off => off >= streamStart && off <= streamEnd);
+  if (relevant.length === 0) return fileStream;
+
+  let pos = streamStart;
+  const patcher = new Transform({
+    transform(chunk, _encoding, callback) {
+      const chunkStart = pos;
+      const chunkEnd = pos + chunk.length;
+      pos = chunkEnd;
+      let out = chunk;
+      for (const off of relevant) {
+        if (off >= chunkStart && off < chunkEnd) {
+          if (out === chunk) out = Buffer.from(chunk);
+          const idx = off - chunkStart;
+          out[idx] = (out[idx] & 0x80) | FLAC_BLOCK_PADDING;
+        }
+      }
+      callback(null, out);
+    },
+  });
+
+  fileStream.on('error', err => patcher.destroy(err));
+  patcher.on('close', () => {
+    if (!fileStream.destroyed) fileStream.destroy();
+  });
+  return fileStream.pipe(patcher);
 }
 
 export function pipeWithTracking(fileStream, res) {
@@ -91,6 +178,10 @@ export async function sendAudioFile(req, reply, filePath, format) {
   const range = parseRange(req.headers.range, fileSize);
   const isHead = req.method === 'HEAD';
 
+  const patchOffsets = !isHead && (format || '').toLowerCase() === 'flac' && (!range || !range.invalid)
+    ? await findEmptyMimeFlacPictureOffsets(filePath, fileSize)
+    : [];
+
   reply.hijack();
 
   if (range?.invalid) {
@@ -112,7 +203,7 @@ export async function sendAudioFile(req, reply, filePath, format) {
       reply.raw.end();
       return;
     }
-    pipeWithTracking(fs.createReadStream(filePath, { start, end }), reply.raw);
+    pipeWithTracking(createAudioReadStream(filePath, { start, end }, patchOffsets), reply.raw);
     return;
   }
 
@@ -126,5 +217,5 @@ export async function sendAudioFile(req, reply, filePath, format) {
     reply.raw.end();
     return;
   }
-  pipeWithTracking(fs.createReadStream(filePath), reply.raw);
+  pipeWithTracking(createAudioReadStream(filePath, {}, patchOffsets), reply.raw);
 }
