@@ -1,9 +1,14 @@
-use crate::{fingerprints, listing};
+use crate::fingerprints::{
+    AudioBounds, BUFFER_SIZE, FileHashes, StreamFrame, hash_streamed_frames,
+    stream_file_for_hashing,
+};
+use crate::listing;
 use serde::Serialize;
 use serde_json::{Number, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub const DEFAULT_WORKERS: usize = 4;
@@ -42,16 +47,24 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, &'s
 }
 
 #[derive(Debug)]
+struct BatchItem {
+    index: usize,
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+#[derive(Debug)]
 enum Operation {
-    Hash,
-    List,
+    Hash(PathBuf),
+    HashBatch(Vec<BatchItem>),
+    List(PathBuf),
 }
 
 #[derive(Debug)]
 struct Request {
     id: Number,
     operation: Operation,
-    path: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,9 +80,32 @@ struct Success<T> {
 }
 
 #[derive(Serialize)]
+struct BatchHashesResult {
+    items: Vec<FileHashes>,
+}
+
+#[derive(Serialize)]
 struct Ready {
     ready: bool,
     protocol: u8,
+}
+
+type CpuJob = (AudioBounds, Receiver<StreamFrame>, SyncSender<FileHashes>);
+
+fn parse_valid_path(value: Option<&Value>) -> Option<PathBuf> {
+    value
+        .and_then(Value::as_str)
+        .filter(|path| !path.contains('\0'))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+fn parse_u64_opt(value: Option<&Value>) -> u64 {
+    match value {
+        Some(Value::String(s)) => s.parse::<u64>().unwrap_or(u64::MAX),
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(u64::MAX),
+        _ => u64::MAX,
+    }
 }
 
 fn parse_request(line: &[u8]) -> Result<Request, Failure> {
@@ -90,22 +126,39 @@ fn parse_request(line: &[u8]) -> Result<Request, Failure> {
     });
     let id = id.ok_or_else(|| invalid(None, "Request id must be a safe integer"))?;
     let operation = match value.get("op").and_then(Value::as_str) {
-        Some("hash") => Operation::Hash,
-        Some("list") => Operation::List,
+        Some("hash") => {
+            let path = parse_valid_path(value.get("path"))
+                .ok_or_else(|| invalid(Some(id.clone()), "Path must be absolute"))?;
+            Operation::Hash(path)
+        }
+        Some("hash_batch") => {
+            let arr = value
+                .get("files")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid(Some(id.clone()), "files must be an array"))?;
+            let mut items = Vec::with_capacity(arr.len());
+            for (index, entry) in arr.iter().enumerate() {
+                let path = parse_valid_path(entry.get("path"))
+                    .ok_or_else(|| invalid(Some(id.clone()), "Path must be absolute"))?;
+                let dev = parse_u64_opt(entry.get("dev"));
+                let ino = parse_u64_opt(entry.get("ino"));
+                items.push(BatchItem {
+                    index,
+                    path,
+                    dev,
+                    ino,
+                });
+            }
+            Operation::HashBatch(items)
+        }
+        Some("list") => {
+            let path = parse_valid_path(value.get("path"))
+                .ok_or_else(|| invalid(Some(id.clone()), "Path must be absolute"))?;
+            Operation::List(path)
+        }
         _ => return Err(invalid(Some(id), "Unsupported operation")),
     };
-    let path = value
-        .get("path")
-        .and_then(Value::as_str)
-        .filter(|path| !path.contains('\0'))
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .ok_or_else(|| invalid(Some(id.clone()), "Path must be absolute"))?;
-    Ok(Request {
-        id,
-        operation,
-        path,
-    })
+    Ok(Request { id, operation })
 }
 
 enum InputLine {
@@ -114,8 +167,6 @@ enum InputLine {
     Eof,
 }
 
-/// read_line() can allocate unbounded memory before a newline is received.
-/// Drain oversized input without retaining it, then resume at the next line.
 fn read_line_limited(reader: &mut impl BufRead) -> io::Result<InputLine> {
     let mut line = Vec::new();
     let mut oversized = false;
@@ -160,8 +211,13 @@ fn write_message(writer: &Mutex<impl Write>, message: &impl Serialize) -> io::Re
     writer.flush()
 }
 
-/// Bounded queue plus a fixed number of workers applies backpressure to stdin.
-/// A single writer lock protects whole NDJSON records, including large listings.
+/// HDD-aware Producer-Consumer pipeline:
+/// - Exactly ONE disk-reader thread (`scanner-hdd-io`) touches the filesystem,
+///   eliminating cross-thread platter head thrashing even when `workers > 1`.
+/// - A bounded pool of recycled 1 MiB buffers feeds `options.workers` CPU threads
+///   (`scanner-cpu-*`) so SHA-256 hashing overlaps with the next sequential disk read.
+/// - Single `hash` replies are flushed immediately as each file completes via a
+///   dedicated reply thread so long-lived idle stdin streams never stall a response.
 pub fn run_stdio<R: BufRead, W: Write + Send + 'static>(
     mut reader: R,
     writer: W,
@@ -178,55 +234,124 @@ pub fn run_stdio<R: BufRead, W: Write + Send + 'static>(
             protocol: 1,
         },
     )?;
-    let (sender, receiver) = mpsc::sync_channel::<Request>(options.workers * 2);
-    let receiver = Arc::new(Mutex::new(receiver));
-    let mut workers = Vec::with_capacity(options.workers);
+
+    let pool_buffers = (options.workers * 2).max(4);
+    let (buf_pool_tx, buf_pool_rx) = sync_channel::<Vec<u8>>(pool_buffers);
+    for _ in 0..pool_buffers {
+        let _ = buf_pool_tx.send(vec![0_u8; BUFFER_SIZE]);
+    }
+
+    let (cpu_tx, cpu_rx) = sync_channel::<CpuJob>(options.workers * 2);
+    let cpu_rx = Arc::new(Mutex::new(cpu_rx));
+    let mut cpu_workers = Vec::with_capacity(options.workers);
     for index in 0..options.workers {
-        let receiver = Arc::clone(&receiver);
-        let writer = Arc::clone(&writer);
-        workers.push(
+        let cpu_rx = Arc::clone(&cpu_rx);
+        let buf_pool_tx = buf_pool_tx.clone();
+        cpu_workers.push(
             thread::Builder::new()
-                .name(format!("scanner-{index}"))
-                .spawn(move || -> io::Result<()> {
+                .name(format!("scanner-cpu-{index}"))
+                .spawn(move || {
                     loop {
-                        let request = receiver
-                            .lock()
-                            .map_err(|_| io::Error::other("Protocol queue unavailable"))?
-                            .recv();
-                        let Ok(request) = request else {
-                            return Ok(());
+                        let job = cpu_rx.lock().ok().and_then(|rx| rx.recv().ok());
+                        let Some((bounds, frame_rx, result_tx)) = job else {
+                            return;
                         };
-                        match request.operation {
-                            Operation::Hash => write_message(
-                                &writer,
-                                &Success {
-                                    id: request.id,
-                                    result: fingerprints::compute_file_hashes(&request.path),
-                                },
-                            )?,
-                            Operation::List => match listing::list_audio_files(&request.path) {
-                                Ok(result) => write_message(
-                                    &writer,
-                                    &Success {
-                                        id: request.id,
-                                        result,
-                                    },
-                                )?,
-                                Err(_) => write_message(
-                                    &writer,
-                                    &Failure {
-                                        id: Some(request.id),
-                                        error: "Unable to list music directory safely",
-                                    },
-                                )?,
-                            },
-                        }
+                        let hashes = hash_streamed_frames(bounds, frame_rx, &buf_pool_tx);
+                        let _ = result_tx.send(hashes);
                     }
                 })?,
         );
     }
-    // This extra receiver must be dropped so a failed worker pool unblocks send.
-    drop(receiver);
+    drop(cpu_rx);
+
+    let (reply_tx, reply_rx) = sync_channel::<(Number, Receiver<FileHashes>)>(options.workers * 2);
+    let writer_reply = Arc::clone(&writer);
+    let reply_thread =
+        thread::Builder::new()
+            .name("scanner-reply".into())
+            .spawn(move || -> io::Result<()> {
+                while let Ok((id, rx)) = reply_rx.recv() {
+                    let result = rx.recv().unwrap_or_default();
+                    write_message(&writer_reply, &Success { id, result })?;
+                }
+                Ok(())
+            })?;
+
+    let (io_tx, io_rx) = sync_channel::<Request>(options.workers * 2);
+    let writer_io = Arc::clone(&writer);
+    let io_thread =
+        thread::Builder::new()
+            .name("scanner-hdd-io".into())
+            .spawn(move || -> io::Result<()> {
+                while let Ok(request) = io_rx.recv() {
+                    match request.operation {
+                        Operation::Hash(path) => {
+                            let (res_tx, res_rx) = sync_channel(1);
+                            stream_file_for_hashing(
+                                &path,
+                                &buf_pool_rx,
+                                &buf_pool_tx,
+                                &cpu_tx,
+                                res_tx,
+                            );
+                            reply_tx.send((request.id, res_rx)).map_err(|_| {
+                                io::Error::other("Protocol reply worker unavailable")
+                            })?;
+                        }
+                        Operation::HashBatch(mut batch) => {
+                            batch.sort_unstable_by_key(|item| (item.dev, item.ino));
+                            let mut items = vec![FileHashes::default(); batch.len()];
+                            let mut in_flight: Vec<(usize, Receiver<FileHashes>)> =
+                                Vec::with_capacity(options.workers * 2);
+                            for item in batch {
+                                let (res_tx, res_rx) = sync_channel(1);
+                                stream_file_for_hashing(
+                                    &item.path,
+                                    &buf_pool_rx,
+                                    &buf_pool_tx,
+                                    &cpu_tx,
+                                    res_tx,
+                                );
+                                in_flight.push((item.index, res_rx));
+                                if in_flight.len() >= options.workers * 2 {
+                                    let (index, rx) = in_flight.remove(0);
+                                    items[index] = rx.recv().unwrap_or_default();
+                                }
+                            }
+                            for (index, rx) in in_flight {
+                                items[index] = rx.recv().unwrap_or_default();
+                            }
+                            write_message(
+                                &writer_io,
+                                &Success {
+                                    id: request.id,
+                                    result: BatchHashesResult { items },
+                                },
+                            )?;
+                        }
+                        Operation::List(path) => match listing::list_audio_files(&path) {
+                            Ok(result) => write_message(
+                                &writer_io,
+                                &Success {
+                                    id: request.id,
+                                    result,
+                                },
+                            )?,
+                            Err(_) => write_message(
+                                &writer_io,
+                                &Failure {
+                                    id: Some(request.id),
+                                    error: "Unable to list music directory safely",
+                                },
+                            )?,
+                        },
+                    }
+                }
+                drop(reply_tx);
+                drop(cpu_tx);
+                Ok(())
+            })?;
+
     let input_result = (|| {
         loop {
             match read_line_limited(&mut reader)? {
@@ -243,7 +368,7 @@ pub fn run_stdio<R: BufRead, W: Write + Send + 'static>(
                         continue;
                     }
                     match parse_request(&line) {
-                        Ok(request) => sender
+                        Ok(request) => io_tx
                             .send(request)
                             .map_err(|_| io::Error::other("Protocol workers unavailable"))?,
                         Err(error) => write_message(&writer, &error)?,
@@ -252,22 +377,24 @@ pub fn run_stdio<R: BufRead, W: Write + Send + 'static>(
             }
         }
     })();
-    drop(sender);
-    let mut worker_result = Ok(());
-    for worker in workers {
-        let result = worker
-            .join()
-            .unwrap_or_else(|_| Err(io::Error::other("Protocol worker failed")));
-        if let Err(error) = result {
-            worker_result = Err(error);
-        }
+
+    drop(io_tx);
+    let io_result = io_thread
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("Protocol I/O worker failed")));
+    let reply_result = reply_thread
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("Protocol reply worker failed")));
+    for worker in cpu_workers {
+        let _ = worker.join();
     }
-    input_result.and(worker_result)
+    input_result.and(io_result).and(reply_result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fingerprints;
     use std::io::Cursor;
 
     #[derive(Clone)]
@@ -310,7 +437,10 @@ mod tests {
 
     #[test]
     fn invalid_requests_are_safe_and_correlated_when_possible() {
-        let lines = exchange(b"not JSON\n{\"id\":1,\"op\":\"unknown\",\"path\":\"/tmp\"}\n{\"id\":2,\"op\":\"hash\",\"path\":\"relative\"}\n{\"id\":1.5,\"op\":\"hash\",\"path\":\"/tmp\"}\n", 2);
+        let lines = exchange(
+            b"not JSON\n{\"id\":1,\"op\":\"unknown\",\"path\":\"/tmp\"}\n{\"id\":2,\"op\":\"hash\",\"path\":\"relative\"}\n{\"id\":1.5,\"op\":\"hash\",\"path\":\"/tmp\"}\n",
+            2,
+        );
         assert_eq!(lines[0], serde_json::json!({"ready":true,"protocol":1}));
         assert_eq!(lines.len(), 5);
         assert_eq!(lines[1]["id"], Value::Null);
@@ -356,6 +486,41 @@ mod tests {
             lines[1..]
                 .iter()
                 .all(|line| line["result"]["contentHash"].as_str().unwrap().len() == 64)
+        );
+    }
+
+    #[test]
+    fn batch_hashing_sorts_by_inode_and_preserves_caller_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let p1 = temp.path().join("one.mp3");
+        let p2 = temp.path().join("two.mp3");
+        std::fs::write(&p1, b"first-payload").unwrap();
+        std::fs::write(&p2, b"second-payload").unwrap();
+        let req = serde_json::json!({
+            "id": 7,
+            "op": "hash_batch",
+            "files": [
+                { "path": p1, "dev": "1", "ino": "999" },
+                { "path": p2, "dev": "1", "ino": "100" }
+            ]
+        });
+        let mut input = serde_json::to_vec(&req).unwrap();
+        input.push(b'\n');
+        let lines = exchange(&input, 2);
+        assert_eq!(lines.len(), 2);
+        let items = lines[1]["result"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0]["contentHash"].as_str(),
+            fingerprints::compute_file_hashes(&p1)
+                .content_hash
+                .as_deref()
+        );
+        assert_eq!(
+            items[1]["contentHash"].as_str(),
+            fingerprints::compute_file_hashes(&p2)
+                .content_hash
+                .as_deref()
         );
     }
 

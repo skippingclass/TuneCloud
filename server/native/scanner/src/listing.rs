@@ -34,23 +34,58 @@ pub fn list_audio_files(root: &Path) -> io::Result<AudioFiles> {
     }
     let physical_root = fs::canonicalize(root)?;
     let mut files = walk(root, &physical_root)?;
-    // Deterministic ordering also makes parity checks independent of filesystem
-    // directory enumeration order. Paths retain the caller's lexical root.
+    // Deterministic ordering makes parity checks independent of inode/readdir order.
     files.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     Ok(AudioFiles { files })
 }
 
-fn is_audio_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            ["mp3", "flac", "ogg", "wav", "m4a", "aac", "wma", "opus"]
-                .iter()
-                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
-        })
+fn has_audio_extension_bytes(name: &[u8]) -> bool {
+    let Some(dot) = name.iter().rposition(|&b| b == b'.') else {
+        return false;
+    };
+    let ext = &name[dot + 1..];
+    matches!(ext.len(), 3 | 4)
+        && [
+            b"mp3".as_slice(),
+            b"flac".as_slice(),
+            b"ogg".as_slice(),
+            b"wav".as_slice(),
+            b"m4a".as_slice(),
+            b"aac".as_slice(),
+            b"wma".as_slice(),
+            b"opus".as_slice(),
+        ]
+        .iter()
+        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
 }
 
-fn audio_file(path: &Path, physical_root: &Path) -> io::Result<Option<(AudioFile, Metadata)>> {
+#[cfg(not(unix))]
+fn is_audio_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| has_audio_extension_bytes(n.as_bytes()))
+}
+
+fn format_birthtime(millis: Option<f64>) -> Option<String> {
+    millis.and_then(|ms| {
+        (ms.is_finite() && ms > 0.0 && ms <= MAX_DATE_MS)
+            .then(|| format!("{:.0}", node_round_millis(ms)))
+    })
+}
+
+fn validate_file_fields(size: u64, nlink: u64, mtime_ms: f64) -> io::Result<()> {
+    if size > crate::MAX_SAFE_INTEGER {
+        return Err(io::Error::other("Music file is too large"));
+    }
+    if nlink > crate::MAX_SAFE_INTEGER || !mtime_ms.is_finite() || mtime_ms.abs() > MAX_DATE_MS {
+        return Err(io::Error::other("Music file metadata is not representable"));
+    }
+    Ok(())
+}
+
+/// Slow-path resolver used only for symlinks (or non-Linux platforms), preserving
+/// confinement checks against `physical_root`.
+fn audio_file_slow(path: &Path, physical_root: &Path) -> io::Result<Option<(AudioFile, Metadata)>> {
     let physical = fs::canonicalize(path)?;
     if !physical.starts_with(physical_root) {
         return Ok(None);
@@ -59,14 +94,11 @@ fn audio_file(path: &Path, physical_root: &Path) -> io::Result<Option<(AudioFile
     if !metadata.is_file() {
         return Ok(None);
     }
-    let path = path
+    let path_str = path
         .to_str()
         .ok_or_else(|| io::Error::other("Music path is not valid UTF-8"))?
         .to_owned();
     let size = metadata.len();
-    if size > crate::MAX_SAFE_INTEGER {
-        return Err(io::Error::other("Music file is too large"));
-    }
     #[cfg(unix)]
     let (dev, ino, nlink, mtime_ms) = (
         Some(metadata.dev().to_string()),
@@ -81,17 +113,11 @@ fn audio_file(path: &Path, physical_root: &Path) -> io::Result<Option<(AudioFile
         1,
         node_round_millis(signed_millis(metadata.modified()?)),
     );
-    if nlink > crate::MAX_SAFE_INTEGER || !mtime_ms.is_finite() || mtime_ms.abs() > MAX_DATE_MS {
-        return Err(io::Error::other("Music file metadata is not representable"));
-    }
-    let birthtime_ms = birthtime_millis(&physical, &metadata)?.and_then(|millis| {
-        // Math.round(x) is floor(x + 0.5); birthtime is omitted unless > 0.
-        (millis.is_finite() && millis > 0.0 && millis <= MAX_DATE_MS)
-            .then(|| format!("{:.0}", node_round_millis(millis)))
-    });
+    validate_file_fields(size, nlink, mtime_ms)?;
+    let birthtime_ms = format_birthtime(birthtime_millis(&physical, &metadata)?);
     Ok(Some((
         AudioFile {
-            path,
+            path: path_str,
             size,
             mtime_ms,
             dev,
@@ -101,6 +127,73 @@ fn audio_file(path: &Path, physical_root: &Path) -> io::Result<Option<(AudioFile
         },
         metadata,
     )))
+}
+
+#[cfg(target_os = "linux")]
+fn regular_audio_file_statx(
+    dirfd: &std::fs::File,
+    name: &std::ffi::CStr,
+    lexical: &Path,
+) -> io::Result<Option<AudioFile>> {
+    use rustix::fs::{AtFlags, FileType, StatxFlags, makedev, statat, statx};
+    use rustix::io::Errno;
+
+    let path_str = lexical
+        .to_str()
+        .ok_or_else(|| io::Error::other("Music path is not valid UTF-8"))?
+        .to_owned();
+
+    match statx(
+        dirfd,
+        name,
+        AtFlags::SYMLINK_NOFOLLOW,
+        StatxFlags::BASIC_STATS | StatxFlags::BTIME,
+    ) {
+        Ok(raw) => {
+            let kind = FileType::from_raw_mode(raw.stx_mode.into());
+            if kind != FileType::RegularFile {
+                return Ok(None);
+            }
+            let size = raw.stx_size;
+            let nlink = u64::from(raw.stx_nlink);
+            let mtime_ms = node_date_millis(raw.stx_mtime.tv_sec, i64::from(raw.stx_mtime.tv_nsec));
+            validate_file_fields(size, nlink, mtime_ms)?;
+            let dev = makedev(raw.stx_dev_major, raw.stx_dev_minor);
+            let btime = (raw.stx_mask & StatxFlags::BTIME.bits() != 0).then(|| {
+                raw.stx_btime.tv_sec as f64 * 1000.0 + f64::from(raw.stx_btime.tv_nsec) / 1e6
+            });
+            Ok(Some(AudioFile {
+                path: path_str,
+                size,
+                mtime_ms,
+                dev: Some(dev.to_string()),
+                ino: Some(raw.stx_ino.to_string()),
+                nlink,
+                birthtime_ms: format_birthtime(btime),
+            }))
+        }
+        Err(Errno::NOSYS | Errno::INVAL | Errno::PERM | Errno::OPNOTSUPP) => {
+            let raw = statat(dirfd, name, AtFlags::SYMLINK_NOFOLLOW)?;
+            if FileType::from_raw_mode(raw.st_mode) != FileType::RegularFile {
+                return Ok(None);
+            }
+            let size = raw.st_size as u64;
+            let nlink = raw.st_nlink as u64;
+            let mtime_ms = node_date_millis(raw.st_mtime as i64, raw.st_mtime_nsec as i64);
+            validate_file_fields(size, nlink, mtime_ms)?;
+            let ctime_btime = Some(raw.st_ctime as f64 * 1000.0 + raw.st_ctime_nsec as f64 / 1e6);
+            Ok(Some(AudioFile {
+                path: path_str,
+                size,
+                mtime_ms,
+                dev: Some((raw.st_dev as u64).to_string()),
+                ino: Some((raw.st_ino as u64).to_string()),
+                nlink,
+                birthtime_ms: format_birthtime(ctime_btime),
+            }))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -121,8 +214,6 @@ fn birthtime_millis(path: &Path, metadata: &Metadata) -> io::Result<Option<f64>>
     use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
     use rustix::io::Errno;
 
-    // Rust's musl Metadata::created() does not expose Linux birthtime. Query the
-    // same statx data libuv uses, independently of the libc or Rust target.
     match statx(
         CWD,
         path,
@@ -130,9 +221,6 @@ fn birthtime_millis(path: &Path, metadata: &Metadata) -> io::Result<Option<f64>>
         StatxFlags::BASIC_STATS | StatxFlags::BTIME,
     ) {
         Ok(raw) => birthtime_from_statx(&raw, metadata),
-        // Match libuv's stat fallback on older kernels, seccomp policies and
-        // filesystems which reject statx: these use ctime as birthtime. A
-        // successful statx without BTIME instead has no birthtime (zero in UV).
         Err(Errno::NOSYS | Errno::INVAL | Errno::PERM | Errno::OPNOTSUPP) => Ok(Some(
             metadata.ctime() as f64 * 1000.0 + metadata.ctime_nsec() as f64 / 1e6,
         )),
@@ -144,8 +232,6 @@ fn birthtime_millis(path: &Path, metadata: &Metadata) -> io::Result<Option<f64>>
 fn birthtime_from_statx(raw: &rustix::fs::Statx, metadata: &Metadata) -> io::Result<Option<f64>> {
     use rustix::fs::{StatxFlags, major, minor};
 
-    // Never attach the birthtime of a replacement encountered between stat
-    // and statx. The later dirfd checks independently validate the final path.
     if raw.stx_dev_major != major(metadata.dev())
         || raw.stx_dev_minor != minor(metadata.dev())
         || raw.stx_ino != metadata.ino()
@@ -168,14 +254,10 @@ fn birthtime_millis(_path: &Path, metadata: &Metadata) -> io::Result<Option<f64>
 
 #[cfg(unix)]
 fn node_date_millis(seconds: i64, nanoseconds: i64) -> f64 {
-    // Node's fs Stats dateFromMs explicitly Math.round()s before constructing
-    // Date, including negative times. See node/lib/internal/fs/utils.js.
     node_round_millis(seconds as f64 * 1000.0 + nanoseconds as f64 / 1e6)
 }
 
 fn node_round_millis(millis: f64) -> f64 {
-    // floor(x + 0.5) can round up twice immediately below a half-integer.
-    // Compare the fractional part to match JavaScript Math.round exactly.
     let floor = millis.floor();
     if millis - floor >= 0.5 {
         floor + 1.0
@@ -184,6 +266,7 @@ fn node_round_millis(millis: f64) -> f64 {
     }
 }
 
+#[cfg(not(unix))]
 fn verify_directory(path: &Path, physical_root: &Path, before: &Metadata) -> io::Result<()> {
     let physical = fs::canonicalize(path)?;
     let current = fs::metadata(path)?;
@@ -197,23 +280,58 @@ fn verify_directory(path: &Path, physical_root: &Path, before: &Metadata) -> io:
 fn walk(root: &Path, physical_root: &Path) -> io::Result<Vec<AudioFile>> {
     use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, Stat, open, openat, statat};
     use std::collections::HashSet;
-    use std::ffi::OsStr;
+    use std::ffi::{CString, OsStr};
     use std::fs::File;
     use std::os::unix::ffi::OsStrExt;
 
+    struct PendingEntry {
+        ino: u64,
+        kind: FileType,
+        name: CString,
+    }
+
     struct Frame {
         file: File,
-        entries: Dir,
+        entries: std::vec::IntoIter<PendingEntry>,
         lexical: PathBuf,
         before: Metadata,
     }
 
     fn frame(file: File, lexical: PathBuf) -> io::Result<Frame> {
         let before = file.metadata()?;
-        let entries = Dir::read_from(&file)?;
+        let dir = Dir::read_from(&file)?;
+        let mut pending = Vec::new();
+        for entry in dir {
+            let entry = entry?;
+            let bytes = entry.file_name().to_bytes();
+            if bytes.first() == Some(&b'.') {
+                continue;
+            }
+            let kind = entry.file_type();
+            // Zero-syscall pre-filter using getdents64 d_type: skip non-audio regular
+            // files (.jpg, .lrc, .cue, .log) and special files (FIFO/socket/device)
+            // without touching their inodes on HDD.
+            match kind {
+                FileType::RegularFile | FileType::Symlink => {
+                    if !has_audio_extension_bytes(bytes) {
+                        continue;
+                    }
+                }
+                FileType::Directory | FileType::Unknown => {}
+                _ => continue,
+            }
+            pending.push(PendingEntry {
+                ino: entry.ino(),
+                kind,
+                name: entry.file_name().to_owned(),
+            });
+        }
+        // Sort entries by inode number so subsequent statx/openat calls traverse
+        // the filesystem's inode table monotonically on spinning HDDs.
+        pending.sort_unstable_by_key(|e| e.ino);
         Ok(Frame {
             file,
-            entries,
+            entries: pending.into_iter(),
             lexical,
             before,
         })
@@ -232,49 +350,57 @@ fn walk(root: &Path, physical_root: &Path) -> io::Result<Vec<AudioFile>> {
     let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let file = File::from(open(physical_root, directory_flags, Mode::empty())?);
     let root_frame = frame(file, root.to_owned())?;
-    verify_directory(root, physical_root, &root_frame.before)?;
+    if fs::canonicalize(root)? != physical_root {
+        return Err(io::Error::other("Music directory changed during listing"));
+    }
     let mut seen = HashSet::from([(root_frame.before.dev(), root_frame.before.ino())]);
     let mut stack = vec![root_frame];
     let mut files = Vec::new();
+
     while let Some(current) = stack.last_mut() {
         let Some(entry) = current.entries.next() else {
             if !same_snapshot(&current.before, &current.file.metadata()?) {
                 return Err(io::Error::other("Music directory changed during listing"));
             }
-            verify_directory(&current.lexical, physical_root, &current.before)?;
             stack.pop();
             continue;
         };
-        let entry = entry?;
-        let name = entry.file_name();
-        // This also excludes . and ..; glob's default dot option is false.
-        if name.to_bytes().first() == Some(&b'.') {
-            continue;
-        }
+        let name = entry.name.as_c_str();
         let lexical = current.lexical.join(OsStr::from_bytes(name.to_bytes()));
-        let raw = statat(&current.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
-        let kind = FileType::from_raw_mode(raw.st_mode);
+
+        // Resolve Unknown d_type (rare filesystems like older XFS/NFS without ftype=1)
+        let kind = if entry.kind == FileType::Unknown {
+            FileType::from_raw_mode(statat(&current.file, name, AtFlags::SYMLINK_NOFOLLOW)?.st_mode)
+        } else {
+            entry.kind
+        };
+
         if kind == FileType::Directory {
-            // Open relative to the already-open parent and atomically refuse
-            // symlinks. A concurrent rename cannot redirect the directory walk.
             let child = File::from(openat(&current.file, name, directory_flags, Mode::empty())?);
             let next = frame(child, lexical)?;
-            if !raw_matches(&raw, &next.before)
-                || !seen.insert((next.before.dev(), next.before.ino()))
-            {
+            if !seen.insert((next.before.dev(), next.before.ino())) {
                 return Err(io::Error::other(
                     "Music directory changed or contains a cycle",
                 ));
             }
-            verify_directory(&next.lexical, physical_root, &next.before)?;
             stack.push(next);
-        } else if (kind == FileType::RegularFile || kind == FileType::Symlink)
-            && is_audio_file(&lexical)
-        {
-            // Outside symlinks are intentionally omitted. Broken/cyclic audio
-            // symlinks fail the listing, as do all traversal/stat errors, rather
-            // than returning a partial list which could mark tracks missing.
-            if let Some((item, metadata)) = audio_file(&lexical, physical_root)? {
+        } else if kind == FileType::RegularFile && has_audio_extension_bytes(name.to_bytes()) {
+            #[cfg(target_os = "linux")]
+            if let Some(item) = regular_audio_file_statx(&current.file, name, &lexical)? {
+                files.push(item);
+                continue;
+            }
+            // Fallback for non-Linux Unix or if replaced concurrently with a symlink
+            if let Some((item, metadata)) = audio_file_slow(&lexical, physical_root)? {
+                let target = statat(&current.file, name, AtFlags::empty())?;
+                if !raw_matches(&target, &metadata) {
+                    return Err(io::Error::other("Music file changed during listing"));
+                }
+                files.push(item);
+            }
+        } else if kind == FileType::Symlink && has_audio_extension_bytes(name.to_bytes()) {
+            let raw = statat(&current.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
+            if let Some((item, metadata)) = audio_file_slow(&lexical, physical_root)? {
                 let target = statat(&current.file, name, AtFlags::empty())?;
                 let link_after = statat(&current.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
                 if !raw_matches(&target, &metadata)
@@ -291,7 +417,7 @@ fn walk(root: &Path, physical_root: &Path) -> io::Result<Vec<AudioFile>> {
             }
         }
     }
-    // In particular catch replacing the root symlink while listing its target.
+
     if fs::canonicalize(root)? != physical_root {
         return Err(io::Error::other("Music directory changed during listing"));
     }
@@ -321,7 +447,7 @@ fn walk(root: &Path, physical_root: &Path) -> io::Result<Vec<AudioFile>> {
             if kind.is_dir() {
                 pending.push(path);
             } else if (kind.is_file() || kind.is_symlink()) && is_audio_file(&path) {
-                if let Some((item, _)) = audio_file(&path, physical_root)? {
+                if let Some((item, _)) = audio_file_slow(&path, physical_root)? {
                     files.push(item);
                 }
             }
@@ -507,8 +633,6 @@ mod tests {
         fs::write(temp.path().join("visible.mp3"), b"audio").unwrap();
         fs::write(denied.join("hidden-by-permissions.mp3"), b"audio").unwrap();
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o0)).unwrap();
-        // Root can bypass mode bits; test the error whenever the host enforces
-        // access restrictions (as it does for the normal server user).
         let access_denied = fs::read_dir(&denied).is_err();
         let result = list_audio_files(temp.path());
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o700)).unwrap();

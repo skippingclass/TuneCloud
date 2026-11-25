@@ -1,19 +1,35 @@
-import { splitArtists, readMetadata, saveTrackMetadata, albumReleaseKey } from './metadata.js';
+import {
+  splitArtists,
+  readMetadata,
+  prepareTrackMetadataBatch,
+  syncTrackCreditsAndMbids,
+  albumReleaseKey,
+} from './metadata.js';
 import fs from 'fs/promises';
 import path from 'path';
-import { computeFileHashes } from './file-fingerprints.js';
+import { computeFileHashes, computeFileHashesBatch } from './file-fingerprints.js';
 import { getNativeScanner } from './native-scanner.js';
 import { glob } from 'glob';
-import { parseFile } from 'music-metadata';
+import { parseFile, selectCover } from 'music-metadata';
 import { query, getClient } from './db.js';
-import { extractAllMissingCovers, deleteTrackCover, findAlbumsWithChangedFolderCovers } from './cover.js';
+import {
+  extractAllMissingCovers,
+  deleteTrackCover,
+  findAlbumsWithChangedFolderCovers,
+  beginScanCoverSession,
+  recordScannedTrackCover,
+  endScanCoverSession,
+} from './cover.js';
 import { isWithinRoot } from './paths.js';
 
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac', '.wma', '.opus']);
 const BATCH_SIZE = 300;
-const PARSE_CONCURRENCY = 12;
+const HDD_TAG_CONCURRENCY = 2;
+const LIST_STAT_CONCURRENCY = 4;
+const HASH_BACKFILL_BATCH = 128;
 const PG_INT_MAX = 2147483647;
 const MIN_UNIQUE_AUDIO_PAYLOAD_BYTES = 512;
+const MAX_INODE_SENTINEL = 9007199254740991n;
 
 export function extractAudioPayload(buf) {
   if (!Buffer.isBuffer(buf) || buf.length === 0) return Buffer.alloc(0);
@@ -61,7 +77,7 @@ export function extractAudioPayload(buf) {
   return buf.subarray(start, end);
 }
 
-export { computeFileHashes, computeFileHashesJs } from './file-fingerprints.js';
+export { computeFileHashes, computeFileHashesBatch, computeFileHashesJs } from './file-fingerprints.js';
 
 function stripExt(str) {
   if (!str) return '';
@@ -100,6 +116,21 @@ function cleanStr(v) {
   return s === '' ? null : s;
 }
 
+function sortFilesByInode(files) {
+  return [...files]
+    .map(file => ({
+      file,
+      dev: file.dev != null ? BigInt(file.dev) : MAX_INODE_SENTINEL,
+      ino: file.ino != null ? BigInt(file.ino) : MAX_INODE_SENTINEL,
+    }))
+    .sort((a, b) => (
+      a.dev < b.dev ? -1 : a.dev > b.dev ? 1 :
+      a.ino < b.ino ? -1 : a.ino > b.ino ? 1 :
+      a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0
+    ))
+    .map(entry => entry.file);
+}
+
 export function extractLeadingArtist(name) {
   if (!name) return null;
   return splitArtists(name)[0] || null;
@@ -122,7 +153,6 @@ function normalizeAlbumFolder(fp) {
  * Infers the album artist and compilation flag across a group of tracks from the same folder.
  */
 function inferAlbumArtist(tracks) {
-  // 1. Any track has an explicit albumartist tag?
   const albumArtistCounts = new Map();
   for (const t of tracks) {
     if (t.albumArtistName) {
@@ -143,7 +173,6 @@ function inferAlbumArtist(tracks) {
     return { name: canonical, compilation: isVA };
   }
 
-  // 2. Count frequency of exact artist names
   const counts = new Map();
   for (const t of tracks) {
     if (t.artistName) {
@@ -157,7 +186,6 @@ function inferAlbumArtist(tracks) {
     return { name: extractLeadingArtist(raw) || raw, compilation: false };
   }
 
-  // Find most frequent artist
   let bestArtist = null;
   let maxCount = 0;
   for (const [artist, count] of counts.entries()) {
@@ -167,12 +195,10 @@ function inferAlbumArtist(tracks) {
     }
   }
 
-  // If dominant artist covers at least 40% of the tracks or appears multiple times, use it
   if (bestArtist && (maxCount >= Math.ceil(tracks.length * 0.4) || maxCount >= 2)) {
     return { name: extractLeadingArtist(bestArtist) || bestArtist, compilation: false };
   }
 
-  // 3. Check leading artist prefix (e.g. "Sqwore, glaive" -> "Sqwore")
   const leadingCounts = new Map();
   for (const t of tracks) {
     const lead = extractLeadingArtist(t.artistName);
@@ -192,7 +218,6 @@ function inferAlbumArtist(tracks) {
     return { name: bestLead, compilation: false };
   }
 
-  // 4. Truly diverse artists -> compilation
   return { name: 'Various Artists', compilation: true };
 }
 
@@ -210,11 +235,11 @@ async function mapLimit(items, limit, fn) {
 }
 
 /**
- * Upserts a batch of parsed tracks (artists -> albums -> tracks) with one
- * round-trip per table. Must run inside a transaction on `client`.
- * Returns the ids of albums referenced by the batch.
+ * Upserts a batch of parsed tracks (artists -> albums -> tracks) in bulk,
+ * writing `metadata` JSONB and `composer` directly inside `INSERT INTO tracks`
+ * to avoid a second MVCC `UPDATE` pass over every row.
  */
-async function flushTrackBatch(client, items) {
+async function flushTrackBatch(client, items, { hasExistingTracks = true } = {}) {
   const touchedAlbumIds = new Set();
   if (items.length === 0) return touchedAlbumIds;
 
@@ -230,7 +255,6 @@ async function flushTrackBatch(client, items) {
     albumGroups.get(key).tracks.push(item);
   }
 
-  // Determine album artist and compilation flag for each album group
   const albumMetaList = [];
   for (const [groupKey, group] of albumGroups.entries()) {
     const inferred = inferAlbumArtist(group.tracks);
@@ -248,7 +272,6 @@ async function flushTrackBatch(client, items) {
     });
   }
 
-  // Pre-calculate canonical artist name and preserve full track artist credit
   for (const item of items) {
     item.canonicalArtistName = item.metadata?.artists?.[0]?.name || extractLeadingArtist(item.artistName) || item.artistName;
     item.trackArtistCredit = item.artistName || null;
@@ -256,7 +279,20 @@ async function flushTrackBatch(client, items) {
     item.parseError = Boolean(item.parseError);
   }
 
-  // 2. Artists: collect ONLY canonical artist names + inferred album artists (no comma/feat composites)
+  // Enrich `metadata` and `composer` (and insert any guest/composer artists with DO NOTHING)
+  // BEFORE inserting into `tracks` so each row is written once.
+  const validMetadataRecords = items
+    .filter(i => !i.parseError && i.metadata)
+    .map(i => ({ item: i, file_path: i.filePath, metadata: i.metadata }));
+  if (validMetadataRecords.length > 0) {
+    await prepareTrackMetadataBatch(client, validMetadataRecords);
+    for (const rec of validMetadataRecords) {
+      rec.item.metadata = rec.metadata;
+      rec.item.composer = rec.composer ?? null;
+    }
+  }
+
+  // 2. Canonical track & album artists
   const uniqueArtistMap = new Map();
   for (const name of [
     ...items.map((i) => i.canonicalArtistName).filter(Boolean),
@@ -271,88 +307,94 @@ async function flushTrackBatch(client, items) {
 
   const artistMap = new Map();
   if (allArtistNames.length > 0) {
-    const { rows: existingArtists } = await client.query(
+    await client.query(
+      `INSERT INTO artists (name)
+       SELECT DISTINCT ON (LOWER(n)) n FROM unnest($1::text[]) AS n
+       ON CONFLICT (LOWER(name)) DO NOTHING`,
+      [allArtistNames]
+    );
+    const { rows: resolvedArtists } = await client.query(
       `SELECT id, name FROM artists WHERE LOWER(name) = ANY($1::text[])`,
       [allArtistNames.map((n) => n.toLowerCase())]
     );
-    for (const r of existingArtists) {
+    for (const r of resolvedArtists) {
       artistMap.set(r.name.toLowerCase(), r.id);
       artistMap.set(r.name, r.id);
     }
-    const newArtistNames = allArtistNames.filter((n) => !artistMap.has(n.toLowerCase()));
-    if (newArtistNames.length > 0) {
-      const { rows: inserted } = await client.query(
-        `INSERT INTO artists (name)
-         SELECT n FROM unnest($1::text[]) AS n
-         ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name
-         RETURNING id, name`,
-        [newArtistNames]
-      );
-      for (const r of inserted) {
-        artistMap.set(r.name.toLowerCase(), r.id);
-        artistMap.set(r.name, r.id);
-      }
-    }
   }
 
-  // 3. Albums: look up existing albums in DB by folder_path OR (title, artist_id)
+  // 3. Albums: look up existing albums in DB (skipped entirely on a fresh empty DB)
   for (const a of albumMetaList) {
     a.artistId = a.albumArtistName ? (artistMap.get(a.albumArtistName.toLowerCase()) ?? artistMap.get(a.albumArtistName) ?? null) : null;
   }
 
-  const titles = albumMetaList.map((a) => a.title.toLowerCase());
-  const folders = albumMetaList.map((a) => a.normFolder.toLowerCase());
-  const artistIds = albumMetaList.map((a) => a.artistId).filter((id) => id !== null);
-
-  const { rows: existingAlbumRows } = await client.query(
-    `SELECT id, title, folder_path, artist_id, release_key,
-            ARRAY(SELECT t.file_path FROM tracks t WHERE t.album_id = albums.id AND t.missing_since IS NULL) AS member_paths
-     FROM albums
-     WHERE LOWER(folder_path) = ANY($1::text[])
-        OR (LOWER(title) = ANY($2::text[]) AND artist_id = ANY($3::int[]))
-        OR (LOWER(title) = ANY($2::text[]) AND artist_id IS NULL)`,
-    [folders, titles, artistIds]
-  );
-
   const albumMap = new Map();
 
-  for (const a of albumMetaList) {
-    const normFolderLower = a.normFolder.toLowerCase();
-    const titleLower = a.title.toLowerCase();
+  if (hasExistingTracks) {
+    const titles = albumMetaList.map((a) => a.title.toLowerCase());
+    const folders = albumMetaList.map((a) => a.normFolder.toLowerCase());
+    const artistIds = albumMetaList.map((a) => a.artistId).filter((id) => id !== null);
 
-    // Exact match on folder_path + title (case-insensitive) first
-    let match = existingAlbumRows.find(
-      (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower && r.title.toLowerCase() === titleLower
+    const { rows: existingAlbumRows } = await client.query(
+      `SELECT id, title, folder_path, artist_id, release_key,
+              ARRAY(SELECT t.file_path FROM tracks t WHERE t.album_id = albums.id AND t.missing_since IS NULL) AS member_paths
+       FROM albums
+       WHERE LOWER(folder_path) = ANY($1::text[])
+          OR (LOWER(title) = ANY($2::text[]) AND artist_id = ANY($3::int[]))
+          OR (LOWER(title) = ANY($2::text[]) AND artist_id IS NULL)`,
+      [folders, titles, artistIds]
     );
-    // A title change preserves album identity only when this group contains every live member.
-    if (!match) {
-      match = existingAlbumRows.find(
-        (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower &&
-          r.member_paths?.length > 0 && r.member_paths.every(file =>
-            albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))
+
+    const albumUpdates = [];
+    for (const a of albumMetaList) {
+      const normFolderLower = a.normFolder.toLowerCase();
+      const titleLower = a.title.toLowerCase();
+
+      let match = existingAlbumRows.find(
+        (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower && r.title.toLowerCase() === titleLower
       );
-    }
-    // If not found, match on title + artist_id (including NULL artist_id compilations/untagged albums moved across folders)
-    if (!match) {
-      match = existingAlbumRows.find(
-        (r) => r.title.toLowerCase() === titleLower && r.artist_id === a.artistId &&
-          ((r.release_key ?? '') === (a.releaseKey ?? '') || (!r.folder_path && !r.release_key) ||
-           (r.member_paths.length > 0 && r.member_paths.every(file => albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))))
-      );
+      if (!match) {
+        match = existingAlbumRows.find(
+          (r) => r.folder_path && r.folder_path.toLowerCase() === normFolderLower &&
+            r.member_paths?.length > 0 && r.member_paths.every(file =>
+              albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))
+        );
+      }
+      if (!match) {
+        match = existingAlbumRows.find(
+          (r) => r.title.toLowerCase() === titleLower && r.artist_id === a.artistId &&
+            ((r.release_key ?? '') === (a.releaseKey ?? '') || (!r.folder_path && !r.release_key) ||
+             (r.member_paths.length > 0 && r.member_paths.every(file => albumGroups.get(a.groupKey).tracks.some(track => track.filePath === file))))
+        );
+      }
+
+      if (match) {
+        if (match.folder_path !== a.normFolder || match.title !== a.title || (match.release_key ?? '') !== (a.releaseKey ?? '')) {
+          albumUpdates.push({ id: match.id, folder: a.normFolder, title: a.title, releaseKey: a.releaseKey ?? '' });
+          match.folder_path = a.normFolder;
+          match.title = a.title;
+          match.release_key = a.releaseKey ?? '';
+        }
+        albumMap.set(a.groupKey, match.id);
+      }
     }
 
-    if (match) {
-      if (match.folder_path !== a.normFolder || match.title !== a.title || (match.release_key ?? '') !== (a.releaseKey ?? '')) {
-        await client.query('UPDATE albums SET folder_path = $1, title = $2, release_key = $4 WHERE id = $3', [a.normFolder, a.title, match.id, a.releaseKey ?? '']);
-        match.folder_path = a.normFolder;
-        match.title = a.title;
-        match.release_key = a.releaseKey ?? '';
-      }
-      albumMap.set(a.groupKey, match.id);
+    if (albumUpdates.length > 0) {
+      await client.query(
+        `UPDATE albums AS al
+         SET folder_path = u.folder, title = u.title, release_key = u.release_key
+         FROM unnest($1::int[], $2::text[], $3::text[], $4::text[]) AS u(id, folder, title, release_key)
+         WHERE al.id = u.id`,
+        [
+          albumUpdates.map(u => u.id),
+          albumUpdates.map(u => u.folder),
+          albumUpdates.map(u => u.title),
+          albumUpdates.map(u => u.releaseKey),
+        ]
+      );
     }
   }
 
-  // Albums that need to be inserted or upserted (PG uses separate unique indexes for non-NULL vs NULL artist_id)
   const albumsToUpsert = albumMetaList.filter((a) => !albumMap.has(a.groupKey));
   if (albumsToUpsert.length > 0) {
     const withArtist = albumsToUpsert.filter((a) => a.artistId !== null);
@@ -400,31 +442,59 @@ async function flushTrackBatch(client, items) {
     }
   }
 
-  // 4. Tracks: each track links to canonical artistId, while preserving raw featuring credit
-  const cols = Array.from({ length: 23 }, () => []);
+  // 4. Single-pass `tracks` upsert (including `metadata` JSONB and `composer`)
+  const albumMetaByKey = new Map(albumMetaList.map(a => [a.groupKey, a]));
+  const cols = Array.from({ length: 25 }, () => []);
   for (const i of items) {
     const title = i.albumTitle || path.basename(normalizeAlbumFolder(i.folderPath));
     const normFolder = normalizeAlbumFolder(i.folderPath);
     const aKey = `${normFolder.toLowerCase()}\u0000${title.toLowerCase()}`;
     const albumId = albumMap.get(aKey) ?? null;
-    const albumMeta = albumMetaList.find((a) => a.groupKey === aKey);
+    const albumMeta = albumMetaByKey.get(aKey);
 
-    // Prefer album artist if track starts with/matches it, else canonical track artist
     const canonicalName = i.canonicalArtistName || albumMeta?.albumArtistName || null;
     const trackArtistId = canonicalName ? (artistMap.get(canonicalName.toLowerCase()) ?? artistMap.get(canonicalName) ?? null) : null;
 
     if (albumId) touchedAlbumIds.add(albumId);
     [
-      i.filePath, i.fileName, i.fileSize, i.duration, i.title,
-      trackArtistId, albumId, i.trackNumber, i.discNumber, i.genre,
-      i.year, i.bitrate, i.sampleRate, i.format, i.mtime, i.trackArtistCredit,
-      i.albumArtistCredit, i.parseError,
-      i.dev ?? null, i.ino ?? null, i.birthtimeMs ?? null, i.contentHash ?? null, i.audioHash ?? null,
+      i.filePath,
+      i.fileName,
+      i.fileSize,
+      i.duration,
+      i.title,
+      trackArtistId,
+      albumId,
+      i.trackNumber,
+      i.discNumber,
+      i.genre,
+      i.year,
+      i.bitrate,
+      i.sampleRate,
+      i.format,
+      i.mtime,
+      i.trackArtistCredit,
+      i.albumArtistCredit,
+      i.parseError,
+      i.dev ?? null,
+      i.ino ?? null,
+      i.birthtimeMs ?? null,
+      i.contentHash ?? null,
+      i.audioHash ?? null,
+      JSON.stringify(i.metadata || {}),
+      i.composer ?? null,
     ].forEach((v, idx) => cols[idx].push(v));
   }
 
-  await client.query(`DELETE FROM track_lyrics l USING tracks t
-    WHERE l.track_id = t.id AND t.file_path = ANY($1::text[])`, [items.filter(i => !i.parseError).map(i => i.filePath)]);
+  if (hasExistingTracks) {
+    const updatedPaths = items.filter(i => !i.parseError).map(i => i.filePath);
+    if (updatedPaths.length > 0) {
+      await client.query(
+        `DELETE FROM track_lyrics l USING tracks t
+         WHERE l.track_id = t.id AND t.file_path = ANY($1::text[])`,
+        [updatedPaths]
+      );
+    }
+  }
 
   await client.query(
     `INSERT INTO tracks (
@@ -432,14 +502,16 @@ async function flushTrackBatch(client, items) {
        artist_id, album_id, track_number, disc_number, genre,
        year, bitrate, sample_rate, format, mtime, track_artist_credit,
        album_artist_credit, parse_error,
-       dev, ino, birthtime_ms, content_hash, audio_hash
+       dev, ino, birthtime_ms, content_hash, audio_hash,
+       metadata, composer
      )
      SELECT * FROM unnest(
        $1::text[], $2::text[], $3::bigint[], $4::real[], $5::text[],
        $6::int[], $7::int[], $8::int[], $9::int[], $10::text[],
        $11::int[], $12::int[], $13::int[], $14::text[], $15::timestamptz[], $16::text[],
        $17::text[], $18::boolean[],
-       $19::bigint[], $20::bigint[], $21::bigint[], $22::text[], $23::text[]
+       $19::bigint[], $20::bigint[], $21::bigint[], $22::text[], $23::text[],
+       $24::jsonb[], $25::text[]
      )
      ON CONFLICT (file_path) DO UPDATE SET
        file_name = EXCLUDED.file_name,
@@ -465,17 +537,24 @@ async function flushTrackBatch(client, items) {
        birthtime_ms = EXCLUDED.birthtime_ms,
        content_hash = EXCLUDED.content_hash,
        audio_hash = EXCLUDED.audio_hash,
+       metadata = CASE WHEN EXCLUDED.parse_error THEN tracks.metadata ELSE EXCLUDED.metadata END,
+       composer = CASE WHEN EXCLUDED.parse_error THEN tracks.composer ELSE EXCLUDED.composer END,
        updated_at = NOW()`,
     cols
   );
 
-  await saveTrackMetadata(client, items.filter(i => !i.parseError).map(i => ({ file_path: i.filePath, metadata: i.metadata })));
+  if (validMetadataRecords.length > 0) {
+    await syncTrackCreditsAndMbids(client, validMetadataRecords);
+  }
   return touchedAlbumIds;
 }
 
-async function inTransaction(client, fn) {
+async function inTransaction(client, fn, { fastCommit = false } = {}) {
   await client.query('BEGIN');
   try {
+    if (fastCommit) {
+      await client.query("SET LOCAL synchronous_commit = 'off'");
+    }
     const result = await fn();
     await client.query('COMMIT');
     return result;
@@ -485,13 +564,9 @@ async function inTransaction(client, fn) {
   }
 }
 
-/**
- * Writes a batch in one transaction; if that fails (e.g. one bad row),
- * falls back to per-track transactions so a single file can't abort the scan.
- */
-async function writeBatch(client, items, touchedAlbumIds) {
+async function writeBatch(client, items, touchedAlbumIds, options = {}) {
   try {
-    const ids = await inTransaction(client, () => flushTrackBatch(client, items));
+    const ids = await inTransaction(client, () => flushTrackBatch(client, items, options), { fastCommit: true });
     ids.forEach((id) => touchedAlbumIds.add(id));
     return items.length;
   } catch (err) {
@@ -500,7 +575,7 @@ async function writeBatch(client, items, touchedAlbumIds) {
   let written = 0;
   for (const item of items) {
     try {
-      const ids = await inTransaction(client, () => flushTrackBatch(client, [item]));
+      const ids = await inTransaction(client, () => flushTrackBatch(client, [item], options), { fastCommit: true });
       ids.forEach((id) => touchedAlbumIds.add(id));
       written++;
     } catch (err) {
@@ -510,10 +585,20 @@ async function writeBatch(client, items, touchedAlbumIds) {
   return written;
 }
 
-/** Parses tags and hashes into a flat record. Unreadable tags fall back; native worker failures abort. */
-async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = null, nlink = 1, birthtimeMs = null }) {
+/**
+ * Parses tags (and captures embedded cover hashes in the same open handle).
+ * Full-file SHA-256 hashing is omitted on the hot indexing path (`withHashes = false`)
+ * so HDD heads read only header metadata rather than tens of gigabytes of audio.
+ */
+async function parseTrackFile(
+  { path: filePath, size, mtime, dev = null, ino = null, nlink = 1, birthtimeMs = null },
+  { withHashes = false, captureCover = false } = {}
+) {
   const fileName = path.basename(filePath);
-  const { contentHash, audioHash, audioPayloadSize } = await computeFileHashes(filePath);
+  const hashes = withHashes
+    ? await computeFileHashes(filePath)
+    : { contentHash: null, audioHash: null, audioPayloadSize: 0 };
+
   const base = {
     filePath,
     fileName,
@@ -536,14 +621,22 @@ async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = n
     ino,
     nlink,
     birthtimeMs,
-    contentHash,
-    audioHash,
-    audioPayloadSize,
+    contentHash: hashes.contentHash,
+    audioHash: hashes.audioHash,
+    audioPayloadSize: hashes.audioPayloadSize,
+    hashesComputed: withHashes,
   };
 
   try {
-    // Ogg/Opus duration requires the final page; the default parser may stop early.
-    const meta = await parseFile(filePath, { skipCovers: true, duration: true });
+    // Capture embedded artwork during the initial metadata read when running a scan
+    // so the cover stage never re-opens all 3,500 files on spinning HDDs.
+    const meta = await parseFile(filePath, { skipCovers: !captureCover, duration: true });
+    if (captureCover) {
+      recordScannedTrackCover(filePath, {
+        readable: true,
+        pic: selectCover(meta.common?.picture),
+      });
+    }
     const common = meta.common || {};
     const format = meta.format || {};
     const artistName = cleanStr(common.artist);
@@ -568,6 +661,9 @@ async function parseTrackFile({ path: filePath, size, mtime, dev = null, ino = n
       parseError: false,
     };
   } catch (err) {
+    if (captureCover) {
+      recordScannedTrackCover(filePath, { readable: false, pic: null });
+    }
     console.error(`Failed to parse metadata for ${filePath}: ${err.message}`);
     return {
       ...base,
@@ -588,14 +684,11 @@ export async function listAudioFilesJs(musicDir) {
   const physicalRoot = await fs.realpath(musicDir);
   const lexicalRoot = path.resolve(musicDir);
   if (!(await fs.stat(physicalRoot)).isDirectory()) throw new Error(`Music root is not a directory: ${musicDir}`);
-  // A physical cwd lets glob walk a symlinked root; return paths under the
-  // caller's lexical root so mount aliases keep their existing track identity.
   const entries = await glob('**/*', { cwd: physicalRoot, withFileTypes: true, stat: true, nodir: true, nocase: true });
 
   const candidates = entries.filter(e => isAudioFile(e.name) && (e.isFile() || e.isSymbolicLink()));
-  const files = await mapLimit(candidates, PARSE_CONCURRENCY, async e => {
+  const files = await mapLimit(candidates, LIST_STAT_CONCURRENCY, async e => {
     try {
-      // Parents may themselves be symlinks even when the entry is a regular file.
       const physical = await fs.realpath(e.fullpath());
       if (!isWithinRoot(physicalRoot, physical)) return null;
       const stat = await fs.stat(physical);
@@ -616,10 +709,6 @@ export async function listAudioFilesJs(musicDir) {
   return files.filter(Boolean);
 }
 
-/**
- * Merges a verified duplicate pair (missing original track row `originalId` + live duplicate row `duplicateLiveId`)
- * inside a transaction on `client`, preserving `originalId` and migrating all user references.
- */
 export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveId) {
   if (!originalId || !duplicateLiveId || originalId === duplicateLiveId) return false;
 
@@ -630,7 +719,6 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   const m = mRows[0];
   const l = lRows[0];
 
-  // Migrate user_starred_tracks
   await client.query(
     `UPDATE user_starred_tracks SET track_id = $1
      WHERE track_id = $2
@@ -642,13 +730,9 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query('DELETE FROM user_starred_tracks WHERE track_id = $1', [l.id]);
 
-  // Migrate playlist_tracks
   await client.query('UPDATE playlist_tracks SET track_id = $1 WHERE track_id = $2', [m.id, l.id]);
-
-  // Migrate play_history
   await client.query('UPDATE play_history SET track_id = $1 WHERE track_id = $2', [m.id, l.id]);
 
-  // Migrate user_ratings
   await client.query(
     `UPDATE user_ratings SET entity_id = $1
      WHERE entity_type = 'track' AND entity_id = $2
@@ -660,7 +744,6 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query("DELETE FROM user_ratings WHERE entity_type = 'track' AND entity_id = $1", [l.id]);
 
-  // Migrate bookmarks
   await client.query(
     `UPDATE bookmarks SET track_id = $1
      WHERE track_id = $2
@@ -672,14 +755,12 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query('DELETE FROM bookmarks WHERE track_id = $1', [l.id]);
 
-  // Migrate play_queues
   await client.query('UPDATE play_queues SET current_track_id = $1 WHERE current_track_id = $2', [m.id, l.id]);
   await client.query(
     'UPDATE play_queues SET track_ids = array_replace(track_ids, $2, $1) WHERE $2 = ANY(track_ids)',
     [m.id, l.id]
   );
 
-  // Migrate track_lyrics
   await client.query(
     `UPDATE track_lyrics SET track_id = $1
      WHERE track_id = $2
@@ -688,7 +769,6 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query('DELETE FROM track_lyrics WHERE track_id = $1', [l.id]);
 
-  // Migrate track_credits
   await client.query(
     `UPDATE track_credits SET track_id = $1
      WHERE track_id = $2
@@ -700,7 +780,6 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query('DELETE FROM track_credits WHERE track_id = $1', [l.id]);
 
-  // Migrate track_genres
   await client.query(
     `UPDATE track_genres SET track_id = $1
      WHERE track_id = $2
@@ -712,7 +791,6 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   );
   await client.query('DELETE FROM track_genres WHERE track_id = $1', [l.id]);
 
-  // Migrate Last.fm rules and outbox references
   await client.query(
     `UPDATE lastfm_track_rules SET track_id = $1
      WHERE track_id = $2
@@ -725,10 +803,8 @@ export async function mergeDuplicateTrackPair(client, originalId, duplicateLiveI
   await client.query('DELETE FROM lastfm_track_rules WHERE track_id = $1', [l.id]);
   await client.query('UPDATE lastfm_outbox SET track_id = $1 WHERE track_id = $2', [m.id, l.id]);
 
-  // Delete the duplicate live row first to release UNIQUE(file_path)
   await client.query('DELETE FROM tracks WHERE id = $1', [l.id]);
 
-  // Update the original track row with the live file path, metadata, and fingerprints
   await client.query(
     `UPDATE tracks SET
        file_path = $1,
@@ -840,11 +916,6 @@ function hasCompatibleBirthtime(oldBirthtimeMs, newBirthtimeMs) {
   return true;
 }
 
-/**
- * Reconciles already-created live + missing duplicate track pairs under `prefix`
- * ONLY when both rows have matching verified stored hashes/fingerprints and 1:1 uniqueness.
- * Never merges rows that lack stored hashes or rely on metadata similarity alone.
- */
 async function reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds) {
   const { rows: allRows } = await client.query(
     `SELECT id, file_path, file_name, file_size, duration, title, artist_id, album_id,
@@ -888,7 +959,6 @@ async function reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds) 
   const matchedLiveIds = new Set();
   const pairs = [];
 
-  // Pass 1: Exact verified full-file content_hash match (1:1 between missing and live)
   for (const m of missingRows) {
     if (!m.content_hash || Number(m.file_size) <= 0) continue;
     if (missingContentCounts.get(m.content_hash) !== 1) continue;
@@ -909,7 +979,6 @@ async function reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds) 
     pairs.push({ missing: m, live: l });
   }
 
-  // Pass 2: Durable (dev, ino) + verified audio_hash + birthtime guard (1:1 between missing and live)
   for (const m of missingRows) {
     if (matchedMissingIds.has(m.id)) continue;
     if (m.dev == null || m.ino == null || !m.audio_hash) continue;
@@ -964,169 +1033,295 @@ async function removeOrphans(client) {
   );
 }
 
+function computeAlbumSummary(allTracks) {
+  const availableTracks = allTracks.filter((t) => t.missing_since == null);
+  const tracks = availableTracks.length > 0 ? availableTracks : allTracks;
+
+  const maxDisc = Math.max(1, ...tracks.map((t) => Math.max(t.disc_number || 1, t.metadata?.discTotal || 1)));
+
+  const yearCounts = new Map();
+  for (const t of tracks) {
+    if (t.year != null) yearCounts.set(t.year, (yearCounts.get(t.year) || 0) + 1);
+  }
+  let consensusYear = null;
+  let maxYearCount = 0;
+  for (const [y, cnt] of yearCounts.entries()) {
+    if (cnt > maxYearCount) { maxYearCount = cnt; consensusYear = y; }
+  }
+
+  const genreCounts = new Map();
+  for (const t of tracks) {
+    if (t.genre != null && t.genre.trim() !== '') {
+      genreCounts.set(t.genre, (genreCounts.get(t.genre) || 0) + 1);
+    }
+  }
+  let consensusGenre = null;
+  let maxGenreCount = 0;
+  for (const [g, cnt] of genreCounts.entries()) {
+    if (cnt > maxGenreCount) { maxGenreCount = cnt; consensusGenre = g; }
+  }
+
+  const tracksForInference = tracks.map((t) => ({
+    albumArtistName: t.album_artist_credit,
+    artistName: t.artist_name || t.track_artist_credit,
+  }));
+  const inferred = inferAlbumArtist(tracksForInference);
+  const canonicalAlbumArtist = extractLeadingArtist(inferred.name) || inferred.name;
+  const compilation = inferred.compilation || tracks.some((t) => t.metadata?.compilation);
+  const mbid = tracks.find((t) => t.metadata?.albumMusicBrainzId)?.metadata.albumMusicBrainzId || null;
+
+  return { maxDisc, consensusYear, consensusGenre, canonicalAlbumArtist, compilation, mbid };
+}
+
 /**
- * Recomputes and updates album-level metadata across all tracks belonging to the album
- * in the database, preferring available tracks when present.
+ * Set-based album metadata refresh across all `touchedAlbumIds`: replaces ~7*N
+ * per-album round-trips (2,450 queries for 350 albums) with ~7 bulk queries total,
+ * while preserving transactional album-merge conflict resolution.
  */
 export async function refreshAlbumsMetadata(client, touchedAlbumIds, { transactionActive = false } = {}) {
   if (!touchedAlbumIds || touchedAlbumIds.size === 0) return;
-  const albumIds = [...touchedAlbumIds].filter(Boolean);
-  if (albumIds.length === 0) return;
+  let pendingIds = [...new Set([...touchedAlbumIds].filter(Boolean))];
+  if (pendingIds.length === 0) return;
 
-  for (const albumId of albumIds) {
-    const { rows: allTracks } = await client.query(
-      `SELECT t.id, t.title, t.track_number, t.disc_number, t.genre, t.year,
-              t.track_artist_credit, t.album_artist_credit, t.artist_id,
-              t.missing_since, t.metadata,
-              a.name AS artist_name
-       FROM tracks t
-       LEFT JOIN artists a ON t.artist_id = a.id
-       WHERE t.album_id = $1`,
-      [albumId]
-    );
+  while (pendingIds.length > 0) {
+    const batchIds = pendingIds;
+    pendingIds = [];
 
-    if (allTracks.length === 0) continue;
-    const availableTracks = allTracks.filter((t) => t.missing_since == null);
-    const tracks = availableTracks.length > 0 ? availableTracks : allTracks;
+    const [{ rows: allTrackRows }, { rows: albumRows }] = await Promise.all([
+      client.query(
+        `SELECT t.album_id, t.id, t.title, t.track_number, t.disc_number, t.genre, t.year,
+                t.track_artist_credit, t.album_artist_credit, t.artist_id,
+                t.missing_since, t.metadata,
+                a.name AS artist_name
+         FROM tracks t
+         LEFT JOIN artists a ON t.artist_id = a.id
+         WHERE t.album_id = ANY($1::int[])`,
+        [batchIds]
+      ),
+      client.query(
+        'SELECT id, title, artist_id, release_key FROM albums WHERE id = ANY($1::int[])',
+        [batchIds]
+      ),
+    ]);
 
-    // Disc count: max disc number across available tracks
-    const maxDisc = Math.max(1, ...tracks.map((t) => Math.max(t.disc_number || 1, t.metadata?.discTotal || 1)));
+    if (allTrackRows.length === 0 || albumRows.length === 0) break;
 
-    // Consensus year: most frequent non-null year
-    const yearCounts = new Map();
-    for (const t of tracks) {
-      if (t.year != null) {
-        yearCounts.set(t.year, (yearCounts.get(t.year) || 0) + 1);
-      }
+    const tracksByAlbum = new Map();
+    for (const row of allTrackRows) {
+      let arr = tracksByAlbum.get(row.album_id);
+      if (!arr) { arr = []; tracksByAlbum.set(row.album_id, arr); }
+      arr.push(row);
     }
-    let consensusYear = null;
-    let maxYearCount = 0;
-    for (const [y, cnt] of yearCounts.entries()) {
-      if (cnt > maxYearCount) {
-        maxYearCount = cnt;
-        consensusYear = y;
-      }
-    }
+    const albumById = new Map(albumRows.map(a => [a.id, a]));
 
-    // Consensus genre: most frequent non-null genre
-    const genreCounts = new Map();
-    for (const t of tracks) {
-      if (t.genre != null && t.genre.trim() !== '') {
-        genreCounts.set(t.genre, (genreCounts.get(t.genre) || 0) + 1);
+    const summaries = [];
+    const artistNamesSet = new Map();
+    for (const albumId of batchIds) {
+      const tracks = tracksByAlbum.get(albumId);
+      const alb = albumById.get(albumId);
+      if (!tracks || tracks.length === 0 || !alb) continue;
+      const summary = computeAlbumSummary(tracks);
+      if (summary.canonicalAlbumArtist) {
+        const lower = summary.canonicalAlbumArtist.toLowerCase();
+        if (!artistNamesSet.has(lower)) artistNamesSet.set(lower, summary.canonicalAlbumArtist);
       }
+      summaries.push({ albumId, alb, ...summary });
     }
-    let consensusGenre = null;
-    let maxGenreCount = 0;
-    for (const [g, cnt] of genreCounts.entries()) {
-      if (cnt > maxGenreCount) {
-        maxGenreCount = cnt;
-        consensusGenre = g;
-      }
-    }
+    if (summaries.length === 0) break;
 
-    // Inferred album artist & compilation flag across tracks
-    const tracksForInference = tracks.map((t) => ({
-      albumArtistName: t.album_artist_credit,
-      artistName: t.artist_name || t.track_artist_credit,
-    }));
-    const inferred = inferAlbumArtist(tracksForInference);
-    const canonicalAlbumArtist = extractLeadingArtist(inferred.name) || inferred.name;
-
-    // Find or insert canonical album artist in artists table (case-insensitive)
-    let artistId = null;
-    if (canonicalAlbumArtist) {
-      const artLookup = await client.query(
-        `SELECT id FROM artists WHERE LOWER(name) = LOWER($1) LIMIT 1`,
-        [canonicalAlbumArtist]
+    const artistIdByLower = new Map();
+    if (artistNamesSet.size > 0) {
+      const uniqueNames = [...artistNamesSet.values()];
+      await client.query(
+        `INSERT INTO artists (name)
+         SELECT DISTINCT ON (LOWER(n)) n FROM unnest($1::text[]) AS n
+         ON CONFLICT (LOWER(name)) DO NOTHING`,
+        [uniqueNames]
       );
-      if (artLookup.rows.length > 0) {
-        artistId = artLookup.rows[0].id;
-      } else {
-        const artRes = await client.query(
-          `INSERT INTO artists (name) VALUES ($1)
-           ON CONFLICT (LOWER(name)) DO UPDATE SET name = artists.name
-           RETURNING id`,
-          [canonicalAlbumArtist]
+      const { rows: artRows } = await client.query(
+        'SELECT id, name FROM artists WHERE LOWER(name) = ANY($1::text[])',
+        [uniqueNames.map(n => n.toLowerCase())]
+      );
+      for (const r of artRows) artistIdByLower.set(r.name.toLowerCase(), r.id);
+    }
+
+    for (const s of summaries) {
+      s.artistId = s.canonicalAlbumArtist
+        ? (artistIdByLower.get(s.canonicalAlbumArtist.toLowerCase()) ?? null)
+        : null;
+    }
+
+    // Check for rare `(LOWER(title), artistId, release_key)` merge conflicts in one query
+    const withArtist = summaries.filter(s => s.artistId != null);
+    const conflictMap = new Map(); // sourceAlbumId -> targetAlbumId
+    if (withArtist.length > 0) {
+      const { rows: conflicts } = await client.query(
+        `SELECT u.album_id AS source_id, al.id AS target_id
+         FROM unnest($1::int[], $2::text[], $3::int[], $4::text[])
+           AS u(album_id, title_lower, artist_id, release_key)
+         JOIN albums al
+           ON LOWER(al.title) = u.title_lower
+          AND al.artist_id = u.artist_id
+          AND al.release_key = u.release_key
+          AND al.id <> u.album_id`,
+        [
+          withArtist.map(s => s.albumId),
+          withArtist.map(s => s.alb.title.toLowerCase()),
+          withArtist.map(s => s.artistId),
+          withArtist.map(s => s.alb.release_key),
+        ]
+      );
+      for (const c of conflicts) {
+        if (!conflictMap.has(c.source_id) && !conflictMap.has(c.target_id)) {
+          conflictMap.set(c.source_id, c.target_id);
+        }
+      }
+    }
+
+    for (const [albumId, targetAlbumId] of conflictMap.entries()) {
+      const merge = async () => {
+        await client.query('SELECT id FROM albums WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [[albumId, targetAlbumId]]);
+        await client.query('UPDATE tracks SET album_id = $1 WHERE album_id = $2', [targetAlbumId, albumId]);
+        await client.query(`INSERT INTO user_starred_albums (user_id, album_id, created_at)
+          SELECT user_id, $1, created_at FROM user_starred_albums WHERE album_id = $2
+          ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
+        await client.query(`INSERT INTO user_ratings (user_id, entity_type, entity_id, rating, created_at)
+          SELECT user_id, entity_type, $1, rating, created_at FROM user_ratings
+          WHERE entity_type = 'album' AND entity_id = $2 ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
+        await client.query("DELETE FROM user_ratings WHERE entity_type = 'album' AND entity_id = $1", [albumId]);
+        await client.query(`INSERT INTO album_credits (album_id, artist_id, role, credited_as)
+          SELECT $1, artist_id, role, credited_as FROM album_credits WHERE album_id = $2
+          ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
+        await client.query(`UPDATE albums target SET cover_path = COALESCE(target.cover_path, source.cover_path)
+          FROM albums source WHERE target.id = $1 AND source.id = $2`, [targetAlbumId, albumId]);
+        await client.query('DELETE FROM albums WHERE id = $1', [albumId]);
+      };
+      if (transactionActive) await merge();
+      else await inTransaction(client, merge);
+      touchedAlbumIds.add(targetAlbumId);
+      pendingIds.push(targetAlbumId);
+    }
+
+    const readySummaries = summaries.filter(s => !conflictMap.has(s.albumId) && !pendingIds.includes(s.albumId));
+    if (readySummaries.length > 0) {
+      await client.query(
+        `UPDATE albums AS al
+         SET year = u.year,
+             genre = u.genre,
+             artist_id = u.artist_id,
+             compilation = u.compilation,
+             disc_count = u.disc_count,
+             musicbrainz_id = u.mbid
+         FROM unnest(
+           $1::int[], $2::int[], $3::text[], $4::int[], $5::boolean[], $6::int[], $7::text[]
+         ) AS u(id, year, genre, artist_id, compilation, disc_count, mbid)
+         WHERE al.id = u.id`,
+        [
+          readySummaries.map(s => s.albumId),
+          readySummaries.map(s => s.consensusYear),
+          readySummaries.map(s => s.consensusGenre),
+          readySummaries.map(s => s.artistId),
+          readySummaries.map(s => s.compilation),
+          readySummaries.map(s => s.maxDisc),
+          readySummaries.map(s => s.mbid),
+        ]
+      );
+
+      const credited = readySummaries.filter(s => s.artistId != null);
+      if (credited.length > 0) {
+        await client.query(
+          `DELETE FROM album_credits AS ac
+           USING unnest($1::int[], $2::int[]) AS u(album_id, artist_id)
+           WHERE ac.album_id = u.album_id AND ac.role = 'albumartist' AND ac.artist_id <> u.artist_id`,
+          [credited.map(s => s.albumId), credited.map(s => s.artistId)]
         );
-        artistId = artRes.rows[0]?.id || null;
+        await client.query(
+          `INSERT INTO album_credits (album_id, artist_id, role, credited_as)
+           SELECT u.album_id, u.artist_id, 'albumartist', u.credited_as
+           FROM unnest($1::int[], $2::int[], $3::text[]) AS u(album_id, artist_id, credited_as)
+           ON CONFLICT (album_id, artist_id, role) DO UPDATE SET credited_as = EXCLUDED.credited_as`,
+          [credited.map(s => s.albumId), credited.map(s => s.artistId), credited.map(s => s.canonicalAlbumArtist)]
+        );
       }
-    }
-
-    // Check existing album row
-    const { rows: albRows } = await client.query(
-      'SELECT id, title, artist_id, release_key FROM albums WHERE id = $1',
-      [albumId]
-    );
-    if (albRows.length === 0) continue;
-    const albumTitle = albRows[0].title;
-
-    // If another album already exists with (title, artistId), merge tracks to avoid conflict
-    if (artistId != null) {
-      const { rows: conflictRows } = await client.query(
-        'SELECT id FROM albums WHERE LOWER(title) = LOWER($1) AND artist_id = $2 AND id != $3 AND release_key=$4',
-        [albumTitle, artistId, albumId, albRows[0].release_key]
-      );
-      if (conflictRows.length > 0) {
-        const targetAlbumId = conflictRows[0].id;
-        const merge = async () => {
-          await client.query('SELECT id FROM albums WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [[albumId, targetAlbumId]]);
-          await client.query('UPDATE tracks SET album_id = $1 WHERE album_id = $2', [targetAlbumId, albumId]);
-          await client.query(`INSERT INTO user_starred_albums (user_id, album_id, created_at)
-            SELECT user_id, $1, created_at FROM user_starred_albums WHERE album_id = $2
-            ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
-          await client.query(`INSERT INTO user_ratings (user_id, entity_type, entity_id, rating, created_at)
-            SELECT user_id, entity_type, $1, rating, created_at FROM user_ratings
-            WHERE entity_type = 'album' AND entity_id = $2 ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
-          await client.query("DELETE FROM user_ratings WHERE entity_type = 'album' AND entity_id = $1", [albumId]);
-          await client.query(`INSERT INTO album_credits (album_id, artist_id, role, credited_as)
-            SELECT $1, artist_id, role, credited_as FROM album_credits WHERE album_id = $2
-            ON CONFLICT DO NOTHING`, [targetAlbumId, albumId]);
-          await client.query(`UPDATE albums target SET cover_path = COALESCE(target.cover_path, source.cover_path)
-            FROM albums source WHERE target.id = $1 AND source.id = $2`, [targetAlbumId, albumId]);
-          await client.query('DELETE FROM albums WHERE id = $1', [albumId]);
-        };
-        if (transactionActive) await merge();
-        else await inTransaction(client, merge);
-        touchedAlbumIds.add(targetAlbumId);
-        if (!albumIds.includes(targetAlbumId)) albumIds.push(targetAlbumId);
-        continue;
-      }
-    }
-
-    // Update album metadata
-    await client.query(
-      `UPDATE albums
-       SET year = $1,
-           genre = $2,
-           artist_id = $3,
-           compilation = $4,
-           disc_count = $5,
-           musicbrainz_id = $7
-       WHERE id = $6`,
-      [consensusYear, consensusGenre, artistId, inferred.compilation || tracks.some(t => t.metadata?.compilation), maxDisc, albumId, tracks.find(t => t.metadata?.albumMusicBrainzId)?.metadata.albumMusicBrainzId || null]
-    );
-
-    // Sync album_credits
-    if (artistId != null) {
-      await client.query(
-        `DELETE FROM album_credits WHERE album_id = $1 AND role = 'albumartist' AND artist_id != $2`,
-        [albumId, artistId]
-      );
-      await client.query(
-        `INSERT INTO album_credits (album_id, artist_id, role, credited_as)
-         VALUES ($1, $2, 'albumartist', $3)
-         ON CONFLICT (album_id, artist_id, role) DO UPDATE SET credited_as = EXCLUDED.credited_as`,
-        [albumId, artistId, canonicalAlbumArtist]
-      );
     }
   }
 }
 
 /**
+ * Computes full-file `content_hash` / `audio_hash` in `(dev, ino)` order via
+ * the native single-reader / multi-hasher pipeline and persists them in batches.
+ * Used synchronously by direct `scanDirectory` callers or asynchronously after
+ * background scans so tracks become playable within seconds on spinning HDDs.
+ */
+export async function backfillMissingTrackHashes(prefix, { shouldContinue = () => true } = {}) {
+  if (!shouldContinue()) return 0;
+  const { rows } = await query(
+    `SELECT id, file_path, file_size, dev, ino, mtime
+     FROM tracks
+     WHERE starts_with(file_path, $1)
+       AND missing_since IS NULL
+       AND file_size > 0
+       AND (content_hash IS NULL OR audio_hash IS NULL)`,
+    [prefix]
+  );
+  if (rows.length === 0) return 0;
+
+  const ordered = rows
+    .map(r => ({
+      ...r,
+      devBig: r.dev != null ? BigInt(r.dev) : MAX_INODE_SENTINEL,
+      inoBig: r.ino != null ? BigInt(r.ino) : MAX_INODE_SENTINEL,
+    }))
+    .sort((a, b) => (a.devBig < b.devBig ? -1 : a.devBig > b.devBig ? 1 : a.inoBig < b.inoBig ? -1 : a.inoBig > b.inoBig ? 1 : 0));
+
+  let updated = 0;
+  for (let i = 0; i < ordered.length; i += HASH_BACKFILL_BATCH) {
+    if (!shouldContinue()) break;
+    const slice = ordered.slice(i, i + HASH_BACKFILL_BATCH);
+    const hashes = await computeFileHashesBatch(
+      slice.map(r => ({ path: r.file_path, dev: r.dev, ino: r.ino }))
+    );
+    if (!shouldContinue()) break;
+
+    const ids = [];
+    const contentHashes = [];
+    const audioHashes = [];
+    const expectedPaths = [];
+    for (let j = 0; j < slice.length; j++) {
+      const h = hashes[j];
+      if (!h?.contentHash) continue;
+      ids.push(slice[j].id);
+      contentHashes.push(h.contentHash);
+      audioHashes.push(h.audioHash);
+      expectedPaths.push(slice[j].file_path);
+    }
+    if (ids.length > 0) {
+      await query(
+        `UPDATE tracks AS t
+         SET content_hash = u.content_hash,
+             audio_hash = u.audio_hash
+         FROM unnest($1::int[], $2::text[], $3::text[], $4::text[])
+           AS u(id, file_path, content_hash, audio_hash)
+         WHERE t.id = u.id AND t.file_path = u.file_path AND t.missing_since IS NULL`,
+        [ids, expectedPaths, contentHashes, audioHashes]
+      );
+      updated += ids.length;
+    }
+  }
+  return updated;
+}
+
+/**
  * Scans musicDir. Incremental by default: only files whose mtime differs from
  * the stored one (or that are new) are parsed. `full: true` re-parses everything.
+ * When `deferHashes: true` (used by background HTTP scans), full-file SHA-256
+ * hashing is moved out of the critical indexing window so libraries on spinning
+ * HDDs become available in seconds rather than minutes.
  */
-export async function scanDirectory(musicDir, { full = false, reextractCovers = false, onProgress = null } = {}) {
+export async function scanDirectory(
+  musicDir,
+  { full = false, reextractCovers = false, deferHashes = false, onProgress = null } = {}
+) {
   const root = path.resolve(musicDir);
   const rootStat = await fs.stat(root);
   if (!rootStat.isDirectory()) throw new Error('Music directory is unavailable');
@@ -1160,7 +1355,7 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
   const claimedKnownIds = new Set();
   const toProcess = [];
   const unmatchedFiles = [];
-  const needsIdentityBackfill = [];
+  const metadataIdentityUpdates = [];
   const touchedAlbumIds = new Set();
   const pathUpdates = [];
 
@@ -1195,13 +1390,12 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
       unmatchedFiles.push(f);
     }
 
-    // Repair durations persisted by scans that stopped before the final Ogg page.
     const needsDurationRepair = k && /\.(ogg|opus)$/i.test(f.path) && !(k.duration > 0);
     if (full || !k || needsDurationRepair || k.missing_since || !k.mtime || k.mtime.getTime() !== f.mtime.getTime() || k.album_id == null || !k.metadata || Object.keys(k.metadata).length === 0) {
       toProcess.push(f);
       if (k?.album_id) touchedAlbumIds.add(k.album_id);
-    } else if (k.dev == null || k.ino == null || k.content_hash == null || k.audio_hash == null) {
-      needsIdentityBackfill.push({ row: k, file: f });
+    } else if (k.dev == null || k.ino == null) {
+      metadataIdentityUpdates.push({ id: k.id, dev: f.dev, ino: f.ino, birthtimeMs: f.birthtimeMs });
     }
   }
 
@@ -1216,366 +1410,426 @@ export async function scanDirectory(musicDir, { full = false, reextractCovers = 
     unchanged,
   });
 
-  // Pre-parse unmatched files when there are unclaimed DB rows so we can safely reconcile renames
-  // before writing batches or marking old rows as missing.
-  const parsedCache = new Map();
-  const unclaimedRows = known.filter((r) => !claimedKnownIds.has(r.id));
-
-  if (unmatchedFiles.length > 0 && unclaimedRows.length > 0) {
-    const parsedUnmatched = await mapLimit(unmatchedFiles, PARSE_CONCURRENCY, parseTrackFile);
-    for (const p of parsedUnmatched) {
-      parsedCache.set(p.filePath, p);
-    }
-
-    // Frequency maps for strict 1:1 uniqueness & hardlink/duplicate protection
-    const diskDevInoCounts = new Map();
-    for (const f of files) {
-      if (f.dev != null && f.ino != null) {
-        const key = `${f.dev}:${f.ino}`;
-        diskDevInoCounts.set(key, (diskDevInoCounts.get(key) || 0) + 1);
-      }
-    }
-
-    const claimedRows = known.filter((r) => claimedKnownIds.has(r.id));
-    const liveContentHashSet = new Set(claimedRows.map((r) => r.content_hash).filter(Boolean));
-    const liveAudioHashSet = new Set(claimedRows.map((r) => r.audio_hash).filter(Boolean));
-    const liveDevInoSet = new Set(
-      claimedRows.filter((r) => r.dev != null && r.ino != null).map((r) => `${r.dev}:${r.ino}`)
-    );
-
-    const unmatchedContentCounts = new Map();
-    const unmatchedAudioCounts = new Map();
-    const unmatchedDevInoCounts = new Map();
-    for (const item of parsedUnmatched) {
-      if (item.contentHash) {
-        unmatchedContentCounts.set(item.contentHash, (unmatchedContentCounts.get(item.contentHash) || 0) + 1);
-      }
-      if (item.audioHash) {
-        unmatchedAudioCounts.set(item.audioHash, (unmatchedAudioCounts.get(item.audioHash) || 0) + 1);
-      }
-      if (item.dev != null && item.ino != null) {
-        const key = `${item.dev}:${item.ino}`;
-        unmatchedDevInoCounts.set(key, (unmatchedDevInoCounts.get(key) || 0) + 1);
-      }
-    }
-
-    const unclaimedContentCounts = new Map();
-    const unclaimedAudioCounts = new Map();
-    const unclaimedDevInoCounts = new Map();
-    for (const r of unclaimedRows) {
-      if (r.content_hash) {
-        unclaimedContentCounts.set(r.content_hash, (unclaimedContentCounts.get(r.content_hash) || 0) + 1);
-      }
-      if (r.audio_hash) {
-        unclaimedAudioCounts.set(r.audio_hash, (unclaimedAudioCounts.get(r.audio_hash) || 0) + 1);
-      }
-      if (r.dev != null && r.ino != null) {
-        const key = `${r.dev}:${r.ino}`;
-        unclaimedDevInoCounts.set(key, (unclaimedDevInoCounts.get(key) || 0) + 1);
-      }
-    }
-
-    const reconciledRowIds = new Set();
-    const reconciledPaths = new Set();
-
-    const recordRenameMatch = (oldRow, item) => {
-      reconciledRowIds.add(oldRow.id);
-      reconciledPaths.add(item.filePath);
-      claimedKnownIds.add(oldRow.id);
-      const oldFolder = path.dirname(oldRow.file_path);
-      const newFolder = path.dirname(item.filePath);
-      pathUpdates.push({
-        id: oldRow.id,
-        newPath: item.filePath,
-        newFileName: item.fileName,
-        albumId: oldRow.album_id,
-        oldFolder,
-        newFolder,
-      });
-      knownByPath.delete(oldRow.file_path);
-      oldRow.file_path = item.filePath;
-      oldRow.file_name = item.fileName;
-      oldRow.missing_since = null;
-      knownByPath.set(item.filePath, oldRow);
-      if (oldRow.album_id) touchedAlbumIds.add(oldRow.album_id);
-    };
-
-    // Pass 1: Verified full-file content_hash match (1:1 between unclaimed DB rows and unmatched files)
-    for (const item of parsedUnmatched) {
-      if (reconciledPaths.has(item.filePath)) continue;
-      if (!item.contentHash || Number(item.fileSize) <= 0) continue;
-      if (unmatchedContentCounts.get(item.contentHash) !== 1) continue;
-      if (unclaimedContentCounts.get(item.contentHash) !== 1) continue;
-
-      const oldRow = unclaimedRows.find(
-        (r) => !reconciledRowIds.has(r.id) && r.content_hash === item.contentHash
-      );
-      if (!oldRow) continue;
-      if (Number(oldRow.file_size) !== Number(item.fileSize)) continue;
-      if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
-
-      const sameInode =
-        oldRow.dev != null &&
-        oldRow.ino != null &&
-        item.dev != null &&
-        item.ino != null &&
-        String(oldRow.dev) === String(item.dev) &&
-        String(oldRow.ino) === String(item.ino) &&
-        item.nlink === 1 &&
-        !liveDevInoSet.has(`${item.dev}:${item.ino}`);
-
-      // Guard against matching a newly added duplicate copy of an already-live track
-      if (liveContentHashSet.has(item.contentHash) && !sameInode) continue;
-
-      const sameFolder =
-        normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
-        normalizeAlbumFolder(item.folderPath).toLowerCase();
-      if (sameFolder && !hasCompatibleSlot(oldRow, item)) continue;
-
-      recordRenameMatch(oldRow, item);
-    }
-
-    // Pass 2: Durable (dev, ino) match with inode-reuse & hardlink guards
-    for (const item of parsedUnmatched) {
-      if (reconciledPaths.has(item.filePath)) continue;
-      if (item.dev == null || item.ino == null) continue;
-      if (item.nlink !== 1) continue;
-
-      const devInoKey = `${item.dev}:${item.ino}`;
-      if (diskDevInoCounts.get(devInoKey) !== 1) continue;
-      if (liveDevInoSet.has(devInoKey)) continue;
-      if (unmatchedDevInoCounts.get(devInoKey) !== 1) continue;
-      if (unclaimedDevInoCounts.get(devInoKey) !== 1) continue;
-
-      const oldRow = unclaimedRows.find(
-        (r) =>
-          !reconciledRowIds.has(r.id) &&
-          r.dev != null &&
-          r.ino != null &&
-          `${r.dev}:${r.ino}` === devInoKey
-      );
-      if (!oldRow) continue;
-
-      // Inode reuse guards:
-      // 1. Birthtime must match when available
-      if (!hasCompatibleBirthtime(oldRow.birthtime_ms, item.birthtimeMs)) continue;
-      // 2. Content hash or stripped audio payload hash must match
-      const hashMatches =
-        (oldRow.content_hash != null && item.contentHash != null && oldRow.content_hash === item.contentHash) ||
-        (oldRow.audio_hash != null && item.audioHash != null && oldRow.audio_hash === item.audioHash);
-      if (!hashMatches) continue;
-      // 3. Compatible format, duration, and non-conflicting disc/track slot
-      if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
-      if (!hasCompatibleSlot(oldRow, item)) continue;
-
-      const sameFolder =
-        normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
-        normalizeAlbumFolder(item.folderPath).toLowerCase();
-      const bothHaveBirthtime = Number(oldRow.birthtime_ms || 0) > 0 && Number(item.birthtimeMs || 0) > 0;
-      if (!sameFolder && !bothHaveBirthtime) continue;
-
-      recordRenameMatch(oldRow, item);
-    }
-
-    // Pass 3: Globally-unique verified non-stub audio_hash match in the same folder & track slot
-    // (handles tag editors that rewrite the file to a new temp inode during rename + retag)
-    for (const item of parsedUnmatched) {
-      if (reconciledPaths.has(item.filePath)) continue;
-      if (!item.audioHash || (item.audioPayloadSize || 0) <= MIN_UNIQUE_AUDIO_PAYLOAD_BYTES) continue;
-      if (liveAudioHashSet.has(item.audioHash)) continue;
-      if (unmatchedAudioCounts.get(item.audioHash) !== 1) continue;
-      if (unclaimedAudioCounts.get(item.audioHash) !== 1) continue;
-
-      const oldRow = unclaimedRows.find(
-        (r) => !reconciledRowIds.has(r.id) && r.audio_hash === item.audioHash
-      );
-      if (!oldRow) continue;
-      if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
-      if (!hasCompatibleSlot(oldRow, item)) continue;
-
-      const sameFolder =
-        normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
-        normalizeAlbumFolder(item.folderPath).toLowerCase();
-      if (!sameFolder) continue;
-
-      recordRenameMatch(oldRow, item);
-    }
-  }
-
-  const staleRows = known.filter((r) => !claimedKnownIds.has(r.id) && !onDisk.has(r.file_path));
-  const staleIds = staleRows.map((r) => r.id);
-  for (const r of staleRows) {
-    if (r.album_id) touchedAlbumIds.add(r.album_id);
-  }
-
-  let processed = 0;
-  let removed = 0;
-  let parseErrors = 0;
-  let mergedPairs = 0;
-
-  const client = await getClient();
+  beginScanCoverSession();
   try {
-    if (pathUpdates.length > 0) {
-      await inTransaction(client, async () => {
-        for (const upd of pathUpdates) {
-          await client.query(
-            'UPDATE tracks SET file_path = $1, file_name = $2, missing_since = NULL WHERE id = $3',
-            [upd.newPath, upd.newFileName, upd.id]
-          );
-          if (upd.albumId && upd.oldFolder !== upd.newFolder) {
-            const normNewFolder = normalizeAlbumFolder(upd.newFolder);
-            await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [normNewFolder, upd.albumId]);
+    const parsedCache = new Map();
+    const unclaimedRows = known.filter((r) => !claimedKnownIds.has(r.id));
+
+    if (unmatchedFiles.length > 0 && unclaimedRows.length > 0) {
+      const orderedUnmatched = sortFilesByInode(unmatchedFiles);
+      const parsedUnmatched = await mapLimit(orderedUnmatched, HDD_TAG_CONCURRENCY, (f) =>
+        parseTrackFile(f, { withHashes: false, captureCover: true })
+      );
+
+      // Only compute full-file hashes synchronously for unmatched files that can
+      // plausibly match an unclaimed row (by size, dev:ino, or folder+format+duration).
+      const unclaimedSizes = new Set(unclaimedRows.filter(r => r.content_hash && Number(r.file_size) > 0).map(r => Number(r.file_size)));
+      const unclaimedDevInos = new Set(
+        unclaimedRows.filter(r => r.dev != null && r.ino != null && (r.content_hash || r.audio_hash)).map(r => `${r.dev}:${r.ino}`)
+      );
+      const unclaimedAudioFolders = new Set(
+        unclaimedRows.filter(r => r.audio_hash).map(r => normalizeAlbumFolder(path.dirname(r.file_path)).toLowerCase())
+      );
+
+      const hashCandidates = parsedUnmatched.filter(item => {
+        if (Number(item.fileSize) <= 0) return false;
+        if (unclaimedSizes.has(Number(item.fileSize))) return true;
+        if (item.dev != null && item.ino != null && unclaimedDevInos.has(`${item.dev}:${item.ino}`)) return true;
+        if (unclaimedAudioFolders.has(normalizeAlbumFolder(item.folderPath).toLowerCase())) return true;
+        return false;
+      });
+
+      if (hashCandidates.length > 0) {
+        const candidateHashes = await computeFileHashesBatch(
+          hashCandidates.map(item => ({ path: item.filePath, dev: item.dev, ino: item.ino }))
+        );
+        for (let idx = 0; idx < hashCandidates.length; idx++) {
+          const item = hashCandidates[idx];
+          const h = candidateHashes[idx];
+          item.contentHash = h.contentHash;
+          item.audioHash = h.audioHash;
+          item.audioPayloadSize = h.audioPayloadSize;
+          item.hashesComputed = true;
+        }
+      }
+
+      for (const p of parsedUnmatched) {
+        parsedCache.set(p.filePath, p);
+      }
+
+      const diskDevInoCounts = new Map();
+      for (const f of files) {
+        if (f.dev != null && f.ino != null) {
+          const key = `${f.dev}:${f.ino}`;
+          diskDevInoCounts.set(key, (diskDevInoCounts.get(key) || 0) + 1);
+        }
+      }
+
+      const claimedRows = known.filter((r) => claimedKnownIds.has(r.id));
+      const liveContentHashSet = new Set(claimedRows.map((r) => r.content_hash).filter(Boolean));
+      const liveAudioHashSet = new Set(claimedRows.map((r) => r.audio_hash).filter(Boolean));
+      const liveDevInoSet = new Set(
+        claimedRows.filter((r) => r.dev != null && r.ino != null).map((r) => `${r.dev}:${r.ino}`)
+      );
+
+      const unmatchedContentCounts = new Map();
+      const unmatchedAudioCounts = new Map();
+      const unmatchedDevInoCounts = new Map();
+      for (const item of parsedUnmatched) {
+        if (item.contentHash) {
+          unmatchedContentCounts.set(item.contentHash, (unmatchedContentCounts.get(item.contentHash) || 0) + 1);
+        }
+        if (item.audioHash) {
+          unmatchedAudioCounts.set(item.audioHash, (unmatchedAudioCounts.get(item.audioHash) || 0) + 1);
+        }
+        if (item.dev != null && item.ino != null) {
+          const key = `${item.dev}:${item.ino}`;
+          unmatchedDevInoCounts.set(key, (unmatchedDevInoCounts.get(key) || 0) + 1);
+        }
+      }
+
+      const unclaimedContentCounts = new Map();
+      const unclaimedAudioCounts = new Map();
+      const unclaimedDevInoCounts = new Map();
+      for (const r of unclaimedRows) {
+        if (r.content_hash) {
+          unclaimedContentCounts.set(r.content_hash, (unclaimedContentCounts.get(r.content_hash) || 0) + 1);
+        }
+        if (r.audio_hash) {
+          unclaimedAudioCounts.set(r.audio_hash, (unclaimedAudioCounts.get(r.audio_hash) || 0) + 1);
+        }
+        if (r.dev != null && r.ino != null) {
+          const key = `${r.dev}:${r.ino}`;
+          unclaimedDevInoCounts.set(key, (unclaimedDevInoCounts.get(key) || 0) + 1);
+        }
+      }
+
+      const reconciledRowIds = new Set();
+      const reconciledPaths = new Set();
+
+      const recordRenameMatch = (oldRow, item) => {
+        reconciledRowIds.add(oldRow.id);
+        reconciledPaths.add(item.filePath);
+        claimedKnownIds.add(oldRow.id);
+        const oldFolder = path.dirname(oldRow.file_path);
+        const newFolder = path.dirname(item.filePath);
+        pathUpdates.push({
+          id: oldRow.id,
+          newPath: item.filePath,
+          newFileName: item.fileName,
+          albumId: oldRow.album_id,
+          oldFolder,
+          newFolder,
+        });
+        knownByPath.delete(oldRow.file_path);
+        oldRow.file_path = item.filePath;
+        oldRow.file_name = item.fileName;
+        oldRow.missing_since = null;
+        knownByPath.set(item.filePath, oldRow);
+        if (oldRow.album_id) touchedAlbumIds.add(oldRow.album_id);
+      };
+
+      // Pass 1: Verified full-file content_hash match (1:1 between unclaimed DB rows and unmatched files)
+      for (const item of parsedUnmatched) {
+        if (reconciledPaths.has(item.filePath)) continue;
+        if (!item.contentHash || Number(item.fileSize) <= 0) continue;
+        if (unmatchedContentCounts.get(item.contentHash) !== 1) continue;
+        if (unclaimedContentCounts.get(item.contentHash) !== 1) continue;
+
+        const oldRow = unclaimedRows.find(
+          (r) => !reconciledRowIds.has(r.id) && r.content_hash === item.contentHash
+        );
+        if (!oldRow) continue;
+        if (Number(oldRow.file_size) !== Number(item.fileSize)) continue;
+        if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
+
+        const sameInode =
+          oldRow.dev != null &&
+          oldRow.ino != null &&
+          item.dev != null &&
+          item.ino != null &&
+          String(oldRow.dev) === String(item.dev) &&
+          String(oldRow.ino) === String(item.ino) &&
+          item.nlink === 1 &&
+          !liveDevInoSet.has(`${item.dev}:${item.ino}`);
+
+        if (liveContentHashSet.has(item.contentHash) && !sameInode) continue;
+
+        const sameFolder =
+          normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
+          normalizeAlbumFolder(item.folderPath).toLowerCase();
+        if (sameFolder && !hasCompatibleSlot(oldRow, item)) continue;
+
+        recordRenameMatch(oldRow, item);
+      }
+
+      // Pass 2: Durable (dev, ino) match with inode-reuse & hardlink guards
+      for (const item of parsedUnmatched) {
+        if (reconciledPaths.has(item.filePath)) continue;
+        if (item.dev == null || item.ino == null) continue;
+        if (item.nlink !== 1) continue;
+
+        const devInoKey = `${item.dev}:${item.ino}`;
+        if (diskDevInoCounts.get(devInoKey) !== 1) continue;
+        if (liveDevInoSet.has(devInoKey)) continue;
+        if (unmatchedDevInoCounts.get(devInoKey) !== 1) continue;
+        if (unclaimedDevInoCounts.get(devInoKey) !== 1) continue;
+
+        const oldRow = unclaimedRows.find(
+          (r) =>
+            !reconciledRowIds.has(r.id) &&
+            r.dev != null &&
+            r.ino != null &&
+            `${r.dev}:${r.ino}` === devInoKey
+        );
+        if (!oldRow) continue;
+
+        if (!hasCompatibleBirthtime(oldRow.birthtime_ms, item.birthtimeMs)) continue;
+        const hashMatches =
+          (oldRow.content_hash != null && item.contentHash != null && oldRow.content_hash === item.contentHash) ||
+          (oldRow.audio_hash != null && item.audioHash != null && oldRow.audio_hash === item.audioHash);
+        if (!hashMatches) continue;
+        if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
+        if (!hasCompatibleSlot(oldRow, item)) continue;
+
+        const sameFolder =
+          normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
+          normalizeAlbumFolder(item.folderPath).toLowerCase();
+        const bothHaveBirthtime = Number(oldRow.birthtime_ms || 0) > 0 && Number(item.birthtimeMs || 0) > 0;
+        if (!sameFolder && !bothHaveBirthtime) continue;
+
+        recordRenameMatch(oldRow, item);
+      }
+
+      // Pass 3: Globally-unique verified non-stub audio_hash match in the same folder & track slot
+      for (const item of parsedUnmatched) {
+        if (reconciledPaths.has(item.filePath)) continue;
+        if (!item.audioHash || (item.audioPayloadSize || 0) <= MIN_UNIQUE_AUDIO_PAYLOAD_BYTES) continue;
+        if (liveAudioHashSet.has(item.audioHash)) continue;
+        if (unmatchedAudioCounts.get(item.audioHash) !== 1) continue;
+        if (unclaimedAudioCounts.get(item.audioHash) !== 1) continue;
+
+        const oldRow = unclaimedRows.find(
+          (r) => !reconciledRowIds.has(r.id) && r.audio_hash === item.audioHash
+        );
+        if (!oldRow) continue;
+        if (!hasCompatibleFormatAndDuration(oldRow, item)) continue;
+        if (!hasCompatibleSlot(oldRow, item)) continue;
+
+        const sameFolder =
+          normalizeAlbumFolder(path.dirname(oldRow.file_path)).toLowerCase() ===
+          normalizeAlbumFolder(item.folderPath).toLowerCase();
+        if (!sameFolder) continue;
+
+        recordRenameMatch(oldRow, item);
+      }
+    }
+
+    const staleRows = known.filter((r) => !claimedKnownIds.has(r.id) && !onDisk.has(r.file_path));
+    const staleIds = staleRows.map((r) => r.id);
+    for (const r of staleRows) {
+      if (r.album_id) touchedAlbumIds.add(r.album_id);
+    }
+
+    let processed = 0;
+    let removed = 0;
+    let parseErrors = 0;
+    let mergedPairs = 0;
+
+    // Sort `toProcess` by physical `(dev, ino)` so tag reads sweep monotonically across HDD platters.
+    const orderedToProcess = sortFilesByInode(toProcess);
+    let hasExistingTracks = known.length > 0;
+
+    const client = await getClient();
+    try {
+      if (pathUpdates.length > 0) {
+        await inTransaction(client, async () => {
+          for (const upd of pathUpdates) {
+            await client.query(
+              'UPDATE tracks SET file_path = $1, file_name = $2, missing_since = NULL WHERE id = $3',
+              [upd.newPath, upd.newFileName, upd.id]
+            );
+            if (upd.albumId && upd.oldFolder !== upd.newFolder) {
+              const normNewFolder = normalizeAlbumFolder(upd.newFolder);
+              await client.query('UPDATE albums SET folder_path = $1 WHERE id = $2', [normNewFolder, upd.albumId]);
+            }
           }
+        }, { fastCommit: true });
+      }
+
+      // Double-buffered pipeline: overlap reading batch N+1 from disk with writing batch N to Postgres.
+      const readBatchSlice = (startIdx) => {
+        if (startIdx >= orderedToProcess.length) return null;
+        const slice = orderedToProcess.slice(startIdx, startIdx + BATCH_SIZE);
+        return mapLimit(slice, HDD_TAG_CONCURRENCY, async (f) => {
+          return parsedCache.get(f.path) || parseTrackFile(f, { withHashes: false, captureCover: true });
+        });
+      };
+
+      let nextBatchPromise = readBatchSlice(0);
+      for (let i = 0; i < orderedToProcess.length; i += BATCH_SIZE) {
+        const parsed = await nextBatchPromise;
+        nextBatchPromise = readBatchSlice(i + BATCH_SIZE);
+        for (const p of parsed) {
+          if (p.parseError) parseErrors++;
+        }
+        processed += await writeBatch(client, parsed, touchedAlbumIds, { hasExistingTracks });
+        hasExistingTracks = true;
+        console.log(`Processed ${processed}/${orderedToProcess.length}`);
+        onProgress?.({
+          phase: 'processing',
+          total: files.length,
+          toProcess: orderedToProcess.length,
+          processed,
+          unchanged,
+          errors: parseErrors,
+        });
+      }
+
+      if (metadataIdentityUpdates.length > 0) {
+        await inTransaction(client, async () => {
+          await client.query(
+            `UPDATE tracks AS t
+             SET dev = u.dev,
+                 ino = u.ino,
+                 birthtime_ms = u.birthtime_ms
+             FROM unnest($1::int[], $2::bigint[], $3::bigint[], $4::bigint[])
+               AS u(id, dev, ino, birthtime_ms)
+             WHERE t.id = u.id`,
+            [
+              metadataIdentityUpdates.map(b => b.id),
+              metadataIdentityUpdates.map(b => b.dev),
+              metadataIdentityUpdates.map(b => b.ino),
+              metadataIdentityUpdates.map(b => b.birthtimeMs),
+            ]
+          );
+        }, { fastCommit: true });
+      }
+
+      onProgress?.({ phase: 'cleaning', total: files.length, processed, unchanged, errors: parseErrors });
+
+      const hadMissingTracks = known.some(r => r.missing_since != null);
+      if (staleIds.length > 0 || hadMissingTracks) {
+        await inTransaction(client, async () => {
+          if (staleIds.length) {
+            await client.query('UPDATE tracks SET missing_since = COALESCE(missing_since, NOW()) WHERE id = ANY($1::int[])', [staleIds]);
+            console.warn(`Marked ${staleIds.length} missing tracks; no user data deleted`);
+          }
+          if (hadMissingTracks && files.length) {
+            await client.query('UPDATE tracks SET missing_since = NULL WHERE file_path = ANY($1::text[]) AND missing_since IS NOT NULL', [files.map(f => f.path)]);
+          }
+        });
+      }
+
+      if (hadMissingTracks || staleIds.length > 0) {
+        mergedPairs = await reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds);
+      }
+
+      await inTransaction(client, async () => {
+        await refreshAlbumsMetadata(client, touchedAlbumIds, { transactionActive: true });
+        if (known.length > 0 || mergedPairs > 0) {
+          await removeOrphans(client);
         }
       });
+    } finally {
+      client.release();
     }
 
-    for (let i = 0; i < toProcess.length; i += BATCH_SIZE) {
-      const slice = toProcess.slice(i, i + BATCH_SIZE);
-      const parsed = await mapLimit(slice, PARSE_CONCURRENCY, async (f) => {
-        return parsedCache.get(f.path) || parseTrackFile(f);
-      });
-      for (const p of parsed) {
-        if (p.parseError) parseErrors++;
+    let coversExtracted = 0;
+    let coversTotal = 0;
+
+    onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted: 0, coversTotal: 0 });
+
+    const makeCoverProgressCallback = (baseExtracted = 0, baseTotal = 0) => (extracted, total) => {
+      coversExtracted = baseExtracted + extracted;
+      coversTotal = baseTotal + total;
+      onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted, coversTotal });
+    };
+
+    if (full || reextractCovers) {
+      const covers = await extractAllMissingCovers({ force: true, onProgress: makeCoverProgressCallback() });
+      coversExtracted = covers.extracted;
+      coversTotal = covers.total;
+    } else {
+      // Skip `findAlbumsWithChangedFolderCovers` on a fresh initial scan (`known.length === 0`),
+      // since every album in the DB is already in `touchedAlbumIds`.
+      if (known.length > 0) {
+        for (const id of await findAlbumsWithChangedFolderCovers()) touchedAlbumIds.add(id);
       }
-      processed += await writeBatch(client, parsed, touchedAlbumIds);
-      console.log(`Processed ${processed}/${toProcess.length}`);
-      onProgress?.({
-        phase: 'processing',
-        total: files.length,
-        toProcess: toProcess.length,
-        processed,
-        unchanged,
-        errors: parseErrors,
-      });
+      if (touchedAlbumIds.size > 0) {
+        const touchedCovers = await extractAllMissingCovers({
+          albumIds: [...touchedAlbumIds],
+          force: true,
+          onProgress: makeCoverProgressCallback(0, 0),
+        });
+        coversExtracted = touchedCovers.extracted;
+        coversTotal = touchedCovers.total;
+      }
+      if (known.length > 0) {
+        const baseExtracted = coversExtracted;
+        const baseTotal = coversTotal;
+        const missingCovers = await extractAllMissingCovers({
+          force: false,
+          onProgress: makeCoverProgressCallback(baseExtracted, baseTotal),
+        });
+        coversExtracted = baseExtracted + missingCovers.extracted;
+        coversTotal = baseTotal + missingCovers.total;
+      }
     }
 
-    // Backfill durable file identity & hashes for pre-migration unchanged live tracks
-    if (needsIdentityBackfill.length > 0) {
-      const backfilled = await mapLimit(needsIdentityBackfill, PARSE_CONCURRENCY, async ({ row, file }) => {
-        const { contentHash, audioHash } = await computeFileHashes(file.path);
-        return {
-          id: row.id,
-          dev: file.dev,
-          ino: file.ino,
-          birthtimeMs: file.birthtimeMs,
-          contentHash,
-          audioHash,
-        };
-      });
-      await inTransaction(client, async () => {
-        await client.query(
-          `UPDATE tracks AS t
-           SET dev = u.dev,
-               ino = u.ino,
-               birthtime_ms = u.birthtime_ms,
-               content_hash = u.content_hash,
-               audio_hash = u.audio_hash
-           FROM unnest($1::int[], $2::bigint[], $3::bigint[], $4::bigint[], $5::text[], $6::text[])
-             AS u(id, dev, ino, birthtime_ms, content_hash, audio_hash)
-           WHERE t.id = u.id`,
-          [
-            backfilled.map((b) => b.id),
-            backfilled.map((b) => b.dev),
-            backfilled.map((b) => b.ino),
-            backfilled.map((b) => b.birthtimeMs),
-            backfilled.map((b) => b.contentHash),
-            backfilled.map((b) => b.audioHash),
-          ]
-        );
-      });
+    console.log(`Covers extracted: ${coversExtracted}/${coversTotal}`);
+
+    // Stage 2: Full-file SHA-256 backfill (executed synchronously for direct API/test
+    // callers, or deferred to a non-blocking background worker for UI scans).
+    if (!deferHashes) {
+      await backfillMissingTrackHashes(prefix);
+      // If a legacy pre-existing missing+live duplicate pair needed freshly computed
+      // live hashes to merge, reconcile once more when missing rows exist.
+      if (known.some(r => r.missing_since != null) || staleIds.length > 0) {
+        const postBackfillClient = await getClient();
+        try {
+          const extraMerged = await reconcileExistingDuplicatePairs(postBackfillClient, prefix, touchedAlbumIds);
+          if (extraMerged > 0) {
+            mergedPairs += extraMerged;
+            await inTransaction(postBackfillClient, async () => {
+              await refreshAlbumsMetadata(postBackfillClient, touchedAlbumIds, { transactionActive: true });
+              await removeOrphans(postBackfillClient);
+            });
+          }
+        } finally {
+          postBackfillClient.release();
+        }
+      }
     }
 
-    onProgress?.({ phase: 'cleaning', total: files.length, processed, unchanged, errors: parseErrors });
-
-    await inTransaction(client, async () => {
-      // A disappearing mount is indistinguishable from deletion during one walk.
-      // Retain track IDs and dependent favorites/playlists/history indefinitely.
-      if (staleIds.length) {
-        await client.query('UPDATE tracks SET missing_since = COALESCE(missing_since, NOW()) WHERE id = ANY($1::int[])', [staleIds]);
-        console.warn(`Marked ${staleIds.length} missing tracks; no user data deleted`);
-      }
-      if (files.length) {
-        await client.query('UPDATE tracks SET missing_since = NULL WHERE file_path = ANY($1::text[]) AND missing_since IS NOT NULL', [files.map(f => f.path)]);
-      }
-    });
-
-    // Repair already-created live+missing duplicate pairs when BOTH have matching verified stored hashes
-    mergedPairs = await reconcileExistingDuplicatePairs(client, prefix, touchedAlbumIds);
-
-    await inTransaction(client, async () => {
-      // Refresh album metadata across all member tracks in DB
-      await refreshAlbumsMetadata(client, touchedAlbumIds, { transactionActive: true });
-
-      // Album refresh can release an obsolete composite artist too.
-      await removeOrphans(client);
-    });
+    const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
+    console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
+    const remainingMissing = Math.max(0, staleIds.length - mergedPairs);
+    const finalResult = { total: files.length, processed, unchanged, removed, missing: remainingMissing, errors: parseErrors, covers: coversExtracted, durationSeconds };
+    onProgress?.({ phase: 'complete', ...finalResult });
+    return finalResult;
   } finally {
-    client.release();
+    endScanCoverSession();
   }
-
-  let coversExtracted = 0;
-  let coversTotal = 0;
-
-  onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted: 0, coversTotal: 0 });
-
-  const makeCoverProgressCallback = (baseExtracted = 0, baseTotal = 0) => (extracted, total) => {
-    coversExtracted = baseExtracted + extracted;
-    coversTotal = baseTotal + total;
-    onProgress?.({ phase: 'covers', total: files.length, processed, coversExtracted, coversTotal });
-  };
-
-  if (full || reextractCovers) {
-    const covers = await extractAllMissingCovers({ force: true, onProgress: makeCoverProgressCallback() });
-    coversExtracted = covers.extracted;
-    coversTotal = covers.total;
-  } else {
-    for (const id of await findAlbumsWithChangedFolderCovers()) touchedAlbumIds.add(id);
-    // 1. Force re-extract for touched albums so retagged/moved tracks update the cover
-    if (touchedAlbumIds.size > 0) {
-      const touchedCovers = await extractAllMissingCovers({
-        albumIds: [...touchedAlbumIds],
-        force: true,
-        onProgress: makeCoverProgressCallback(0, 0),
-      });
-      coversExtracted = touchedCovers.extracted;
-      coversTotal = touchedCovers.total;
-    }
-    // 2. Extract for any other albums still missing covers
-    const baseExtracted = coversExtracted;
-    const baseTotal = coversTotal;
-    const missingCovers = await extractAllMissingCovers({
-      force: false,
-      onProgress: makeCoverProgressCallback(baseExtracted, baseTotal),
-    });
-    coversExtracted = baseExtracted + missingCovers.extracted;
-    coversTotal = baseTotal + missingCovers.total;
-  }
-
-  console.log(`Covers extracted: ${coversExtracted}/${coversTotal}`);
-
-  const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
-  console.log(`Scan complete in ${durationSeconds}s. Processed ${processed} files.`);
-  const remainingMissing = Math.max(0, staleIds.length - mergedPairs);
-  const finalResult = { total: files.length, processed, unchanged, removed, missing: remainingMissing, errors: parseErrors, covers: coversExtracted, durationSeconds };
-  onProgress?.({ phase: 'complete', ...finalResult });
-  return finalResult;
 }
 
 export async function scanSingleFile(filePath) {
   try {
     const stat = await fs.stat(filePath);
-    const item = await parseTrackFile({
-      path: filePath,
-      size: stat.size,
-      mtime: stat.mtime,
-      dev: toBigIntStr(stat.dev),
-      ino: toBigIntStr(stat.ino),
-      nlink: Number.isFinite(stat.nlink) ? stat.nlink : 1,
-      birthtimeMs: Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
-        ? String(Math.round(stat.birthtimeMs))
-        : null,
-    });
+    const item = await parseTrackFile(
+      {
+        path: filePath,
+        size: stat.size,
+        mtime: stat.mtime,
+        dev: toBigIntStr(stat.dev),
+        ino: toBigIntStr(stat.ino),
+        nlink: Number.isFinite(stat.nlink) ? stat.nlink : 1,
+        birthtimeMs: Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0
+          ? String(Math.round(stat.birthtimeMs))
+          : null,
+      },
+      { withHashes: true, captureCover: false }
+    );
     const touched = new Set();
     const { rows: prev } = await query('SELECT album_id FROM tracks WHERE file_path = $1', [filePath]);
     if (prev[0]?.album_id) touched.add(prev[0].album_id);
@@ -1599,7 +1853,7 @@ export async function scanSingleFile(filePath) {
     }
     return written > 0;
   } catch (err) {
-    console.error(`Failed to process ${filePath}: ${err.message}`);
+    console.error(`Failed to scan single file ${filePath}: ${err.message}`);
     return false;
   }
 }

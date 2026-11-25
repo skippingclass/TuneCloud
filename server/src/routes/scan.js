@@ -1,4 +1,4 @@
-import { scanDirectory, scanSingleFile } from '../scanner.js';
+import { scanDirectory, scanSingleFile, backfillMissingTrackHashes } from '../scanner.js';
 import { extractAllMissingCovers } from '../cover.js';
 import { requireAdmin, requireAuth } from '../auth.js';
 import { recordScan } from '../metrics.js';
@@ -12,10 +12,14 @@ import {
   withTrackLock,
 } from '../library-lock.js';
 import fs from 'fs';
+import path from 'path';
 
 // Single-process guard (server runs with replicas: 1) plus PG advisory lock for DB safety.
 let lastResult = null;
 let lastScanAt = null;
+let backgroundBackfillRunning = false;
+let serverClosing = false;
+
 const INITIAL_PROGRESS = {
   phase: 'idle', // 'idle' | 'listing' | 'processing' | 'cleaning' | 'covers' | 'complete' | 'error'
   total: 0,
@@ -50,12 +54,13 @@ async function isReadableDirectory(dirPath) {
   }
 }
 
-async function executeScan({ musicDir, full, reextractCovers }) {
+async function executeScan({ musicDir, full, reextractCovers, deferHashes = false }) {
   const start = Date.now();
   const result = await withLibraryAdvisoryLock(() =>
     scanDirectory(musicDir, {
       full,
       reextractCovers,
+      deferHashes,
       onProgress: (p) => {
         scanProgress = { ...scanProgress, ...p };
       },
@@ -75,6 +80,29 @@ async function executeScan({ musicDir, full, reextractCovers }) {
   return result;
 }
 
+function scheduleBackgroundHashBackfill(musicDir) {
+  if (backgroundBackfillRunning || serverClosing) return;
+  backgroundBackfillRunning = true;
+  const root = path.resolve(musicDir);
+  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+  (async () => {
+    try {
+      const updated = await backfillMissingTrackHashes(prefix, {
+        shouldContinue: () => !serverClosing && !isFullJobActive(),
+      });
+      if (updated > 0) {
+        console.log(`[Scanner] Background fingerprint backfill completed for ${updated} tracks`);
+      }
+    } catch (err) {
+      if (!serverClosing) {
+        console.error('[Scanner] Background fingerprint backfill failed:', err.message);
+      }
+    } finally {
+      backgroundBackfillRunning = false;
+    }
+  })();
+}
+
 export function getScanState() {
   return { isScanning: isFullJobActive(), lastResult, lastScanAt, progress: scanProgress };
 }
@@ -87,22 +115,32 @@ export function startScanInBackground({ full = false, reextractCovers = false } 
   const covers = reextractCovers || full;
 
   (async () => {
+    let completed = false;
     try {
       if (!(await isReadableDirectory(musicDir))) {
         throw new Error(`Music directory not found: ${musicDir}`);
       }
-      await executeScan({ musicDir, full, reextractCovers: covers });
+      await executeScan({ musicDir, full, reextractCovers: covers, deferHashes: true });
+      completed = true;
     } catch (err) {
       console.error('[Scanner] Scan failed:', err);
       scanProgress = { ...scanProgress, phase: 'error', error: err.message };
     } finally {
       endFullJob('scan');
     }
+    if (completed) {
+      scheduleBackgroundHashBackfill(musicDir);
+    }
   })();
   return true;
 }
 
 export default async function scanRoutes(fastify) {
+  serverClosing = false;
+  fastify.addHook('onClose', async () => {
+    serverClosing = true;
+  });
+
   fastify.post('/api/scan', { preHandler: requireAdmin }, async (req, reply) => {
     const musicDir = process.env.MUSIC_DIR;
 
@@ -135,7 +173,7 @@ export default async function scanRoutes(fastify) {
       }
       scanProgress = createListingProgress(full);
       try {
-        const result = await executeScan({ musicDir, full, reextractCovers });
+        const result = await executeScan({ musicDir, full, reextractCovers, deferHashes: false });
         return { message: 'Scan completed', result };
       } catch (err) {
         req.log.error(err);
@@ -146,7 +184,7 @@ export default async function scanRoutes(fastify) {
       }
     }
 
-    // Default: non-blocking asynchronous scan to prevent proxy & client timeouts
+    // Default: non-blocking asynchronous scan with deferred background hash backfill
     const started = startScanInBackground({ full, reextractCovers });
     if (!started) {
       return reply.status(409).send({ error: 'Could not start scan: already in progress' });
@@ -225,7 +263,6 @@ export default async function scanRoutes(fastify) {
     }
   });
 
-  // Cheap: no filesystem walk. File totals come from the last completed scan.
   fastify.get('/api/scan/status', { preHandler: requireAuth }, async () => {
     const { rows } = await query('SELECT COUNT(*)::int AS count FROM tracks WHERE missing_since IS NULL');
     const indexed = rows[0].count;

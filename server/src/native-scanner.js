@@ -8,6 +8,7 @@ const DEFAULT_BINARIES = [
   fileURLToPath(new URL('../native/scanner/target/release/tunecloud-scanner', import.meta.url)),
 ];
 const UNAVAILABLE_CODES = new Set(['ENOENT', 'EACCES', 'ENOEXEC', 'ENOTDIR']);
+const MAX_BATCH_PAYLOAD_BYTES = 48 * 1024;
 const liveChildren = new Set();
 
 // Idle workers do not keep Node alive. Kill them synchronously when Node exits;
@@ -33,17 +34,26 @@ function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function validateResult(op, result, root) {
+function validateHashObject(result) {
   if (!object(result)) throw new Error('result must be an object');
-  if (op === 'hash') {
-    const validHash = value => value === null || (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
-    if (!validHash(result.contentHash) || !validHash(result.audioHash) ||
-        !Number.isSafeInteger(result.audioPayloadSize) || result.audioPayloadSize < 0 ||
-        (result.contentHash === null ? result.audioHash !== null || result.audioPayloadSize !== 0 :
-          result.audioHash === null || (result.audioPayloadSize === 0 && result.audioHash !== result.contentHash))) {
-      throw new Error('invalid hash result');
+  const validHash = value => value === null || (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+  if (!validHash(result.contentHash) || !validHash(result.audioHash) ||
+      !Number.isSafeInteger(result.audioPayloadSize) || result.audioPayloadSize < 0 ||
+      (result.contentHash === null ? result.audioHash !== null || result.audioPayloadSize !== 0 :
+        result.audioHash === null || (result.audioPayloadSize === 0 && result.audioHash !== result.contentHash))) {
+    throw new Error('invalid hash result');
+  }
+  return { contentHash: result.contentHash, audioHash: result.audioHash, audioPayloadSize: result.audioPayloadSize };
+}
+
+function validateResult(op, result, root, expectedBatchLength = 0) {
+  if (!object(result)) throw new Error('result must be an object');
+  if (op === 'hash') return validateHashObject(result);
+  if (op === 'hash_batch') {
+    if (!Array.isArray(result.items) || result.items.length !== expectedBatchLength) {
+      throw new Error('invalid hash_batch result');
     }
-    return { contentHash: result.contentHash, audioHash: result.audioHash, audioPayloadSize: result.audioPayloadSize };
+    return result.items.map(validateHashObject);
   }
   if (!Array.isArray(result.files)) throw new Error('list result must contain files');
   const seen = new Set();
@@ -104,6 +114,62 @@ class NativeScannerClient {
 
   computeFileHashes(filePath) { return this.request('hash', filePath); }
   listAudioFiles(root) { return this.request('list', root); }
+
+  async computeFileHashesBatch(files) {
+    if (!Array.isArray(files)) throw new Error('files must be an array');
+    if (files.length === 0) return [];
+    if (this.state === 'js' || this.state === 'unavailable') return null;
+
+    const normalized = files.map(item => {
+      const rawPath = typeof item === 'string' ? item : item?.path;
+      if (typeof rawPath !== 'string' || !rawPath || rawPath.includes('\0')) {
+        throw new Error('Scanner requires nonempty file paths');
+      }
+      return {
+        path: path.resolve(rawPath),
+        dev: typeof item === 'object' && item?.dev != null ? String(item.dev) : null,
+        ino: typeof item === 'object' && item?.ino != null ? String(item.ino) : null,
+      };
+    });
+
+    const out = [];
+    let chunk = [];
+    let chunkBytes = 64;
+    for (const entry of normalized) {
+      const itemBytes = Buffer.byteLength(JSON.stringify(entry), 'utf8') + 2;
+      if (chunk.length > 0 && (chunkBytes + itemBytes > MAX_BATCH_PAYLOAD_BYTES || chunk.length >= 256)) {
+        const res = await this._requestBatch(chunk);
+        if (res === null) return null;
+        out.push(...res);
+        chunk = [];
+        chunkBytes = 64;
+      }
+      chunk.push(entry);
+      chunkBytes += itemBytes;
+    }
+    if (chunk.length > 0) {
+      const res = await this._requestBatch(chunk);
+      if (res === null) return null;
+      out.push(...res);
+    }
+    return out;
+  }
+
+  _requestBatch(files) {
+    if (this.state === 'js' || this.state === 'unavailable') return Promise.resolve(null);
+    if (this.state === 'closed' || this.state === 'failed') return Promise.reject(this.error ?? failure('Native scanner is closed', 'SCANNER_CLOSED'));
+    if (this.pending.size >= this.maxQueue) return Promise.reject(failure('Native scanner request queue is full', 'SCANNER_QUEUE_FULL'));
+    const id = this.nextId++;
+    const promise = new Promise((resolve, reject) => {
+      const entry = { id, op: 'hash_batch', files, resolve, reject, sent: false };
+      this.pending.set(id, entry);
+      this.queue.push(entry);
+    });
+    this._reference(true);
+    this.startPromise ??= this._start().catch(error => this._fail(error));
+    this._drain();
+    return promise;
+  }
 
   request(op, filePath) {
     if (!['hash', 'list'].includes(op) || typeof filePath !== 'string' || !filePath || filePath.includes('\0')) {
@@ -225,7 +291,7 @@ class NativeScannerClient {
     if (hasError) {
       this._finish(entry, failure(`Native scanner ${entry.op} failed: ${message.error}`, 'SCANNER_REQUEST_FAILED'));
     } else {
-      this._finish(entry, null, validateResult(entry.op, message.result, entry.path));
+      this._finish(entry, null, validateResult(entry.op, message.result, entry.path, entry.files?.length ?? 0));
     }
   }
 
@@ -236,8 +302,11 @@ class NativeScannerClient {
       entry.sent = true;
       this.active++;
       entry.timer = setTimeout(() => this._fail(failure(`Native scanner ${entry.op} timed out`, 'SCANNER_TIMEOUT')), this.timeoutMs);
+      const payload = entry.op === 'hash_batch'
+        ? { id: entry.id, op: 'hash_batch', files: entry.files }
+        : { id: entry.id, op: entry.op, path: entry.path };
       try {
-        if (!this.child.stdin.write(`${JSON.stringify({ id: entry.id, op: entry.op, path: entry.path })}\n`)) {
+        if (!this.child.stdin.write(`${JSON.stringify(payload)}\n`)) {
           this.writeBlocked = true;
           return;
         }
@@ -287,8 +356,6 @@ class NativeScannerClient {
     this._fail(failure('Native scanner closed', 'SCANNER_CLOSED'));
     this.state = 'closed';
     if (this.child) {
-      // Awaiting a Promise alone does not keep Node alive (notably Node 22).
-      // Keep the child and its pipes referenced until close has been observed.
       this._reference(true);
       this.child.kill('SIGKILL');
       await this.exitPromise;

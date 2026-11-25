@@ -16,8 +16,54 @@ const COVER_NAMES = [
   'album.jpg', 'album.png', 'Album.jpg',
   'artwork.jpg', 'Artwork.jpg',
 ];
-const COVER_CONCURRENCY = 4;
+const COVER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'];
+const COVER_CONCURRENCY = 2;
+const MAX_SCANNED_BLOB_BYTES = 64 * 1024 * 1024;
 const coverJobs = new Map();
+
+// Ephemeral cache populated ONLY while `scanDirectory` is actively running so the
+// cover phase never re-opens or re-parses thousands of audio files on spinning HDDs.
+let scanCoverSessionActive = false;
+const scannedTrackMeta = new Map(); // filePath -> { readable, hash, format }
+const scannedCoverBlobs = new Map(); // hash -> { buffer, format, samplePath }
+let scannedBlobBytes = 0;
+
+export function beginScanCoverSession() {
+  scanCoverSessionActive = true;
+  scannedTrackMeta.clear();
+  scannedCoverBlobs.clear();
+  scannedBlobBytes = 0;
+}
+
+export function recordScannedTrackCover(filePath, { readable, pic }) {
+  if (!scanCoverSessionActive) return;
+  if (!readable) {
+    scannedTrackMeta.set(filePath, { readable: false, hash: null, format: null });
+    return;
+  }
+  if (!pic || !pic.data || pic.data.length === 0) {
+    scannedTrackMeta.set(filePath, { readable: true, hash: null, format: null });
+    return;
+  }
+  const hash = crypto.createHash('md5').update(pic.data).digest('hex');
+  const format = pic.format || 'image/jpeg';
+  scannedTrackMeta.set(filePath, { readable: true, hash, format });
+  if (!scannedCoverBlobs.has(hash)) {
+    if (scannedBlobBytes + pic.data.length <= MAX_SCANNED_BLOB_BYTES) {
+      scannedCoverBlobs.set(hash, { buffer: pic.data, format, samplePath: filePath });
+      scannedBlobBytes += pic.data.length;
+    } else {
+      scannedCoverBlobs.set(hash, { buffer: null, format, samplePath: filePath });
+    }
+  }
+}
+
+export function endScanCoverSession() {
+  scanCoverSessionActive = false;
+  scannedTrackMeta.clear();
+  scannedCoverBlobs.clear();
+  scannedBlobBytes = 0;
+}
 
 export function coverContentType(file) {
   return ({ '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.bmp': 'image/bmp' })[path.extname(file).toLowerCase()] || 'image/jpeg';
@@ -37,10 +83,17 @@ export async function sendCoverFile(req, reply, file, size) {
 }
 
 // Validate the final file, not just its parent: artwork may be a symlink.
-export async function resolveCoverFile(filePath, { allowMusic = false } = {}) {
+export async function resolveCoverFile(filePath, { allowMusic = false, realRoots = null } = {}) {
   try {
     const physical = await fsp.realpath(filePath);
     if (!(await fsp.stat(physical)).isFile()) return null;
+    if (realRoots) {
+      for (const realRoot of realRoots) {
+        const rel = path.relative(realRoot, physical);
+        if (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) return physical;
+      }
+      return null;
+    }
     const roots = [COVERS_DIR, ...(allowMusic && process.env.MUSIC_DIR ? [process.env.MUSIC_DIR] : [])];
     for (const dir of roots) {
       try {
@@ -52,21 +105,43 @@ export async function resolveCoverFile(filePath, { allowMusic = false } = {}) {
   return null;
 }
 
+async function resolveAllowedRoots(allowMusic) {
+  const roots = [COVERS_DIR, ...(allowMusic && process.env.MUSIC_DIR ? [process.env.MUSIC_DIR] : [])];
+  const resolved = [];
+  for (const dir of roots) {
+    try { resolved.push(await fsp.realpath(dir)); } catch {}
+  }
+  return resolved;
+}
+
 export async function initCoversDir() {
   await fsp.mkdir(COVERS_DIR, { recursive: true });
 }
 
-async function saveCoverBuffer(buffer, format, prefix) {
+async function readExistingCoversSet() {
+  try {
+    return new Set(await fsp.readdir(COVERS_DIR));
+  } catch {
+    return null;
+  }
+}
+
+async function saveCoverBuffer(buffer, format, prefix, existingSet = null) {
   const ext = format?.split('/')[1] || 'jpg';
   const filename = `${prefix}.${ext}`;
   const targetPath = path.join(COVERS_DIR, filename);
   const staged = `${targetPath}.${crypto.randomUUID()}.tmp`;
   try { await fsp.writeFile(staged, buffer); await fsp.rename(staged, targetPath); }
   finally { await fsp.unlink(staged).catch(() => {}); }
+  existingSet?.add(filename);
 
-  for (const altExt of ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp']) {
+  for (const altExt of COVER_EXTENSIONS) {
     if (altExt !== ext) {
-      try { await fsp.unlink(path.join(COVERS_DIR, `${prefix}.${altExt}`)); } catch {}
+      const altName = `${prefix}.${altExt}`;
+      if (!existingSet || existingSet.has(altName)) {
+        try { await fsp.unlink(path.join(COVERS_DIR, altName)); } catch {}
+        existingSet?.delete(altName);
+      }
     }
   }
 
@@ -74,9 +149,13 @@ async function saveCoverBuffer(buffer, format, prefix) {
   return `/api/cover/${filename}?v=${version}`;
 }
 
-async function deleteCoverFile(prefix) {
-  for (const ext of ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp']) {
-    try { await fsp.unlink(path.join(COVERS_DIR, `${prefix}.${ext}`)); } catch {}
+async function deleteCoverFile(prefix, existingSet = null) {
+  for (const ext of COVER_EXTENSIONS) {
+    const name = `${prefix}.${ext}`;
+    if (!existingSet || existingSet.has(name)) {
+      try { await fsp.unlink(path.join(COVERS_DIR, name)); } catch {}
+      existingSet?.delete(name);
+    }
   }
 }
 
@@ -98,10 +177,26 @@ function coverDirectories(tracks) {
   ])];
 }
 
-async function readFolderCover(tracks) {
+async function getDirectoryNames(dir, dirEntriesCache) {
+  if (dirEntriesCache?.has(dir)) return dirEntriesCache.get(dir);
+  let set;
+  try {
+    set = new Set(await fsp.readdir(dir));
+  } catch {
+    set = new Set();
+  }
+  dirEntriesCache?.set(dir, set);
+  return set;
+}
+
+async function readFolderCover(tracks, { dirEntriesCache = null, realRoots = null } = {}) {
+  const allowedRoots = realRoots || await resolveAllowedRoots(true);
   for (const dir of coverDirectories(tracks)) {
+    const entries = await getDirectoryNames(dir, dirEntriesCache);
+    if (entries.size === 0) continue;
     for (const name of COVER_NAMES) {
-      const file = await resolveCoverFile(path.join(dir, name), { allowMusic: true });
+      if (!entries.has(name)) continue;
+      const file = await resolveCoverFile(path.join(dir, name), { allowMusic: true, realRoots: allowedRoots });
       if (!file) continue;
       const buffer = await fsp.readFile(file);
       if (!buffer.length) continue;
@@ -129,11 +224,22 @@ export async function findAlbumsWithChangedFolderCovers() {
     if (!albums.has(track.album_id)) albums.set(track.album_id, []);
     albums.get(track.album_id).push(track);
   }
+  const dirEntriesCache = new Map();
+  const realRoots = await resolveAllowedRoots(true);
+  const existingSet = await readExistingCoversSet();
   const changed = [];
   for (const [id, tracks] of albums) {
+    const stateName = `album_${id}.folder.json`;
+    if (existingSet && !existingSet.has(stateName)) {
+      changed.push(id);
+      continue;
+    }
     try {
-      const folder = await readFolderCover(tracks);
-      const state = JSON.parse(await fsp.readFile(folderStatePath(id), 'utf8'));
+      const [folder, rawState] = await Promise.all([
+        readFolderCover(tracks, { dirEntriesCache, realRoots }),
+        fsp.readFile(folderStatePath(id), 'utf8'),
+      ]);
+      const state = JSON.parse(rawState);
       if (state.hash !== (folder?.hash ?? null)) changed.push(id);
     } catch {
       changed.push(id);
@@ -142,42 +248,82 @@ export async function findAlbumsWithChangedFolderCovers() {
   return changed;
 }
 
+async function resolveBlobForHash(hash, localAlbumBlobs) {
+  if (localAlbumBlobs.has(hash)) return localAlbumBlobs.get(hash);
+  const entry = scannedCoverBlobs.get(hash);
+  if (!entry) return null;
+  if (entry.buffer) {
+    localAlbumBlobs.set(hash, entry);
+    return entry;
+  }
+  if (entry.samplePath) {
+    try {
+      const meta = await parseFile(entry.samplePath, { skipCovers: false });
+      const pic = selectCover(meta.common?.picture);
+      if (pic && pic.data?.length > 0) {
+        const loaded = { buffer: pic.data, format: pic.format || entry.format };
+        localAlbumBlobs.set(hash, loaded);
+        return loaded;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 /**
  * Extracts and resolves covers for an album and all of its tracks:
- * 1. Checks folder image files (cover.jpg, folder.jpg, etc.)
- * 2. Reads embedded pictures from all album tracks and computes hashes
- * 3. The majority consensus picture (or folder image) becomes the Album Cover
- * 4. Tracks whose embedded picture matches the album cover inherit it (tracks.cover_path = NULL)
- * 5. Tracks with unique artwork get their own file (track_${trackId}.${ext}) and tracks.cover_path
+ * 1. Checks folder image files (cover.jpg, folder.jpg, etc.) via cached `readdir`
+ * 2. Reuses embedded picture hashes/buffers captured during Stage 1 scan when available
+ * 3. Writes consensus Album Cover and batches DB updates only for changed `tracks.cover_path`
  */
-export async function extractCoversForAlbum(albumId) {
+export async function extractCoversForAlbum(albumId, context = null) {
   const previous = coverJobs.get(albumId) || Promise.resolve();
-  const job = previous.catch(() => {}).then(() => extractAlbumArtwork(albumId));
+  const job = previous.catch(() => {}).then(() => extractAlbumArtwork(albumId, context));
   coverJobs.set(albumId, job);
   try { return await job; }
   finally { if (coverJobs.get(albumId) === job) coverJobs.delete(albumId); }
 }
 
-async function extractAlbumArtwork(albumId) {
+async function extractAlbumArtwork(albumId, context = null) {
   if (!albumId) return null;
   const { rows: tracks } = await query(
-    'SELECT id, file_path FROM tracks WHERE album_id = $1 AND missing_since IS NULL ORDER BY track_number ASC, file_path ASC',
+    'SELECT id, file_path, cover_path FROM tracks WHERE album_id = $1 AND missing_since IS NULL ORDER BY track_number ASC, file_path ASC',
     [albumId]
   );
   if (tracks.length === 0) return null;
 
-  // 1. Check shared album and disc directories for sidecar artwork.
-  const folderCover = await readFolderCover(tracks);
+  const existingSet = context?.existingSet ?? await readExistingCoversSet();
+  const folderCover = await readFolderCover(tracks, {
+    dirEntriesCache: context?.dirEntriesCache ?? null,
+    realRoots: context?.realRoots ?? null,
+  });
   const folderCoverBuffer = folderCover?.buffer;
   const folderCoverFormat = folderCover?.format;
   const folderCoverHash = folderCover?.hash;
 
-  // 2. Scan tracks for embedded artwork
   const readableTracks = new Set();
-  const trackPictures = new Map(); // trackId -> { buffer, format, hash }
-  const hashCounts = new Map();   // hash -> { count, buffer, format }
+  const trackPictures = new Map(); // trackId -> { hash, format, buffer? }
+  const hashCounts = new Map();    // hash -> { count, buffer?, format }
+  const localAlbumBlobs = new Map();
 
   for (const t of tracks) {
+    const preScanned = scanCoverSessionActive ? scannedTrackMeta.get(t.file_path) : undefined;
+    if (preScanned !== undefined) {
+      if (preScanned.readable) {
+        readableTracks.add(t.id);
+        if (preScanned.hash) {
+          const blob = await resolveBlobForHash(preScanned.hash, localAlbumBlobs);
+          if (blob?.buffer) {
+            trackPictures.set(t.id, { buffer: blob.buffer, format: blob.format, hash: preScanned.hash });
+            const existing = hashCounts.get(preScanned.hash);
+            if (existing) existing.count++;
+            else hashCounts.set(preScanned.hash, { count: 1, buffer: blob.buffer, format: blob.format });
+          }
+        }
+      }
+      continue;
+    }
+
     try {
       const meta = await parseFile(t.file_path, { skipCovers: false });
       readableTracks.add(t.id);
@@ -186,18 +332,12 @@ async function extractAlbumArtwork(albumId) {
         const hash = crypto.createHash('md5').update(pic.data).digest('hex');
         trackPictures.set(t.id, { buffer: pic.data, format: pic.format, hash });
         const existing = hashCounts.get(hash);
-        if (existing) {
-          existing.count++;
-        } else {
-          hashCounts.set(hash, { count: 1, buffer: pic.data, format: pic.format });
-        }
+        if (existing) existing.count++;
+        else hashCounts.set(hash, { count: 1, buffer: pic.data, format: pic.format });
       }
     } catch {}
   }
 
-  // 3. Determine consensus Album Cover:
-  // - If folder cover exists, it is the primary album cover
-  // - Otherwise, the majority hash among track pictures wins
   let albumCoverHash = null;
   let albumCoverBuffer = null;
   let albumCoverFormat = null;
@@ -218,37 +358,52 @@ async function extractAlbumArtwork(albumId) {
     }
   }
 
-  // Save album cover
   if (albumCoverBuffer) {
-    const albumCoverUrl = await saveCoverBuffer(albumCoverBuffer, albumCoverFormat, `album_${albumId}`);
+    const albumCoverUrl = await saveCoverBuffer(albumCoverBuffer, albumCoverFormat, `album_${albumId}`, existingSet);
     await setAlbumCover(albumId, albumCoverUrl);
   } else if (readableTracks.size === tracks.length) {
-    // Only clear artwork when every live member was read successfully.
     await setAlbumCover(albumId, null);
-    await deleteCoverFile(`album_${albumId}`);
+    await deleteCoverFile(`album_${albumId}`, existingSet);
   }
 
-  // 4. Classify track-level covers:
+  // Batch NULL updates only for tracks whose `cover_path` was previously non-NULL,
+  // avoiding thousands of autocommit no-op UPDATEs and cold unlink() syscalls on first scan.
+  const idsToClearInDb = [];
+  const uniqueUpdates = []; // { id, url }
+
   for (const t of tracks) {
-    if (!readableTracks.has(t.id)) continue; // Preserve cached artwork for offline/unreadable files.
+    if (!readableTracks.has(t.id)) continue;
     const pic = trackPictures.get(t.id);
-    if (!pic) {
-      // No embedded art -> inherits album cover
-      await query('UPDATE tracks SET cover_path = NULL WHERE id = $1', [t.id]);
-      await deleteCoverFile(`track_${t.id}`);
-    } else if (albumCoverHash && pic.hash === albumCoverHash) {
-      // Artwork matches album cover -> inherits album cover, no redundant file
-      await query('UPDATE tracks SET cover_path = NULL WHERE id = $1', [t.id]);
-      await deleteCoverFile(`track_${t.id}`);
+    if (!pic || (albumCoverHash && pic.hash === albumCoverHash)) {
+      if (t.cover_path !== null) idsToClearInDb.push(t.id);
+      await deleteCoverFile(`track_${t.id}`, existingSet);
     } else {
-      // Artwork is UNIQUE to this track! Save track-level cover
-      const trackCoverUrl = await saveCoverBuffer(pic.buffer, pic.format, `track_${t.id}`);
-      await query('UPDATE tracks SET cover_path = $1 WHERE id = $2', [trackCoverUrl, t.id]);
+      const trackCoverUrl = await saveCoverBuffer(pic.buffer, pic.format, `track_${t.id}`, existingSet);
+      if (t.cover_path !== trackCoverUrl) {
+        uniqueUpdates.push({ id: t.id, url: trackCoverUrl });
+      }
     }
   }
 
+  if (idsToClearInDb.length > 0) {
+    await query('UPDATE tracks SET cover_path = NULL WHERE id = ANY($1::int[])', [idsToClearInDb]);
+  }
+  if (uniqueUpdates.length === 1) {
+    await query('UPDATE tracks SET cover_path = $1 WHERE id = $2', [uniqueUpdates[0].url, uniqueUpdates[0].id]);
+  } else if (uniqueUpdates.length > 1) {
+    await query(
+      `UPDATE tracks AS t
+       SET cover_path = u.url
+       FROM unnest($1::int[], $2::text[]) AS u(id, url)
+       WHERE t.id = u.id`,
+      [uniqueUpdates.map(u => u.id), uniqueUpdates.map(u => u.url)]
+    );
+  }
+
   if (readableTracks.size === tracks.length) {
+    const stateName = `album_${albumId}.folder.json`;
     await fsp.writeFile(folderStatePath(albumId), JSON.stringify({ hash: folderCoverHash ?? null }));
+    existingSet?.add(stateName);
   }
   return Boolean(albumCoverBuffer);
 }
@@ -257,7 +412,7 @@ export async function extractCoverForAlbum(albumId) {
   return extractCoversForAlbum(albumId);
 }
 
-export async function extractAlbumCover(albumId, trackDir) {
+export async function extractAlbumCover(albumId) {
   return extractCoversForAlbum(albumId);
 }
 
@@ -266,25 +421,30 @@ export async function extractCoverFromTrack(filePath, albumId) {
   return null;
 }
 
-export async function extractCoverForTrack(trackId) {
-  const { rows } = await query('SELECT id, file_path, album_id FROM tracks WHERE id = $1', [trackId]);
+export async function extractCoverForTrack(trackId, context = null) {
+  const { rows } = await query('SELECT id, file_path, album_id, cover_path FROM tracks WHERE id = $1', [trackId]);
   if (!rows[0]) return null;
   const t = rows[0];
   if (t.album_id) {
-    await extractCoversForAlbum(t.album_id);
+    await extractCoversForAlbum(t.album_id, context);
     const updated = await query('SELECT cover_path FROM tracks WHERE id = $1', [trackId]);
     return updated.rows[0]?.cover_path || null;
   }
+  const existingSet = context?.existingSet ?? await readExistingCoversSet();
   try {
     const meta = await parseFile(t.file_path, { skipCovers: false });
     const pic = selectCover(meta.common?.picture);
     if (pic && pic.data?.length > 0) {
-      const url = await saveCoverBuffer(pic.data, pic.format, `track_${t.id}`);
-      await query('UPDATE tracks SET cover_path = $1 WHERE id = $2', [url, t.id]);
+      const url = await saveCoverBuffer(pic.data, pic.format, `track_${t.id}`, existingSet);
+      if (t.cover_path !== url) {
+        await query('UPDATE tracks SET cover_path = $1 WHERE id = $2', [url, t.id]);
+      }
       return url;
     }
-    await query('UPDATE tracks SET cover_path = NULL WHERE id = $1', [t.id]);
-    await deleteTrackCover(t.id);
+    if (t.cover_path !== null) {
+      await query('UPDATE tracks SET cover_path = NULL WHERE id = $1', [t.id]);
+    }
+    await deleteCoverFile(`track_${t.id}`, existingSet);
   } catch {}
   return null;
 }
@@ -319,9 +479,15 @@ export async function extractAllMissingCovers(optionsOrIds = null) {
     FROM albums al
     JOIN tracks t ON t.album_id = al.id
     ${whereClause} ${andClause}
+    ORDER BY al.id ASC
   `;
 
   const { rows: albums } = await query(sql, albumIds ? [albumIds] : []);
+  const context = {
+    existingSet: await readExistingCoversSet(),
+    dirEntriesCache: new Map(),
+    realRoots: await resolveAllowedRoots(true),
+  };
 
   let extracted = 0;
   let next = 0;
@@ -329,7 +495,7 @@ export async function extractAllMissingCovers(optionsOrIds = null) {
     while (next < albums.length) {
       const album = albums[next++];
       try {
-        if (await extractCoversForAlbum(album.id)) extracted++;
+        if (await extractCoversForAlbum(album.id, context)) extracted++;
       } catch (err) {
         console.error(`Cover extraction failed for album ${album.id}: ${err.message}`);
       }
@@ -342,11 +508,11 @@ export async function extractAllMissingCovers(optionsOrIds = null) {
   if (!albumIds) {
     try {
       const { rows: orphanTracks } = await query(
-        `SELECT id, file_path FROM tracks WHERE album_id IS NULL AND missing_since IS NULL ${force ? '' : 'AND cover_path IS NULL'}`
+        `SELECT id FROM tracks WHERE album_id IS NULL AND missing_since IS NULL ${force ? '' : 'AND cover_path IS NULL'}`
       );
       for (const ot of orphanTracks) {
         try {
-          if (await extractCoverForTrack(ot.id)) extracted++;
+          if (await extractCoverForTrack(ot.id, context)) extracted++;
         } catch {}
       }
     } catch {}

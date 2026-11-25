@@ -3,12 +3,43 @@ import crypto from 'node:crypto';
 import { getNativeScanner } from './native-scanner.js';
 
 const empty = () => ({ contentHash: null, audioHash: null, audioPayloadSize: 0 });
+const JS_HDD_HASH_CONCURRENCY = 2;
 
 // Hash actual bytes, not an embedded checksum or tag similarity. Keep memory
 // bounded even when multiple multi-gigabyte lossless files are scanned together.
 export async function computeFileHashes(filePath) {
   const result = await getNativeScanner().computeFileHashes(filePath);
   return result ?? computeFileHashesJs(filePath);
+}
+
+/**
+ * Computes hashes for a batch of `{ path, dev, ino }` items using the native
+ * single-reader / multi-hasher pipeline sorted by `(dev, ino)` to prevent HDD
+ * seek thrashing. Falls back to inode-sorted JS hashing when native is disabled.
+ */
+export async function computeFileHashesBatch(files) {
+  if (!files || files.length === 0) return [];
+  const nativeResult = await getNativeScanner().computeFileHashesBatch(files);
+  if (nativeResult !== null) return nativeResult;
+
+  const indexed = files.map((item, index) => {
+    const filePath = typeof item === 'string' ? item : item.path;
+    const dev = typeof item === 'object' && item?.dev != null ? BigInt(item.dev) : 9007199254740991n;
+    const ino = typeof item === 'object' && item?.ino != null ? BigInt(item.ino) : 9007199254740991n;
+    return { index, filePath, dev, ino };
+  });
+  indexed.sort((a, b) => (a.dev < b.dev ? -1 : a.dev > b.dev ? 1 : a.ino < b.ino ? -1 : a.ino > b.ino ? 1 : 0));
+
+  const results = new Array(files.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < indexed.length) {
+      const entry = indexed[cursor++];
+      results[entry.index] = await computeFileHashesJs(entry.filePath);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(JS_HDD_HASH_CONCURRENCY, indexed.length) }, worker));
+  return results;
 }
 
 export async function computeFileHashesJs(filePath) {
@@ -37,9 +68,6 @@ export async function computeFileHashesJs(filePath) {
       start = next;
       hasId3 = true;
     }
-    // FLAC metadata (including changed titles/artwork) precedes the frame bytes.
-    // A STREAMINFO block and a valid last-block marker are required before
-    // treating any prefix as metadata; malformed files fall back to whole bytes.
     let flac = false;
     if (start + 8 <= end && (await read(start, 4)).toString('ascii') === 'fLaC') {
       const originalStart = start;
@@ -61,7 +89,7 @@ export async function computeFileHashesJs(filePath) {
     }
     const content = crypto.createHash('sha256');
     const audio = crypto.createHash('sha256');
-    const buffer = Buffer.allocUnsafe(256 * 1024);
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
     let offset = 0;
     while (offset < size) {
       const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
